@@ -1,0 +1,14 @@
+options:
+  by_symbol:
+    NVDA:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_options_v2.csv
+      parquet_root: data/parquet
+    QQQ:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_v2.csv
+      parquet_root: data/parquet
+    AMD:
+      dataset: options_v2_onboarding_amd_20260820
+      manifest_path: data/manifests/options_v2_onboarding_amd_20260820.csv
+      parquet_root: data/parquet

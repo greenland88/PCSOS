@@ -1,0 +1,10 @@
+# Local research and market data (keep out of GitHub)
+/data/
+/research/
+/research_cache/
+/research_outputs/
+/.env
+**/__pycache__/
+*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/

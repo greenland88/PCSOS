@@ -1,0 +1,46 @@
+"""DuckDB views over derived Parquet partitions."""
+from pathlib import Path
+import duckdb
+from .storage_schema import DAILY_FIELDS, OPTION_FIELDS
+
+
+def connect(path="data/duckdb/pcs.duckdb"):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    return duckdb.connect(path)
+
+
+def refresh_views(con, parquet_root="data/parquet", symbols=None):
+    if symbols:
+        symbols=[s.upper() for s in symbols]
+        option_paths=[str(p).replace("\\", "/") for s in symbols for p in (Path(parquet_root)/"options"/f"symbol={s}").glob("**/*.parquet")]
+        daily_paths=[str(p).replace("\\", "/") for s in symbols for p in (Path(parquet_root)/"daily"/f"symbol={s}").glob("**/*.parquet")]
+        options="["+",".join("'"+p+"'" for p in option_paths)+"]"; daily="["+",".join("'"+p+"'" for p in daily_paths)+"]"; option_sql=options; daily_sql=daily
+    else:
+        options = str(Path(parquet_root) / "options" / "**" / "*.parquet").replace("\\", "/")
+        daily = str(Path(parquet_root) / "daily" / "**" / "*.parquet").replace("\\", "/")
+        option_sql="'"+options+"'"; daily_sql="'"+daily+"'"; option_paths=list((Path(parquet_root)/"options").glob("**/*.parquet")); daily_paths=list((Path(parquet_root)/"daily").glob("**/*.parquet"))
+    if option_paths:
+        con.execute(f"CREATE OR REPLACE VIEW options AS SELECT * FROM read_parquet({option_sql}, union_by_name=true, hive_partitioning=true)")
+    else:
+        con.execute("CREATE OR REPLACE VIEW options AS SELECT " + ", ".join(f"NULL AS {field}" for field in OPTION_FIELDS) + " WHERE FALSE")
+    if daily_paths:
+        con.execute(f"CREATE OR REPLACE VIEW daily_prices AS SELECT * FROM read_parquet({daily_sql}, union_by_name=true, hive_partitioning=true)")
+    else:
+        con.execute("CREATE OR REPLACE VIEW daily_prices AS SELECT " + ", ".join(f"NULL AS {field}" for field in DAILY_FIELDS) + " WHERE FALSE")
+    derived = Path(parquet_root) / "derived"
+    for name in ("daily_indicators", "trend_history", "option_features", "market_features"):
+        glob = str(derived / name / "*.parquet").replace("\\", "/")
+        if list((derived / name).glob("*.parquet")):
+            con.execute(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_parquet('{glob}', union_by_name=true)")
+    research = Path(parquet_root).parent / "research"
+    trades = str(research / "pcs_backtest_trades" / "**" / "*.parquet").replace("\\", "/")
+    if list((research / "pcs_backtest_trades").glob("**/*.parquet")):
+        con.execute(f"CREATE OR REPLACE VIEW pcs_backtest_trades AS SELECT * FROM read_parquet('{trades}', union_by_name=true, hive_partitioning=true)")
+
+
+def query_option_chain(con, symbol, trade_date):
+    return con.execute("SELECT * FROM options WHERE symbol = ? AND trade_date = ?", [symbol.upper(), trade_date]).fetchdf()
+
+
+def query_daily(con, symbol, start_date, end_date):
+    return con.execute("SELECT * FROM daily_prices WHERE symbol = ? AND date BETWEEN ? AND ? ORDER BY date", [symbol.upper(), start_date, end_date]).fetchdf()

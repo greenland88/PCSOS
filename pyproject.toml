@@ -1,0 +1,25 @@
+[project]
+name = "pcs-system"
+version = "0.1.0"
+description = "Deterministic Put Credit Spread decision assistant"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.0",
+  "pandas>=2.2",
+  "pyarrow>=16.0",
+  "pydantic>=2.7",
+  "TA-Lib>=0.4.28",
+  "pyyaml>=6.0",
+  "streamlit>=1.36",
+  "yt-dlp>=2025.1.15",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pcs-lite = "pcs.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
