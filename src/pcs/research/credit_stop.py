@@ -160,7 +160,9 @@ def load_entry_chain(root, entry_date):
     return load_quotes(root, pd.Timestamp(entry_date), pd.Timestamp(entry_date))
 
 def load_entry_chain_duckdb_view(db_path, symbol, entry_date, con=None):
-    """Research-only entry-chain loader for the canonical DuckDB options view."""
+    """Disabled legacy view loader; use :func:`load_quotes_canonical`."""
+    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_quotes_canonical")
+    # Kept below only as historical source context; unreachable by contract.
     own = con is None
     if con is None:
         con = duckdb.connect(db_path, read_only=True)
@@ -182,7 +184,9 @@ def load_entry_chain_duckdb_view(db_path, symbol, entry_date, con=None):
 
 def load_spread_quotes_duckdb_view(db_path, symbol, entry_date, tracking_end,
                                    expiration, strikes, con=None):
-    """Research-only lifecycle quote loader for the canonical DuckDB view."""
+    """Disabled legacy view loader; use :func:`load_spread_quotes_canonical`."""
+    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_spread_quotes_canonical")
+    # Kept below only as historical source context; unreachable by contract.
     own = con is None
     if con is None:
         con = duckdb.connect(db_path, read_only=True)
