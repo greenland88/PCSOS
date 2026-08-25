@@ -5,6 +5,8 @@ import csv, json
 import pandas as pd
 from pcs.data.access import PCSDataAccess
 from pcs.data.price_basis import load_corporate_actions
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 from pcs.research.underlying_state import evaluate_as_of, UnderlyingState
 from pcs.research.current_strategy_replay import build_lifecycle_quote_rows, validate_lifecycle_corporate_action, _identity
 from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, LifecycleAdapterError
@@ -26,8 +28,8 @@ def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1"
     # Load prior canonical history so the PIT warmup is global rather than
     # incorrectly restarting at each chronological shard boundary.
     daily = access.read_prices(ticker, "2010-01-01", end).copy(); daily.date = pd.to_datetime(daily.date).dt.normalize()
-    prev = daily.close.shift(1); tr = pd.concat([(daily.high-daily.low),(daily.high-prev).abs(),(daily.low-prev).abs()], axis=1).max(axis=1)
-    daily["atr_14"] = tr.rolling(14, min_periods=14).mean()
+    # Use the same Wilder ATR as the canonical trend/production path.
+    daily["atr_14"] = calculate_base_indicators(daily, TrendIndicatorConfig())["atr14"]
     # One validated canonical read per chronological shard; all subsequent
     # selections are exact filters on this immutable frame.
     options_load_error = None
