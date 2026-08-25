@@ -15,6 +15,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import pandas as pd
+import uuid
 from typing import Any, Mapping
 
 from .research_framework import (
@@ -166,6 +167,8 @@ class ResearchRunner:
                                  "FINAL_OOS_NOT_READ", "PRODUCTION_WRITE_BLOCKED"]}
 
     def execute_current_strategy_replay(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
+        if str(self.spec.rules.get("strategy", "")).upper() == "COVERED_CALL":
+            return self.execute_covered_call_research(data_access=data_access)
         if self.spec.research_mode.value not in {"CURRENT_STRATEGY_REPLAY", "NEW_ENTRY"}:
             raise ResearchSpecError("EXECUTION_ONLY_SUPPORTS_NEW_ENTRY_OR_CURRENT_REPLAY")
         from .ticker_readiness import assert_research_ready
@@ -196,6 +199,45 @@ class ResearchRunner:
                                            price_basis_service=load_corporate_actions())
 
     execute_research_replay = execute_current_strategy_replay
+
+    def execute_covered_call_research(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
+        """Execute the covered-call adapter after the normal readiness gates.
+
+        The canonical feature producer supplies PIT columns; this runner owns
+        admission and persistence, while the covered-call module owns signal,
+        contract and lifecycle semantics.
+        """
+        if self.spec.research_mode.value not in {"NEW_ENTRY", "CONTRACT_VARIANT"}:
+            raise ResearchSpecError("COVERED_CALL_REQUIRES_NEW_ENTRY_OR_CONTRACT_VARIANT")
+        from .ticker_readiness import assert_research_ready
+        access = data_access or PCSDataAccess.canonical()
+        assert_research_ready(self.spec.ticker, access=access)
+        feature_path = self.spec.rules.get("pit_feature_dataset")
+        market_path = self.spec.rules.get("market_feature_dataset")
+        if not feature_path or not market_path:
+            raise ResearchSpecError("COVERED_CALL_PIT_FEATURE_DATASETS_REQUIRED")
+        daily = pd.read_parquet(feature_path); market = pd.read_parquet(market_path)
+        from .covered_call_research import (discover_and_select_entries, replay_selected_entries,
+                                             validate_covered_call_report)
+        result = discover_and_select_entries(self.spec.ticker, daily, market, data_access=access)
+        replay = replay_selected_entries(self.spec.ticker, result.get("entries", []), data_access=access,
+                                         profit_capture=float(self.spec.rules.get("covered_call_config", {}).get("profit_capture", .60)))
+        result.update({"lifecycle": replay, "metrics": replay.get("metrics", {}),
+                       "yearly_results": replay.get("yearly_results", []),
+                       "parameter_stability": replay.get("parameter_stability", {}),
+                       "episode_concentration": replay.get("episode_concentration", {})})
+        result.update({"research_id": self.spec.research_id, "as_of": datetime.now(timezone.utc).date().isoformat(),
+                       "data_timestamp": datetime.now(timezone.utc).isoformat(),
+                       "calculation_version": "covered_call_economic_v1",
+                       "run_id": uuid.uuid4().hex, "request_id": uuid.uuid4().hex,
+                       "final_oos_read": False,
+                       "production_changes_allowed": False,
+                       "reason_codes": result["reason_codes"] + ["TICKER_READINESS_PASSED"]})
+        # Discovery result is enriched into a full report envelope before the
+        # guarded research writer is called.
+        validate_covered_call_report(result)
+        self.persist(result, filename="covered_call_entries.json")
+        return result
 
     def persist(self, result: Mapping[str, Any], *, filename: str = "preflight.json") -> Path:
         """Persist an auditable research-only result envelope."""

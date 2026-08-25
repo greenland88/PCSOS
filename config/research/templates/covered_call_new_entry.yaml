@@ -1,0 +1,33 @@
+research_id: covered_call_{ticker}_baseline
+ticker: NVDA
+research_mode: NEW_ENTRY
+hypothesis: "Identify PIT-safe dates when selling one call against 100 long shares improves total economic return versus buy-and-hold."
+population_source:
+  type: ticker_daily_calendar
+  source: PCSDataAccess
+  frozen: false
+signal_definition:
+  name: covered_call_entry_timing
+  creates_new_entry_dates: true
+  inputs: [ticker_daily_calendar, market_context, trend_features, volatility_features]
+entry_date_rule:
+  rule: explicit_signal_predicate_from_train
+  decision_timing: next_completed_session
+date_range: {start: "2018-01-01", end: "2023-12-31"}
+split_policy: {train: "2018-2021", validation: "2022", final_oos: "sealed"}
+contract_selection_policy:
+  source: PCSDataAccess
+  exact_contract_identity: true
+  select_after_signal_date: true
+lifecycle_policy:
+  model: LONG_100_SHARES_PLUS_SHORT_1_CALL
+  terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS, ASSIGNED]
+frozen_parameters: {shares: 100, multiplier: 100}
+allowed_parameters:
+  dte_buckets: [[21, 35], [36, 50]]
+  delta_buckets: [[0.15, 0.25], [0.25, 0.35], [0.35, 0.45]]
+rules:
+  strategy: COVERED_CALL
+  covered_call_config: {}
+final_oos_access: false
+production_changes_allowed: false
