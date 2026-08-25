@@ -6,7 +6,8 @@ from run_safe_strike_candidates import stock, WINDOWS
 from pcs.research.credit_stop import run_backtest
 
 P=argparse.ArgumentParser(); P.add_argument('--atr',type=float,required=True); a=P.parse_args()
-atr=a.atr; root=Path('research_outputs/safe_strike_stage2')/f'{atr:.1f}ATR'; (root/'checkpoints').mkdir(parents=True,exist_ok=True); (root/'chunks').mkdir(exist_ok=True); (root/'logs').mkdir(exist_ok=True)
+REPO_ROOT=Path(__file__).resolve().parents[1]
+atr=a.atr; root=REPO_ROOT/'research_outputs/safe_strike_stage2'/f'{atr:.1f}ATR'; (root/'checkpoints').mkdir(parents=True,exist_ok=True); (root/'chunks').mkdir(exist_ok=True); (root/'logs').mkdir(exist_ok=True)
 ck=root/'checkpoints'/f'{atr:.1f}ATR.jsonl'; log=root/'logs'/f'stage2_{atr:.1f}ATR.log'
 def emit(x):
  s=json.dumps(x,default=str); print(s,flush=True)
