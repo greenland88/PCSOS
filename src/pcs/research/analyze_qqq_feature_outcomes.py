@@ -3,14 +3,17 @@ import json
 import numpy as np
 import pandas as pd
 from pcs.data.access import PCSDataAccess
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 
-ROOT=Path('research_outputs/qqq_entry_discovery_agent_v1'); ART=ROOT/'artifacts'
+REPO_ROOT=Path(__file__).resolve().parents[3]
+ROOT=REPO_ROOT/'research_outputs/qqq_entry_discovery_agent_v1'; ART=ROOT/'artifacts'
 def main():
     outcomes=pd.read_parquet(ART/'authoritative_lifecycle_outcomes_train_2020_2023.parquet')
     outcomes.trade_date=pd.to_datetime(outcomes.trade_date).dt.normalize()
     daily=PCSDataAccess().read_prices('QQQ','2010-01-01','2023-12-31').copy(); daily.date=pd.to_datetime(daily.date).dt.normalize(); daily=daily.sort_values('date').reset_index(drop=True)
-    c=daily.close; prev=c.shift(1); tr=pd.concat([(daily.high-daily.low),(daily.high-prev).abs(),(daily.low-prev).abs()],axis=1).max(axis=1)
-    f=pd.DataFrame({'trade_date':daily.date,'close':c,'volume':daily.volume,'sma20':c.rolling(20).mean(),'sma50':c.rolling(50).mean(),'sma200':c.rolling(200).mean(),'atr14':tr.rolling(14).mean(),'ret5':c.pct_change(5),'ret10':c.pct_change(10),'ret20':c.pct_change(20),'pullback3':c/c.shift(3)-1,'pullback5':c/c.shift(5)-1,'pullback10':c/c.shift(10)-1,'realized_vol20':c.pct_change().rolling(20).std()*np.sqrt(252),'volume_ratio20':daily.volume/daily.volume.rolling(20).mean()})
+    c=daily.close; atr14=calculate_base_indicators(daily, TrendIndicatorConfig())["atr14"]
+    f=pd.DataFrame({'trade_date':daily.date,'close':c,'volume':daily.volume,'sma20':c.rolling(20).mean(),'sma50':c.rolling(50).mean(),'sma200':c.rolling(200).mean(),'atr14':atr14,'ret5':c.pct_change(5),'ret10':c.pct_change(10),'ret20':c.pct_change(20),'pullback3':c/c.shift(3)-1,'pullback5':c/c.shift(5)-1,'pullback10':c/c.shift(10)-1,'realized_vol20':c.pct_change().rolling(20).std()*np.sqrt(252),'volume_ratio20':daily.volume/daily.volume.rolling(20).mean()})
     f['close_sma50_atr']=(f.close-f.sma50)/f.atr14; f['close_sma200_atr']=(f.close-f.sma200)/f.atr14; f['drawdown60']=c/c.rolling(60).max()-1; f['atr_pct_rank']=f.atr14.rolling(252,min_periods=60).rank(pct=True); f['vol_pct_rank']=f.realized_vol20.rolling(252,min_periods=60).rank(pct=True); f['above_sma50']=f.close>f.sma50; f['above_sma200']=f.close>f.sma200
     m=outcomes.merge(f,on='trade_date',how='left'); loss=m.loc[m.realized_pnl<0,'realized_pnl']; tail_cut=loss.quantile(.10) if len(loss) else 0
     m['outcome_class']=np.select([m.realized_pnl>0,m.realized_pnl<=tail_cut,m.stop_triggered.astype(bool)],["GOOD_WIN","TAIL_LOSS","STOP_LOSS"],default="NORMAL_LOSS")
