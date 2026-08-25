@@ -1,5 +1,7 @@
 """Parquet derived storage; raw files remain authoritative."""
 from pathlib import Path
+import os
+import uuid
 import pandas as pd
 from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, option_schema_map, canonicalize_option_frame
 from .access import PCSDataAccess
@@ -38,5 +40,12 @@ def read_daily_source(path, symbol):
 def write_daily_partition(source_path, symbol, output_root):
     df = read_daily_source(source_path, symbol); paths=[]
     for year, group in df.groupby(pd.to_datetime(df.date).dt.year):
-        target=Path(output_root)/f"symbol={symbol.upper()}"/f"year={year}"; target.mkdir(parents=True,exist_ok=True); path=target/f"{symbol.upper()}_{year}.parquet"; group.to_parquet(path,index=False); paths.append((path,len(group)))
+        target=Path(output_root)/f"symbol={symbol.upper()}"/f"year={year}"; target.mkdir(parents=True,exist_ok=True); path=target/f"{symbol.upper()}_{year}.parquet"
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            group.to_parquet(tmp, index=False)
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        paths.append((path,len(group)))
     return paths
