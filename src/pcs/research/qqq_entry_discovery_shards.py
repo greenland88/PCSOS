@@ -7,7 +7,7 @@ import hashlib
 from .qqq_entry_discovery_v1 import run
 from pcs.data.access import PCSDataAccess
 
-ROOT=Path("research_outputs/qqq_entry_discovery_agent_v1")
+ROOT=Path(__file__).resolve().parents[3] / "research_outputs/qqq_entry_discovery_agent_v1"
 YEARS=range(2020,2024)
 
 def _file_digest(path: Path) -> str:
