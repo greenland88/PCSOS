@@ -154,8 +154,16 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
 def run_batch(tickers=TICKERS, output_dir="research_outputs/pcs_data_readiness"):
     out=Path(output_dir); out.mkdir(parents=True,exist_ok=True); run=uuid.uuid4().hex; results=[]
     for s in tickers:
-        r=preflight_ticker(s,run_id=run); results.append(r); (out/f"{s.lower()}.json").write_text(json.dumps(asdict(r),indent=2,default=str),encoding="utf-8")
-    rows=[{"Ticker":r.symbol,"Daily Ready":r.DATA_READY,"Options Ready":r.OPTIONS_READY,"PIT Ready":r.PIT_READY,"Contract Ready":r.CONTRACT_SELECTION_READY,"Lifecycle Ready":r.LIFECYCLE_READY,"PCS Research Ready":r.PCS_RESEARCH_READY,"Primary Blocker":r.blockers[0]["reason_code"] if r.blockers else "NONE"} for r in results]; frame=pd.DataFrame(rows); frame.to_csv(out/"PCS_TICKER_READINESS_MATRIX.csv",index=False); report="# PCS ticker readiness report\n\nInfrastructure preflight only. Strategy edge and FINAL OOS outcomes were not read.\n\n"+frame.to_markdown(index=False)+"\n\n## Blockers\n"+"\n".join(f"### {r.symbol}\n"+"\n".join(f"- `{b['stage']}` `{b['reason_code']}`: {b['detail']}" for b in r.blockers) for r in results); (out/"PCS_TICKER_READINESS_REPORT.md").write_text(report,encoding="utf-8"); return results
+        r=preflight_ticker(s,run_id=run); results.append(r); persist_ticker_readiness(r, out)
+    rows=[{"Ticker":r.symbol,"Daily Ready":r.DATA_READY,"Options Ready":r.OPTIONS_READY,"PIT Ready":r.PIT_READY,"Contract Ready":r.CONTRACT_SELECTION_READY,"Lifecycle Ready":r.LIFECYCLE_READY,"PCS Research Ready":r.PCS_RESEARCH_READY,"Primary Blocker":r.blockers[0]["reason_code"] if r.blockers else "NONE"} for r in results]; frame=pd.DataFrame(rows)
+    matrix=out/"PCS_TICKER_READINESS_MATRIX.csv"; matrix_tmp=out/f".{matrix.name}.{uuid.uuid4().hex}.tmp"
+    try: frame.to_csv(matrix_tmp,index=False); os.replace(matrix_tmp,matrix)
+    finally: matrix_tmp.unlink(missing_ok=True)
+    report_text="# PCS ticker readiness report\n\nInfrastructure preflight only. Strategy edge and FINAL OOS outcomes were not read.\n\n"+frame.to_markdown(index=False)+"\n\n## Blockers\n"+"\n".join(f"### {r.symbol}\n"+"\n".join(f"- `{b['stage']}` `{b['reason_code']}`: {b['detail']}" for b in r.blockers) for r in results)
+    report=out/"PCS_TICKER_READINESS_REPORT.md"; report_tmp=out/f".{report.name}.{uuid.uuid4().hex}.tmp"
+    try: report_tmp.write_text(report_text,encoding="utf-8"); os.replace(report_tmp,report)
+    finally: report_tmp.unlink(missing_ok=True)
+    return results
 
 def persist_ticker_readiness(result: TickerReadiness, output_dir="research_outputs/pcs_data_readiness") -> Path:
     out=Path(output_dir); out.mkdir(parents=True, exist_ok=True); path=out/f"{result.symbol.lower()}.json"
