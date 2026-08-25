@@ -211,6 +211,22 @@ class ResearchRunner:
             required = {"date", "symbol", "testable_day"}
             if not required.issubset(frame.columns) or frame.empty or not bool(frame.testable_day.all()):
                 raise RuntimeError("CLEAN_DATASET_VALIDATION_FAILED")
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+            start = pd.Timestamp(self.spec.date_range.get("start"))
+            end = pd.Timestamp(self.spec.date_range.get("end"))
+            if frame.symbol.astype(str).str.upper().ne(self.spec.ticker.upper()).any():
+                raise RuntimeError("CLEAN_DATASET_TICKER_MISMATCH")
+            if frame.date.isna().any() or (~frame.date.between(start, end)).any():
+                raise RuntimeError("CLEAN_DATASET_DATE_SCOPE_MISMATCH")
+            key_columns = [c for c in ("symbol", "date", "candidate_id", "opportunity_id") if c in frame.columns]
+            if len(key_columns) >= 2 and frame.duplicated(key_columns).any():
+                raise RuntimeError("CLEAN_DATASET_DUPLICATE_KEYS")
+            identity_column = next((c for c in ("source_data_identity", "data_version") if c in frame.columns), None)
+            if identity_column is None:
+                raise RuntimeError("CLEAN_DATASET_SOURCE_IDENTITY_MISSING")
+            current_identity = data_access.source_data_identity("daily", self.spec.ticker)
+            if frame[identity_column].astype(str).nunique() != 1 or str(frame[identity_column].iloc[0]) != current_identity:
+                raise RuntimeError("CLEAN_DATASET_SOURCE_IDENTITY_MISMATCH")
         from .current_strategy_replay import run_current_strategy_replay
         from pcs.data.price_basis import load_corporate_actions
         return run_current_strategy_replay(self.spec, data_access=data_access, output_dir=self.output_dir.parent,
