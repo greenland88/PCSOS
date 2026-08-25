@@ -36,6 +36,16 @@ def test_current_replay_default_rules_match_execution_defaults():
     assert effective_research_rules(spec)["regime_gate"] is False
 
 
+def test_artifact_dependency_resolution_distinguishes_replay_and_strategy_specs():
+    from pcs.research.runner import _research_dependencies
+    replay = validate_rule_set(validate_population_routing(from_mapping(base("CURRENT_STRATEGY_REPLAY"))))
+    deps = _research_dependencies(replay)
+    assert {"daily", "options", "events", "corporate_actions"} <= deps
+
+    from pcs.strategies.research_templates.catalog import get_strategy
+    assert _research_dependencies(get_strategy("PCS_CONTROLLED_RESET_V1")) == {"daily"}
+
+
 def test_defaults_block_final_oos_and_production():
     raw = base(); raw.pop("final_oos_access"); raw.pop("production_changes_allowed")
     result = run_spec_from_raw(raw)
