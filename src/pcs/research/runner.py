@@ -96,9 +96,12 @@ def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str, checkpoint_dir: str
         if checkpoint is None:
             return
         target = checkpoint / f"chunk_{start:08d}.json"
-        temp = target.with_suffix(".json.tmp")
-        temp.write_text(json.dumps(chunk, default=str), encoding="utf-8")
-        os.replace(temp, target)
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_text(json.dumps(chunk, default=str), encoding="utf-8")
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
 
     cached_chunks = {}
     for start, end in bounds:
@@ -265,7 +268,12 @@ class ResearchRunner:
         assert_research_output(self.output_dir / filename)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         target = self.output_dir / filename
-        target.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
         return target
 
     @staticmethod
