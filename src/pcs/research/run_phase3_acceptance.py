@@ -5,7 +5,7 @@ from pcs.research.compatibility import RANGES, STORAGE_RANGES, compatibility
 from pcs.research.backend import resolve_option_backend
 from pcs.agent import get_data_compatibility
 
-OUT=Path("research_outputs")
+OUT=Path(__file__).resolve().parents[3] / "research_outputs"
 def main():
     symbols=["QQQ","NVDA","AMZN","TSLA"]; rows=[]
     for s in symbols:
