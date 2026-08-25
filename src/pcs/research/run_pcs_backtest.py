@@ -32,6 +32,22 @@ def _write(path, rows):
         w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
 
 
+def _load_pit_window(access: PCSDataAccess, symbol: str, start: pd.Timestamp,
+                     end: pd.Timestamp, warmup_calendar_days: int = 320) -> pd.DataFrame:
+    """Load indicator warmup without expanding the executable date window.
+
+    Trend/ATR features are computed from the returned frame, while
+    ``run_backtest`` still limits candidate evaluation to ``start..end``.
+    Reading only the formal window makes the first part of a replay depend on
+    the arbitrary CLI start date.
+    """
+    warmup_start = pd.Timestamp(start).normalize() - pd.Timedelta(days=warmup_calendar_days)
+    frame = access.read_prices(symbol, warmup_start, pd.Timestamp(end).normalize())
+    frame = frame.copy()
+    frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
+    return frame.sort_values("date", kind="mergesort").drop_duplicates(["date"], keep="last").reset_index(drop=True)
+
+
 def main(argv=None):
     args = parse_args(argv); start, end = pd.Timestamp(args.start_date), pd.Timestamp(args.end_date); backend="canonical"; enforce_reliable_range(args.symbol,start,end)
     # Admission is ticker-based.  Passing the storage directory name (for
@@ -43,8 +59,8 @@ def main(argv=None):
     print(json.dumps({"backend_requested":args.backend,"backend_resolved":backend}),flush=True)
     run_dir = Path(args.output_dir) / args.run_label; run_dir.mkdir(parents=True, exist_ok=True)
     access = PCSDataAccess()
-    stock = access.read_prices(args.symbol, start, end)
-    benchmark = access.read_prices(args.benchmark, start, end)
+    stock = _load_pit_window(access, args.symbol, start, end)
+    benchmark = _load_pit_window(access, args.benchmark, start, end)
     started = time.perf_counter()
     def progress(day, processed, usable, files, _):
         print(json.dumps({"symbol": args.symbol, "current_date": str(day.date()), "processed_candidate_days": processed, "usable_trades": usable, "current_option_file": str(sorted(files)[-1]) if files else None, "elapsed_seconds": round(time.perf_counter()-started, 2)}), flush=True)
