@@ -36,10 +36,11 @@ def main():
       'TRAIN_TRADING_DAYS':len(feat), 'PIT_FEATURE_READY_DAYS':len(feat),
       'OPTION_DATA_AVAILABLE_DAYS':int(out.option_chain_available.sum()),
       'CONTRACT_SELECTED_DAYS':int(out.contract_selected.sum()),
+      'LIFECYCLE_QUOTES_ADAPTED_DAYS':int(out.lifecycle_quotes_adapted.sum()) if 'lifecycle_quotes_adapted' in out else 0,
       'LIFECYCLE_COMPLETED_DAYS':int(out.lifecycle_completed.sum())}
     for code in ['NO_OPTION_DATA','NO_DTE','NO_SAFE_STRIKE','LIQUIDITY_FAIL','CREDIT_FAIL','CONTRACT_FAIL','LIFECYCLE_FAIL']:
         counts[code]=int(out.reason_code.eq(code).sum())
-    counts.update({'module':'pcs.research.qqq_entry_discovery_v1','status':'COMPLETED','data_source':'PCS_CANONICAL_DATA','train_years':[2020,2021,2022,2023],'final_oos_read':False,'validation_read':False,'production_changes':False})
+    counts.update({'module':'pcs.research.qqq_entry_discovery_v1','status':'COMPLETED_QUOTE_ADAPTATION_ONLY','data_source':'PCS_CANONICAL_DATA','train_years':[2020,2021,2022,2023],'final_oos_read':False,'validation_read':False,'production_changes':False,'reason_codes':['QUOTE_ADAPTATION_ONLY','NO_EXIT_OR_PNL_REPLAY']})
     (ART/'broad_outcome_map_summary.json').write_text(json.dumps(counts,indent=2,default=str))
     # The current lifecycle adapter writes no P&L columns in this map; make
     # that limitation explicit instead of inventing outcome classes.
