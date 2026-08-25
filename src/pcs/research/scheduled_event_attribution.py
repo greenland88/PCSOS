@@ -43,7 +43,12 @@ def _groups(d, col):
     return pd.DataFrame(rows)
 
 def run(output_dir=OUT):
-    output_dir=Path(output_dir); d=_tag(_trades(),pd.read_csv(CAL,parse_dates=["event_date"]))
+    output_dir=Path(output_dir)
+    # Keep attribution on the same validated, source-versioned calendar as
+    # replay.  A raw read here used to bypass the calendar contract and could
+    # silently accept an unversioned or malformed event file.
+    calendar = load_calendar(CAL)
+    d=_tag(_trades(), calendar)
     r1=d[d.risk_state.eq("R1_NORMAL")]
     tables={"tagged_trades":d}
     rows=[{"group":"R1 ALL",**_stats(r1)}]
