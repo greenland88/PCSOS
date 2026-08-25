@@ -67,6 +67,18 @@ def test_artifact_read_fails_closed_on_missing_or_tampered_sidecar(tmp_path):
         a.read_artifact("test", "result.parquet", root=tmp_path)
 
 
+def test_concurrent_identical_artifact_writes_are_atomic(tmp_path):
+    frame = pd.DataFrame({"value": [1, 2, 3]})
+
+    def write(_):
+        return _access(tmp_path).write_artifact(frame, "test", "concurrent", root=tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        paths = list(pool.map(write, range(8)))
+    assert len(set(paths)) == 1
+    assert len(_access(tmp_path).read_artifact("test", "concurrent.parquet", root=tmp_path)) == 3
+
+
 def test_concurrent_manifest_updates_and_interruption(tmp_path, monkeypatch):
     def write(partition):
         _access(tmp_path).update_manifest("daily", "AAA", pd.DataFrame({"date": [f"2024-0{partition}-02"]}), f"p{partition}.parquet", "v1", f"year=2024/quarter={partition}")

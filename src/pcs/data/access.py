@@ -633,24 +633,27 @@ class PCSDataAccess:
         path = target / name
         if path.suffix != ".parquet": path = path.with_suffix(".parquet")
         semantic_hash = self.semantic_content_hash(out)
-        if path.exists():
-            if self.semantic_content_hash(pd.read_parquet(path)) == semantic_hash:
-                return path
-            raise DataQualityError(f"conflicting artifact content: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        out.to_parquet(tmp, index=False)
-        if len(pd.read_parquet(tmp)) != len(out):
-            tmp.unlink(missing_ok=True)
-            raise DataQualityError("artifact row-count verification failed")
-        os.replace(tmp, path)
-        sidecar = path.with_suffix(path.suffix + ".semantic.json")
-        side_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": created_at, "row_count": len(out)}, sort_keys=True), encoding="utf-8")
-            os.replace(side_tmp, sidecar)
-        finally:
-            side_tmp.unlink(missing_ok=True)
+        with self._file_lock(path):
+            if path.exists():
+                if self.semantic_content_hash(pd.read_parquet(path)) == semantic_hash:
+                    return path
+                raise DataQualityError(f"conflicting artifact content: {path}")
+            tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                out.to_parquet(tmp, index=False)
+                if len(pd.read_parquet(tmp)) != len(out):
+                    raise DataQualityError("artifact row-count verification failed")
+                os.replace(tmp, path)
+            finally:
+                tmp.unlink(missing_ok=True)
+            sidecar = path.with_suffix(path.suffix + ".semantic.json")
+            side_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": created_at, "row_count": len(out)}, sort_keys=True), encoding="utf-8")
+                os.replace(side_tmp, sidecar)
+            finally:
+                side_tmp.unlink(missing_ok=True)
         return path
 
     def read_artifact(self, namespace: str, name: str, root="data/parquet", filters=None) -> pd.DataFrame:
