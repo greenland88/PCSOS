@@ -661,6 +661,7 @@ class PCSDataAccess:
 
     def write_artifact(self, frame: pd.DataFrame, namespace: str, name: str, root="data/parquet", metadata=None) -> Path:
         """Persist a derived/research frame under an explicit non-canonical namespace."""
+        root = self._storage_path(root)
         metadata = metadata or {}
         out = frame.copy()
         for key, value in metadata.items(): out[key] = value
@@ -695,6 +696,7 @@ class PCSDataAccess:
         return path
 
     def read_artifact(self, namespace: str, name: str, root="data/parquet", filters=None) -> pd.DataFrame:
+        root = self._storage_path(root)
         path = Path(root) / namespace / name
         if not path.exists(): return pd.DataFrame()
         out = pd.read_parquet(path)
