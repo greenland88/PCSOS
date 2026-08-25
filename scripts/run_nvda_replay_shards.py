@@ -96,16 +96,21 @@ def run_year(year: int) -> dict:
                     candidates.append({"date": day, "ticker":"NVDA", "expiration":exp, "short_strike":float(short.strike), "long_strike":float(long.strike), "comparison_short_strike":float(short.comparison_strike), "underlying":close, "atr":atr, "factor":factor, "credit":credit, "spread_width":width})
     frame = pd.DataFrame(candidates)
     if len(frame): frame.to_parquet(target / "candidates.parquet", index=False)
-    lifecycle_completed = 0; lifecycle_failures = 0
+    quote_rows_adapted = 0; lifecycle_failures = 0
     for candidate in candidates:
         try:
             validate_lifecycle_corporate_action(candidate, registry)
             q = quotes[(quotes.trade_date >= pd.Timestamp(candidate["date"])) & (quotes.trade_date <= min(pd.Timestamp(candidate["expiration"]), pd.Timestamp(candidate["date"])+pd.Timedelta(days=20))) & quotes.expiration_date.eq(pd.Timestamp(candidate["expiration"])) & quotes.strike.isin([candidate["short_strike"],candidate["long_strike"]])]
-            build_lifecycle_quote_rows(q, {**candidate, "candidate_id": f"NVDA_{pd.Timestamp(candidate['date']).date()}_{candidate['short_strike']}"})
-            lifecycle_completed += 1
+            candidate_id = (
+                f"NVDA_{pd.Timestamp(candidate['date']).date()}_"
+                f"{pd.Timestamp(candidate['expiration']).date()}_"
+                f"{candidate['short_strike']}_{candidate['long_strike']}"
+            )
+            build_lifecycle_quote_rows(q, {**candidate, "candidate_id": candidate_id})
+            quote_rows_adapted += 1
         except LifecycleAdapterError:
             lifecycle_failures += 1
-    summary = {"year":year,"status":"COMPLETED_QUOTE_ADAPTATION_ONLY","identity":identity,"identity_inputs":identity_payload,"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"contract_candidates":len(candidates),"selected_entries":len(candidates),"lifecycles_completed":lifecycle_completed,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False}
+    summary = {"year":year,"status":"COMPLETED_QUOTE_ADAPTATION_ONLY","identity":identity,"identity_inputs":identity_payload,"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"candidate_spreads":len(candidates),"selected_entries":0,"quote_rows_adapted":quote_rows_adapted,"lifecycles_completed":0,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False,"execution_semantics":"quote_adaptation_only_no_lifecycle_exit_or_pnl"}
     marker.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     return summary
 
