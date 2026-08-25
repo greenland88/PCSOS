@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from .access import PCSDataAccess, DataQualityError
+from .access import PCSDataAccess, DataAccessError, DataQualityError
 from .daily_provider import normalize_daily_frame
 
 
@@ -124,8 +124,18 @@ def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="d
         incoming["symbol"] = symbol
     incoming["symbol"] = incoming["symbol"].astype(str).str.upper()
     access = PCSDataAccess(manifest_path=manifest_path, parquet_root=parquet_root)
-    resolved = access.resolve_source("options", symbol)
-    physical_dataset = resolved.dataset
+    try:
+        resolved = access.resolve_source("options", symbol)
+        physical_dataset = resolved.dataset
+    except DataAccessError:
+        # A new isolated onboarding store has no manifest row yet. Reserve
+        # the canonical v2 physical layout and let the first atomic write
+        # establish its validated manifest identity; production logical
+        # routes remain fail-closed in PCSDataAccess.
+        if Path(manifest_path) != Path("data/manifests/storage_manifest.csv"):
+            physical_dataset = "options_v2"
+        else:
+            raise
     incoming = access.validate_schema(incoming, "options")
     if set(incoming.symbol) - {symbol}:
         raise DataQualityError(f"ticker isolation failure for {symbol}")

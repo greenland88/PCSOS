@@ -14,6 +14,12 @@ validation, manifest update, route activation, canonical readiness, contract
 smoke, lifecycle smoke, and research readiness. Normal progression does not
 require an agent to start the next stage.
 
+The default ClickHouse overlap adapter uses `CLICKHOUSE_URL`,
+`CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, and optionally
+`PCS_CLICKHOUSE_TABLE` (default `firstrate.options_kline_1d`). Missing
+credentials are persisted as a typed external blocker rather than silently
+skipping overlap validation.
+
 State is stored at `data/onboarding/<SYMBOL>/state.json` by default. Every
 stage transition is written atomically and records the current stage, status,
 attempt count, shard/row counters, source metadata, failure taxonomy, reason

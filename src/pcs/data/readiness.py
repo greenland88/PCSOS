@@ -101,7 +101,11 @@ def discover_lifecycle_smoke_case(
             if entry_credit <= 0:
                 continue
             pair = q[(q.expiration_date == expiry) & q.strike.isin([short.strike, long.strike]) & (q.trade_date >= day)]
-            downstream = pair.groupby("trade_date").filter(lambda g: set(g.strike) == {short.strike, long.strike}).trade_date.nunique()
+            # Count complete two-leg quote dates with a vectorized groupby;
+            # the previous Python callback scanned each group repeatedly on
+            # dense historical chains and made the read-only smoke gate
+            # unbounded in practice.
+            downstream = int(pair.groupby("trade_date")["strike"].nunique().ge(2).sum())
             if downstream < 2:
                 continue
             case = LifecycleSmokeCase(str(ticker).upper(), str(day.date()), str(expiry.date()), float(short.strike), float(long.strike), float(short.strike-long.strike), entry_credit, int(downstream))

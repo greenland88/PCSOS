@@ -304,7 +304,7 @@ def _atomic_json(path: Path, value: dict) -> None:
     os.replace(tmp, path)
 
 
-def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, routes_path: str | Path = "config/data_source_routes.yaml", activate_route: bool = True) -> OnboardingResult:
+def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 4, resume: bool = True, checkpoint_root: str | Path | None = None, routes_path: str | Path = "config/data_source_routes.yaml", activate_route: bool = True) -> OnboardingResult:
     """Generic partition-checkpointed onboarding with fail-closed activation.
 
     Workers only validate/build physical partitions. Manifest/provenance and route
@@ -362,7 +362,7 @@ def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clic
     return OnboardingResult(symbol, "READY", len(required), rows_written, records, [], message)
 
 
-def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, daily_frame: pd.DataFrame | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> GenericOnboardingResult:
+def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 4, resume: bool = True, checkpoint_root: str | Path | None = None, daily_frame: pd.DataFrame | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> GenericOnboardingResult:
     """Run generic canonical onboarding through the universal readiness gate."""
     if daily_frame is not None:
         from .incremental_update import update_ticker
@@ -418,7 +418,17 @@ def run_system_onboarding(symbol: str, *, adapter: HistoricalTxtZipAdapter, acce
                                    manifest_path=access.manifest_path, options_manifest_path=access.manifest_path,
                                    source_version="onboarding-daily")
             return StageResult("PASS", metrics=result)
-        return StageResult("PASS", metrics={"status": "REUSED_CANONICAL_DAILY"})
+        try:
+            daily = access.read_prices(symbol)
+        except Exception as exc:
+            return StageResult("FAIL", FailureType.NON_RECOVERABLE_EXTERNAL,
+                               f"canonical daily source unavailable: {exc}", reason_codes=["DAILY_SOURCE_UNAVAILABLE"])
+        if daily.empty:
+            return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE,
+                               "canonical daily source is empty", reason_codes=["DAILY_EMPTY"])
+        dates = pd.to_datetime(daily["date"], errors="coerce")
+        return StageResult("PASS", metrics={"status": "REUSED_CANONICAL_DAILY", "rows": len(daily),
+                                              "min_date": str(dates.min().date()), "max_date": str(dates.max().date())})
 
     def options(state):
         result = onboard_ticker_incremental(symbol, discovered, clickhouse_loader, adapter=adapter, access=access,

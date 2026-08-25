@@ -90,12 +90,6 @@ class PCSDataAccess:
                 manifest = self._read_manifest(self.manifest_path)
                 if not manifest.empty and "dataset" in manifest and manifest.dataset.astype(str).str.startswith("options_").any():
                     dataset = str(manifest.loc[manifest.dataset.astype(str).str.startswith("options_"), "dataset"].iloc[0])
-                else:
-                    # Explicit isolated option stores use the canonical v2
-                    # physical layout even before their first manifest row is
-                    # written. This keeps incremental onboarding resumable
-                    # without weakening production route resolution.
-                    dataset = "options_v2"
             return dataset, self.manifest_path, self.parquet_root
         # ``options`` is the logical name and resolves through the configured
         # per-ticker route. Physical dataset names are an internal routing
@@ -303,6 +297,13 @@ class PCSDataAccess:
             if requested_periods is not None:
                 active_files = [p for p in active_files if p.parent.parent.name.startswith("year=") and
                                 pd.Period(f"{p.parent.parent.name.split('=', 1)[1]}Q{p.parent.name.split('=', 1)[1]}") in requested_periods]
+                # A manifest row cannot make an ambiguous physical partition
+                # safe. Reject multiple direct files before any manifest
+                # preference is applied; recursive descendants are excluded.
+                for period in requested_periods:
+                    direct = sorted((symbol_root / f"year={period.year}" / f"quarter={period.quarter}").glob("*.parquet"))
+                    if len(direct) > 1:
+                        raise DataQualityError(f"multiple active option files for {symbol} {period}")
             # Prefer manifest-listed physical files for the requested
             # partitions when the manifest provides a complete, existing set.
             manifest_files: list[Path] = []

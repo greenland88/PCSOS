@@ -1,5 +1,7 @@
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 import pandas as pd
 
@@ -93,13 +95,42 @@ def onboard(args):
     from pcs.data.access import PCSDataAccess
     from pcs.data.onboarding import HistoricalTxtZipAdapter, run_system_onboarding
     periods = [(int(item.split("-", 1)[0]), int(item.split("-", 1)[1])) for item in args.period] if args.period else None
+    def clickhouse_loader(symbol, year, quarter):
+        from pcs.data.clickhouse import PCSClickHouseClient
+        url = os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/")
+        user = os.getenv("CLICKHOUSE_USER", "hisdata230")
+        password = os.getenv("CLICKHOUSE_PASSWORD")
+        if not password:
+            raise RuntimeError("NON_RECOVERABLE_EXTERNAL:CLICKHOUSE_PASSWORD_NOT_CONFIGURED")
+        table = os.getenv("PCS_CLICKHOUSE_TABLE", "firstrate.options_kline_1d")
+        select = "Symbol AS symbol, TradeDate AS trade_date, ExpiryDate AS expiration_date, Strike AS strike, CallPut AS call_put, LastTradePrice AS last, BidPrice AS bid, AskPrice AS ask, BidImpliedVolatilities AS bid_iv, AskImpliedVolatilities AS ask_iv, OpenInterest AS open_interest, Volume AS volume, Delta AS delta, Gamma AS gamma, Vega AS vega, Theta AS theta, Rho AS rho"
+        escaped = str(symbol).replace("'", "''")
+        sql = (f"SELECT {select} FROM {table} WHERE Symbol = '{escaped}' "
+               f"AND toYear(TradeDate) = {int(year)} AND toQuarter(TradeDate) = {int(quarter)} "
+               "FORMAT Parquet")
+        with tempfile.TemporaryDirectory(prefix="pcs_onboard_ch_") as temp:
+            output = Path(temp) / "quotes.parquet"
+            PCSClickHouseClient(url, user, password).query(sql, ticker=symbol, partition=f"{year}Q{quarter}", output=output)
+            return pd.read_parquet(output)
+
     result = run_system_onboarding(
-        args.symbol, periods=periods, clickhouse_loader=lambda *_: pd.DataFrame(),
+        args.symbol, periods=periods, clickhouse_loader=clickhouse_loader,
         adapter=HistoricalTxtZipAdapter(args.source_root),
         access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
         workers=args.workers, state_root=args.state_root, routes_path=args.routes_path,
     )
     print(json.dumps(result, sort_keys=True, default=str))
+
+
+def readiness(args):
+    from pcs.data.access import PCSDataAccess
+    from pcs.research.ticker_readiness import preflight_ticker
+    result = preflight_ticker(args.symbol, access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root))
+    print(json.dumps(result.to_dict(), sort_keys=True, default=str))
+
+
+def onboarding_status(args):
+    print(json.dumps(OnboardingEngine(args.symbol, args.state_root).progress(), sort_keys=True, default=str))
 
 
 def main():
@@ -160,6 +191,17 @@ def main():
     onboard_cmd.add_argument("--state-root", default="data/onboarding")
     onboard_cmd.add_argument("--workers", type=int, default=4)
     onboard_cmd.set_defaults(func=onboard)
+
+    ready_cmd = sub.add_parser("readiness", help="run the canonical ticker readiness gate")
+    ready_cmd.add_argument("symbol")
+    ready_cmd.add_argument("--parquet-root", default="data/parquet")
+    ready_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    ready_cmd.set_defaults(func=readiness)
+
+    status_cmd = sub.add_parser("onboarding-status", help="inspect persisted onboarding progress")
+    status_cmd.add_argument("symbol")
+    status_cmd.add_argument("--state-root", default="data/onboarding")
+    status_cmd.set_defaults(func=onboarding_status)
 
     args = parser.parse_args()
     args.func(args)

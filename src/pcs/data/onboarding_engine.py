@@ -123,8 +123,13 @@ class OnboardingEngine:
             if handler is None:
                 return self._fail(state, stage, FailureType.RECOVERABLE_ENGINEERING, "missing stage handler")
             state.stage = stage.value
+            stage_started = time.perf_counter()
             result = self._execute(handler, state, stage)
-            state.metrics[stage.value] = result.metrics
+            state.metrics[stage.value] = {
+                **result.metrics,
+                "elapsed_seconds": round(time.perf_counter() - stage_started, 6),
+                "attempts": state.attempts.get(stage.value, 0),
+            }
             state.reason_codes = result.reason_codes
             if result.status.upper() != "PASS":
                 return self._fail(state, stage, result.failure_type or FailureType.RECOVERABLE_ENGINEERING, result.failure_reason or "stage failed")
@@ -137,6 +142,19 @@ class OnboardingEngine:
         self.persist(state)
         return state
 
+    def progress(self) -> dict[str, Any]:
+        """Return machine-readable persisted progress for status UIs/agents."""
+        state = self.load()
+        current = state.metrics.get(state.stage, {})
+        return {
+            "symbol": state.symbol, "stage": state.stage, "status": state.status,
+            "shards": {"complete": state.shards_complete, "total": state.shards_total},
+            "rows": {"processed": state.rows_processed, "written": state.rows_written},
+            "duplicates": state.duplicate_count, "conflicts": state.conflict_count,
+            "failure_type": state.failure_type, "failure_reason": state.failure_reason,
+            "current_metrics": current, "attempts": state.attempts,
+        }
+
     def _execute(self, handler: Callable[[OnboardingState], StageResult], state: OnboardingState, stage: OnboardingStage) -> StageResult:
         attempts = state.attempts.get(stage.value, 0)
         while True:
@@ -146,7 +164,9 @@ class OnboardingEngine:
             try:
                 result = handler(state)
             except Exception as exc:  # stage adapters classify expected failures explicitly
-                result = StageResult("FAIL", FailureType.RECOVERABLE_ENGINEERING, str(exc))
+                detail = str(exc)
+                failure = next((candidate for candidate in FailureType if detail.startswith(f"{candidate.value}:")), FailureType.RECOVERABLE_ENGINEERING)
+                result = StageResult("FAIL", failure, detail)
             if result.status.upper() == "PASS" or result.failure_type != FailureType.RETRYABLE_EXTERNAL or attempts > self.max_retries:
                 return result
             if self.backoff_seconds:
