@@ -14,7 +14,8 @@ import pandas as pd
 from pcs.data.access import PCSDataAccess
 from pcs.research.credit_stop import load_spread_quotes_canonical, run_backtest
 
-OUT = Path("research_outputs/spy_qqq_pcs_baseline_20260821")
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "research_outputs/spy_qqq_pcs_baseline_20260821"
 START = pd.Timestamp("2020-01-02")
 END = pd.Timestamp("2026-08-18")
 SYMBOLS = ("SPY", "QQQ")
@@ -35,7 +36,7 @@ def _candidate_id(symbol: str, row: dict) -> str:
 
 
 def _market_confirmation() -> pd.DataFrame:
-    path = Path("data/derived/market_confirmation_daily.parquet")
+    path = ROOT / "data/derived/market_confirmation_daily.parquet"
     frame = pd.read_parquet(path)
     frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
     return frame
@@ -124,7 +125,7 @@ def main() -> None:
         stock = _daily(symbol)
         result = run_backtest(
             stock, _daily("QQQ"), option_root=f"data/parquet/options_monthly/{symbol}",
-            start=START, end=END, backend="duckdb", duckdb_path=":memory:",
+            start=START, end=END, backend="canonical",
         )
         contracts = [_entry_contract(symbol, row, confirmation) for row in result["trades"]]
         for contract, row in zip(contracts, result["trades"]):
