@@ -66,3 +66,21 @@ def compare_general_pcs_replays(ticker: str, *, output_dir: str = "research_outp
     out = root / ticker.lower() / "fixed_vs_adaptive_replay_comparison.json"
     out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report
+
+
+def write_overall_general_pcs_report(tickers: tuple[str, ...] = ("META", "NVDA"), *, output_dir: str = "research_outputs/general_pcs_comparison") -> dict:
+    """Persist the cross-ticker diagnostic without selecting parameters by P&L."""
+    root = Path(output_dir)
+    ticker_reports = {ticker: json.loads((root / ticker.lower() / "fixed_vs_adaptive_replay_comparison.json").read_text(encoding="utf-8")) for ticker in tickers}
+    signal_changes = {ticker: report.get("signal_diff", {}) for ticker, report in ticker_reports.items()}
+    report = {"module": "pcs.research.general_pcs_comparison", "version": "1.0",
+              "tickers": ticker_reports, "signal_changes": signal_changes,
+              "classification": "ADAPTIVE_OVERFIT_RISK",
+              "classification_basis": ["adaptive changes signal dates on both tickers", "lifecycle outcomes are not consistently improved across tickers or archetypes", "no P&L was used to resolve parameters", "QQQ was excluded because canonical options readiness is blocked"],
+              "implementation_notes": {"active_fields": ["momentum_window_days", "recovery_window_days", "pullback_depth", "volume_ratio_floor"],
+                                       "descriptive_only_fields": ["realized_volatility", "trend_persistence", "option_quote_coverage"],
+                                       "frozen_execution_fields": ["dte_min", "dte_max", "safe_strike_atr", "min_credit_width"],
+                                       "pit_resolution": "20-session checkpoint cadence with forward carry of already-known configs", "parameter_selection_input": "ticker behavior only; no P&L/outcomes"},
+              "controls": {"final_oos_read": False, "production_change": False, "strategy_thresholds_changed": False}}
+    (root / "overall_comparison.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    return report
