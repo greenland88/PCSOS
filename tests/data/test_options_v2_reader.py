@@ -52,3 +52,22 @@ def test_multiple_active_files_fail_clearly(tmp_path):
     manifest = tmp_path / "manifest.csv"; _manifest(manifest, part / "a.parquet")
     with pytest.raises(DataQualityError, match="multiple active option files"):
         PCSDataAccess(source_routes=_routes(manifest, root)).resolve_source("options", "QQQ", "2026-08-03", "2026-08-03")
+
+
+def test_manifest_driven_v2_route_without_symbol_override(tmp_path):
+    root = tmp_path / "data"
+    good = root / "options_v2" / "symbol=META" / "year=2026" / "quarter=3" / "meta.parquet"
+    good.parent.mkdir(parents=True)
+    frame = _frame("META")
+    frame.to_parquet(good, index=False)
+    manifest = tmp_path / "manifest.csv"
+    pd.DataFrame([{
+        "dataset": "options_v2", "symbol": "META", "source_file": "fixture",
+        "row_count": 1, "min_date": "2026-08-03", "max_date": "2026-08-03",
+        "year": 2026, "quarter": 3, "parquet_path": str(good),
+        "schema_version": 1, "status": "SUCCESS",
+    }]).to_csv(manifest, index=False)
+    access = PCSDataAccess(manifest_path=manifest, parquet_root=root)
+    resolved = access.resolve_source("options_v2", "META")
+    assert resolved.dataset == "options_v2"
+    assert access.read("options_v2", "META", "2026-08-03", "2026-08-03").shape[0] == 1

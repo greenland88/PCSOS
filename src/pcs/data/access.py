@@ -9,7 +9,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import csv
-import glob
 import os
 import uuid
 import json
@@ -51,33 +50,16 @@ class SourceSpec:
 class PCSDataAccess:
     """Canonical read/write API for market data and persisted PCS artifacts."""
 
-    def __init__(self, manifest_path=None, parquet_root=None, source_routes_path="config/data_source_routes.yaml", source_routes=None, data_root=None):
-        """Create the canonical data boundary.
-
-        ``data_root`` (or ``PCS_CANONICAL_DATA_ROOT``) makes the storage root
-        explicit for runners launched outside the repository root. Explicit
-        manifest/parquet paths still take precedence for isolated fixtures.
-        """
-        configured_root = data_root or os.environ.get("PCS_CANONICAL_DATA_ROOT")
-        repo_root = Path(__file__).resolve().parents[3]
-        self.data_root = (Path(configured_root).expanduser().resolve()
-                          if configured_root else repo_root / "data")
-        self._uses_default_store = manifest_path is None and parquet_root is None
-        self.manifest_path = Path(manifest_path) if manifest_path is not None else self.data_root / "manifests" / "storage_manifest.csv"
+    def __init__(self, manifest_path="data/manifests/storage_manifest.csv", parquet_root="data/parquet", source_routes_path="config/data_source_routes.yaml", source_routes=None):
+        self.manifest_path = Path(manifest_path)
         self.provenance_manifest_path = self.manifest_path.with_name("data_provenance_manifest.csv")
-        self.parquet_root = Path(parquet_root) if parquet_root is not None else self.data_root / "parquet"
+        self.parquet_root = Path(parquet_root)
         self._manifest = pd.read_csv(self.manifest_path) if self.manifest_path.exists() else pd.DataFrame()
-        if source_routes_path:
-            route_path = Path(source_routes_path).expanduser()
-            if not route_path.is_absolute() and str(source_routes_path).replace("\\", "/") == "config/data_source_routes.yaml":
-                route_path = repo_root / route_path
-            self.source_routes_path = route_path.resolve()
-        else:
-            self.source_routes_path = None
+        self.source_routes_path = Path(source_routes_path) if source_routes_path else None
         self.source_routes = source_routes if source_routes is not None else self._load_source_routes(self.source_routes_path)
         metadata_path = self.manifest_path.with_name("price_basis_metadata.csv")
-        if not metadata_path.exists() and self._uses_default_store:
-            metadata_path = self.data_root / "manifests" / "price_basis_metadata.csv"
+        if not metadata_path.exists() and self.manifest_path.parent == Path("data/manifests"):
+            metadata_path = Path("data/manifests/price_basis_metadata.csv")
         self._price_basis_metadata = pd.read_csv(metadata_path) if metadata_path.exists() else pd.DataFrame()
 
     def get_price_basis(self, dataset: str, symbol: str) -> dict[str, Any]:
@@ -99,21 +81,11 @@ class PCSDataAccess:
         with path.open("r", encoding="utf-8") as handle:
             return yaml.safe_load(handle) or {}
 
-    def _storage_path(self, value: str | Path) -> Path:
-        """Resolve configured ``data/...`` routes under the active data root."""
-        path = Path(value)
-        if path.is_absolute() or not self._uses_default_store:
-            return path
-        parts = path.parts
-        if parts and parts[0].lower() == "data":
-            return self.data_root.joinpath(*parts[1:])
-        return path
-
     def _resolve_route(self, dataset: str, symbol: str) -> tuple[str, Path, Path]:
         # Explicit manifests are isolated stores (tests, fixtures, or
         # caller-provided datasets); production per-ticker routes must not
         # redirect them.
-        if not self._uses_default_store:
+        if self.manifest_path != Path("data/manifests/storage_manifest.csv"):
             if dataset == "options":
                 manifest = self._read_manifest(self.manifest_path)
                 if not manifest.empty and "dataset" in manifest and manifest.dataset.astype(str).str.startswith("options_").any():
@@ -134,19 +106,37 @@ class PCSDataAccess:
             routes = self.source_routes.get(route_dataset, {}).get("by_symbol", {})
         route = routes.get(self._symbol(symbol), {})
         if dataset in {"options", "options_v2", "options_v3"} and not route:
+            # Canonical v2 is manifest-driven by default.  Keep explicit
+            # routes for true dataset/version exceptions (for example v3),
+            # but do not require a hand-written ticker entry when the ticker
+            # is already present in the active canonical v2 manifest.
+            if dataset == "options_v2":
+                candidates = [self.manifest_path]
+                if self.manifest_path == Path("data/manifests/storage_manifest.csv"):
+                    candidates.extend([
+                        Path("data/manifests/storage_manifest_options_v2.csv"),
+                        Path("data/manifests/storage_manifest_v2.csv"),
+                    ])
+                for candidate_manifest in candidates:
+                    manifest = self._read_manifest(candidate_manifest)
+                    if manifest.empty or "dataset" not in manifest.columns:
+                        continue
+                    found = manifest[
+                        manifest.dataset.astype(str).eq("options_v2")
+                        & manifest.symbol.astype(str).str.upper().eq(self._symbol(symbol))
+                        & manifest.status.astype(str).str.upper().eq("SUCCESS")
+                    ]
+                    if not found.empty:
+                        return "options_v2", candidate_manifest, self.parquet_root
             raise DataAccessError(
                 f"canonical route unavailable: requested_dataset={dataset} "
-                f"symbol={self._symbol(symbol)} legacy_fallback_used=NO"
-            )
-        if dataset in {"options_v2", "options_v3"} and str(route.get("dataset", "")).strip() != dataset:
-            raise DataAccessError(
-                f"canonical route dataset mismatch: requested_dataset={dataset} "
-                f"resolved_dataset={route.get('dataset')} symbol={self._symbol(symbol)}"
+                f"symbol={self._symbol(symbol)} legacy_fallback_used=NO "
+                f"reason=DATA_NOT_INGESTED_OR_CANONICAL_MANIFEST_MISSING"
             )
         return (
             str(route.get("dataset", dataset)),
-            self._storage_path(route.get("manifest_path", self.manifest_path)),
-            self._storage_path(route.get("parquet_root", self.parquet_root)),
+            Path(route.get("manifest_path", self.manifest_path)),
+            Path(route.get("parquet_root", self.parquet_root)),
         )
 
     @staticmethod
@@ -250,7 +240,7 @@ class PCSDataAccess:
         # recorded in the migration manifest before they are folded into the
         # compact storage manifest.  Resolve that manifest generically by
         # ticker; never guess a ticker-specific path or bypass PCSDataAccess.
-        if rows.empty and resolved_dataset == "daily" and self._uses_default_store:
+        if rows.empty and resolved_dataset == "daily" and self.manifest_path == Path("data/manifests/storage_manifest.csv"):
             migration_path = self.manifest_path.with_name("daily_universe_migration.csv")
             migration = self._read_manifest(migration_path)
             migrated = migration[
@@ -319,7 +309,7 @@ class PCSDataAccess:
                 for raw_path in rows.parquet_path.dropna().astype(str):
                     candidate = Path(raw_path)
                     if not candidate.is_absolute():
-                        candidate = self._storage_path(candidate)
+                        candidate = Path.cwd() / candidate
                     if candidate.exists() and candidate.suffix == ".parquet":
                         manifest_files.append(candidate)
                 if manifest_files and requested_periods is not None:
@@ -337,38 +327,6 @@ class PCSDataAccess:
             path = parquet_root / resolved_dataset / f"symbol={symbol}" / "**" / "*.parquet"
         schema = rows.schema_version.iloc[0] if "schema_version" in rows else "1"
         return SourceSpec(resolved_dataset, symbol, "partitioned_parquet", str(path).replace("\\", "/"), str(lo.date()), str(hi.date()), int(rows.row_count.sum()), f"storage_manifest_v1:{manifest_path}", str(schema))
-
-    def source_data_identity(self, dataset: str, symbol: str) -> str:
-        """Return a deterministic identity for the active canonical input."""
-        resolved_dataset, manifest_path, _ = self._resolve_route(dataset, symbol)
-        spec = self.resolve_source(dataset, symbol)
-        manifest = self._manifest if manifest_path == self.manifest_path else self._read_manifest(manifest_path)
-        rows = manifest[
-            manifest.get("dataset", pd.Series(dtype=str)).astype(str).eq(resolved_dataset)
-            & manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(str(symbol).upper())
-        ]
-        files = spec.path.split(";") if ";" in spec.path else [spec.path]
-        physical = []
-        for raw in files:
-            # SourceSpec paths may be relative (the default store deliberately
-            # uses repository-relative ``data/...`` paths).  Resolve them
-            # through the same active data-root mapping used by route
-            # resolution; Path().glob(raw) would make identity depend on the
-            # caller's current working directory.
-            raw_path = self._storage_path(raw)
-            if any(ch in raw for ch in "*?["):
-                matches = [Path(value) for value in glob.glob(str(raw_path), recursive=True)]
-            else:
-                matches = [raw_path]
-            for path in sorted(matches):
-                if path.is_file():
-                    digest = hashlib.sha256()
-                    with path.open("rb") as handle:
-                        for block in iter(lambda: handle.read(1024 * 1024), b""):
-                            digest.update(block)
-                    physical.append({"path": str(path), "sha256": digest.hexdigest()})
-        payload = {"spec": spec.to_dict(), "manifest": rows.sort_index(axis=1).to_dict("records"), "physical": physical}
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
 
     def validate_schema(self, frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
         is_options = dataset == "options" or dataset.startswith("options")
@@ -396,11 +354,7 @@ class PCSDataAccess:
                 conflicting = dup.groupby(key, dropna=False)[quote].nunique(dropna=False).max(axis=1).gt(1)
                 if conflicting.any():
                     raise DataQualityError(f"ambiguous option quote keys: {int(conflicting.sum())}")
-                # Identical rows can arise when overlapping canonical
-                # partitions are read during an incremental refresh.  They
-                # are safe to coalesce deterministically; conflicting
-                # payloads remain a hard failure above.
-                out = out.drop_duplicates(key, keep="first").reset_index(drop=True)
+                raise DataQualityError(f"duplicate option keys: {int(len(dup))}")
         return out
 
     def validate_coverage(self, frame: pd.DataFrame, symbol: str, start_date=None, end_date=None, date_column="trade_date") -> None:
@@ -454,7 +408,7 @@ class PCSDataAccess:
             out = out[out.strike.isin([float(x) for x in strikes])]
         return out.reset_index(drop=True)
 
-    def audit_options_quality(self, symbol: str) -> dict[str, Any]:
+    def audit_options_quality(self, symbol: str, start_date=None) -> dict[str, Any]:
         """Bounded canonical options audit without materializing full history.
 
         This is the readiness path for large option populations. It scans the
@@ -490,10 +444,12 @@ class PCSDataAccess:
         # grouped-key cross join; both remain bounded and scan-only.
         con = duckdb.connect()
         try:
-            gsql = f"""WITH raw AS ({relations}) SELECT coalesce(sum(CASE WHEN n>1 THEN n ELSE 0 END),0) duplicate_rows, coalesce(count(CASE WHEN n>1 THEN 1 END),0) duplicate_keys, coalesce(count(CASE WHEN n>1 AND versions>1 THEN 1 END),0) conflicting_keys, coalesce(count(CASE WHEN n>1 AND versions=1 THEN 1 END),0) identical_keys FROM (SELECT symbol,trade_date,expiration_date,call_put,strike,count(*) n,count(DISTINCT {hash_expr}) versions FROM raw WHERE symbol=? GROUP BY ALL)"""
-            qsql = f"""WITH raw AS ({relations}) SELECT count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows FROM raw WHERE symbol=?"""
-            g = con.execute(gsql, files + [str(symbol).upper()]).fetchone()
-            q = con.execute(qsql, files + [str(symbol).upper()]).fetchone()
+            date_clause = " AND trade_date >= ?" if start_date is not None else ""
+            params = files + [str(symbol).upper()] + ([pd.Timestamp(start_date).date()] if start_date is not None else [])
+            gsql = f"""WITH raw AS ({relations}) SELECT coalesce(sum(CASE WHEN n>1 THEN n ELSE 0 END),0) duplicate_rows, coalesce(count(CASE WHEN n>1 THEN 1 END),0) duplicate_keys, coalesce(count(CASE WHEN n>1 AND versions>1 THEN 1 END),0) conflicting_keys, coalesce(count(CASE WHEN n>1 AND versions=1 THEN 1 END),0) identical_keys FROM (SELECT symbol,trade_date,expiration_date,call_put,strike,count(*) n,count(DISTINCT {hash_expr}) versions FROM raw WHERE symbol=?{date_clause} GROUP BY ALL)"""
+            qsql = f"""WITH raw AS ({relations}) SELECT count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows FROM raw WHERE symbol=?{date_clause}"""
+            g = con.execute(gsql, params).fetchone()
+            q = con.execute(qsql, params).fetchone()
         finally:
             con.close()
         return {"duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[0]), "valid_30_45_dte_quote_rows": int(q[1]), "valid_30_45_dte_expiration_rows": int(q[2]), "valid_30_45_dte_strike_rows": int(q[3])}
@@ -504,24 +460,18 @@ class PCSDataAccess:
             return pd.DataFrame(columns=columns or [])
         normalized = [(pd.Timestamp(a).date(), pd.Timestamp(b).date()) for a, b in windows]
         spec = self.resolve_source("options", symbol, min(a for a, _ in normalized), max(b for _, b in normalized))
-        requested_columns = list(columns) if columns is not None else None
-        if requested_columns and not set(requested_columns).issubset(set(OPTION_FIELDS)):
-            raise DataQualityError("OPTIONS_COLUMN_PROJECTION_INVALID")
+        selected = columns or list(OPTION_FIELDS)
         predicates = " OR ".join(["(trade_date BETWEEN ? AND ?)"] * len(normalized))
         params: list[Any] = [spec.path.split(";") if ";" in spec.path else spec.path, spec.symbol]
         for a, b in normalized: params.extend([a, b])
         con = duckdb.connect()
         try:
-            parquet_input = spec.path.split(";") if ";" in spec.path else [spec.path]
-            relations = " UNION ALL ".join(["SELECT * FROM read_parquet(?)"] * len(parquet_input))
-            query_params = parquet_input + [spec.symbol]
-            query_params.extend([v for pair in normalized for v in pair])
-            out = con.execute(f"SELECT * FROM ({relations}) AS canonical_rows WHERE symbol=? AND ({predicates})", query_params).fetchdf()
+            out = con.execute(f"SELECT {', '.join(selected)} FROM read_parquet(?, hive_partitioning=true) WHERE symbol=? AND ({predicates})", params).fetchdf()
         finally:
             con.close()
         self.validate_coverage(out, spec.symbol, min(a for a, _ in normalized), max(b for _, b in normalized), "trade_date")
         out = self.validate_schema(out, spec.dataset)
-        return out[requested_columns] if requested_columns is not None else out
+        return out
 
     def read_partition(self, dataset: str, symbol: str, partition: str, filename: str | None = None) -> pd.DataFrame:
         """Read one physical partition through the data-access boundary."""
@@ -551,33 +501,9 @@ class PCSDataAccess:
         if len(verify) != len(checked):
             tmp.unlink(missing_ok=True)
             raise DataQualityError("row-count verification failed after write")
-        previous_parquet = path.read_bytes() if path.exists() else None
-        previous_manifest = self.manifest_path.read_bytes() if update_manifest and self.manifest_path.exists() else None
-        try:
-            os.replace(tmp, path)
-            if update_manifest:
-                self.update_manifest(dataset, symbol, checked, path, source_version, partition, replace_existing=replace_manifest)
-        except Exception:
-            # Restore both sides of the logical commit.  This keeps a failed
-            # write from exposing a parquet partition that the manifest does
-            # not describe (or vice versa).
-            restore_tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.rollback")
-            if previous_parquet is None:
-                path.unlink(missing_ok=True)
-            else:
-                restore_tmp.write_bytes(previous_parquet)
-                os.replace(restore_tmp, path)
-            if update_manifest:
-                if previous_manifest is None:
-                    self.manifest_path.unlink(missing_ok=True)
-                else:
-                    manifest_tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.rollback")
-                    manifest_tmp.write_bytes(previous_manifest)
-                    os.replace(manifest_tmp, self.manifest_path)
-                self._manifest = pd.read_csv(self.manifest_path) if self.manifest_path.exists() else pd.DataFrame()
-            raise
-        finally:
-            tmp.unlink(missing_ok=True)
+        os.replace(tmp, path)
+        if update_manifest:
+            self.update_manifest(dataset, symbol, checked, path, source_version, partition, replace_existing=replace_manifest)
         return path
 
     def append(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str) -> Path:
@@ -666,7 +592,6 @@ class PCSDataAccess:
 
     def write_artifact(self, frame: pd.DataFrame, namespace: str, name: str, root="data/parquet", metadata=None) -> Path:
         """Persist a derived/research frame under an explicit non-canonical namespace."""
-        root = self._storage_path(root)
         metadata = metadata or {}
         out = frame.copy()
         for key, value in metadata.items(): out[key] = value
@@ -677,61 +602,58 @@ class PCSDataAccess:
         path = target / name
         if path.suffix != ".parquet": path = path.with_suffix(".parquet")
         semantic_hash = self.semantic_content_hash(out)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with self._file_lock(path):
-            if path.exists():
-                existing = pd.read_parquet(path)
-                if self.semantic_content_hash(existing) == semantic_hash:
-                    sidecar = path.with_suffix(path.suffix + ".semantic.json")
-                    valid_sidecar = False
-                    if sidecar.is_file():
-                        try:
-                            saved = json.loads(sidecar.read_text(encoding="utf-8"))
-                            valid_sidecar = (saved.get("semantic_hash") == semantic_hash
-                                             and int(saved.get("row_count", -1)) == len(existing))
-                        except (OSError, ValueError, TypeError):
-                            valid_sidecar = False
-                    if not valid_sidecar:
-                        side_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
-                        try:
-                            side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": created_at, "row_count": len(existing)}, sort_keys=True), encoding="utf-8")
-                            os.replace(side_tmp, sidecar)
-                        finally:
-                            side_tmp.unlink(missing_ok=True)
-                    return path
-                raise DataQualityError(f"conflicting artifact content: {path}")
-            tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-            try:
-                out.to_parquet(tmp, index=False)
-                if len(pd.read_parquet(tmp)) != len(out):
-                    raise DataQualityError("artifact row-count verification failed")
-                os.replace(tmp, path)
-            finally:
-                tmp.unlink(missing_ok=True)
-            sidecar = path.with_suffix(path.suffix + ".semantic.json")
+        sidecar = path.with_suffix(path.suffix + ".semantic.json")
+
+        def write_sidecar(sidecar_created_at: str) -> None:
             side_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
             try:
-                side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": created_at, "row_count": len(out)}, sort_keys=True), encoding="utf-8")
+                side_tmp.write_text(json.dumps({
+                    "semantic_hash": semantic_hash,
+                    "created_at": sidecar_created_at,
+                    "row_count": len(out),
+                }, sort_keys=True), encoding="utf-8")
                 os.replace(side_tmp, sidecar)
             finally:
                 side_tmp.unlink(missing_ok=True)
+
+        if path.exists():
+            persisted = pd.read_parquet(path)
+            if self.semantic_content_hash(persisted) == semantic_hash:
+                # A prior interruption can leave the Parquet file without its
+                # audit sidecar. Rebuild the derived metadata on an idempotent
+                # retry instead of accepting an incomplete artifact set.
+                persisted_created_at = (
+                    str(persisted["created_at"].iloc[0])
+                    if len(persisted) and "created_at" in persisted
+                    else str(created_at)
+                )
+                expected = {
+                    "semantic_hash": semantic_hash,
+                    "created_at": persisted_created_at,
+                    "row_count": len(persisted),
+                }
+                try:
+                    current_sidecar = json.loads(sidecar.read_text(encoding="utf-8"))
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    current_sidecar = None
+                if current_sidecar != expected:
+                    write_sidecar(persisted_created_at)
+                return path
+            raise DataQualityError(f"conflicting artifact content: {path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        out.to_parquet(tmp, index=False)
+        if len(pd.read_parquet(tmp)) != len(out):
+            tmp.unlink(missing_ok=True)
+            raise DataQualityError("artifact row-count verification failed")
+        os.replace(tmp, path)
+        write_sidecar(str(created_at))
         return path
 
     def read_artifact(self, namespace: str, name: str, root="data/parquet", filters=None) -> pd.DataFrame:
-        root = self._storage_path(root)
         path = Path(root) / namespace / name
         if not path.exists(): return pd.DataFrame()
         out = pd.read_parquet(path)
-        sidecar = path.with_suffix(path.suffix + ".semantic.json")
-        if not sidecar.is_file():
-            raise DataQualityError(f"artifact semantic sidecar missing: {path}")
-        try:
-            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError) as exc:
-            raise DataQualityError(f"artifact semantic sidecar invalid: {path}") from exc
-        if (metadata.get("semantic_hash") != self.semantic_content_hash(out)
-                or int(metadata.get("row_count", -1)) != len(out)):
-            raise DataQualityError(f"artifact semantic sidecar mismatch: {path}")
         for key, value in (filters or {}).items():
             if key not in out: raise DataQualityError(f"artifact filter column missing: {key}")
             out = out[out[key] == value]
