@@ -29,6 +29,9 @@ class MarketStateFactory(Protocol):
     def __call__(self, candidate: dict[str, Any]) -> Any: ...
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
 def _strict_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -53,6 +56,8 @@ def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
 
 def canonical_market_state_factory(path: str | Path = "data/derived/canonical_pit_market_states.parquet") -> MarketStateFactory:
     """Return a fail-closed date-keyed factory for canonical PIT states."""
+    if str(path).replace("\\", "/") == "data/derived/canonical_pit_market_states.parquet":
+        path = REPO_ROOT / path
     frame = pd.read_parquet(path)
     required = {"date", "market_state", "pit_asof", "pit_status"}
     if not required.issubset(frame.columns):
