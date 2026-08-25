@@ -20,6 +20,9 @@ class GateResult:
 
 
 class EventGate:
+    def __init__(self, trading_sessions=None):
+        self.trading_sessions = trading_sessions
+
     def evaluate(self, candidate, calendar=None) -> GateResult:
         risk = int(getattr(candidate, "event_risk", 0))
         if calendar is None:
@@ -38,7 +41,13 @@ class EventGate:
                     continue
                 if entry <= date <= expiry:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_EARNINGS_CROSSING",))
-                if 0 <= len(pd.bdate_range(entry, date, inclusive="right")) <= 3:
+                sessions = self.trading_sessions
+                if sessions is None:
+                    distance = len(pd.bdate_range(entry, date, inclusive="right"))
+                else:
+                    session_index = pd.DatetimeIndex(sessions).normalize()
+                    distance = int(((session_index > entry) & (session_index <= date)).sum())
+                if 0 <= distance <= 3:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_PRE_EARNINGS_BLACKOUT",))
         except Exception:
             return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_INVALID",))

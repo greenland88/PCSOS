@@ -25,6 +25,14 @@ from pcs.research.scheduled_event_calendar import load_calendar
 from pcs.research.variant_b_replay import ReplayPolicy, summarize_replay, _replay_lifecycle_batch, _load_replay_calendar
 
 
+def _atomic_parquet(frame: pd.DataFrame, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(target.suffix + ".tmp")
+    frame.to_parquet(temp, index=False)
+    pd.read_parquet(temp, columns=list(frame.columns))
+    temp.replace(target)
+
+
 def _identity(ticker, day, expiry, short, long):
     raw = "|".join([ticker, str(pd.Timestamp(day).date()), str(pd.Timestamp(expiry).date()), f"{float(short):.15g}", f"{float(long):.15g}"])
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
@@ -106,16 +114,15 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     access = data_access or PCSDataAccess()
     daily = access.read_prices(spec.ticker)
     daily["date"] = pd.to_datetime(daily.date).dt.normalize(); daily = daily.sort_values("date").reset_index(drop=True)
-    explicit_scope = bool(
-        spec.split_policy.get("name")
-        or spec.split_policy.get("train_end")
-        or spec.split_policy.get("validation_start")
-        or spec.split_policy.get("validation_end")
-        or spec.date_range.get("split")
-        or spec.date_range.get("start")
-        or spec.date_range.get("end")
-    )
-    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max
+    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max()
+    requested_end = pd.Timestamp(spec.date_range["end"]) if spec.date_range.get("end") else train_end
+    train_end = min(train_end, requested_end)
+    benchmark_symbol = str(spec.lifecycle_policy.get("benchmark_symbol", "QQQ")).upper()
+    horizon = str(spec.lifecycle_policy.get("outcome_horizon_policy", "SPLIT_CUTOFF")).upper()
+    if horizon not in {"SPLIT_CUTOFF", "ALLOW_CROSS_SPLIT"}:
+        raise ValueError(f"unknown outcome_horizon_policy: {horizon}")
+    if horizon == "ALLOW_CROSS_SPLIT" and not spec.final_oos_access:
+        raise ValueError("ALLOW_CROSS_SPLIT_REQUIRES_EXPLICIT_FINAL_OOS_ACCESS")
     option_source = access.resolve_source("options", spec.ticker)
     requested_start = pd.Timestamp(spec.date_range.get("start", daily.date.min()))
     # Keep the canonical feature warm-up, but do not load pre-scope history
@@ -128,7 +135,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     if execution_dates:
         allowed = {pd.Timestamp(x).normalize() for x in execution_dates}
         execution_date_set = allowed
-    benchmark = access.read_prices("QQQ", train.date.min(), train.date.max())
+    benchmark = access.read_prices(benchmark_symbol, train.date.min(), train.date.max())
     train["atr"] = _atr14(train)
     option_last_date = pd.Timestamp(option_source.last_date)
     if execution_dates:
@@ -136,12 +143,15 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         # Read only each requested decision window (plus lifecycle horizon)
         # instead of materializing the ticker's entire options history.
         requested = sorted({pd.Timestamp(x).normalize() for x in execution_dates})
-        windows = [(day, min(day + pd.Timedelta(days=50), option_last_date)) for day in requested]
+        windows = [(day, min(day + pd.Timedelta(days=60), option_last_date,
+                             train_end if horizon == "SPLIT_CUTOFF" else option_last_date)) for day in requested]
         opts = access.read_quotes_for_windows(spec.ticker, windows)
         if len(opts):
             opts = opts.drop_duplicates(["symbol", "trade_date", "expiration_date", "call_put", "strike"], keep="first")
     else:
-        opts = access.read_quotes(spec.ticker, train.date.min(), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
+        option_end = min(train.date.max() + pd.Timedelta(days=50), option_last_date)
+        if horizon == "SPLIT_CUTOFF": option_end = min(option_end, train_end)
+        opts = access.read_quotes(spec.ticker, train.date.min(), option_end)
     # The canonical reader returns the full options schema.  The replay only
     # needs these fields; retaining Greeks and provenance columns through the
     # per-day grouping otherwise multiplies memory use without changing any
@@ -159,7 +169,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     calendar = _load_replay_calendar("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
     setup_rows = []; candidates = []; context_rows = []; event_cache = {}; rejected = {k: 0 for k in ["TREND","PULLBACK","SUPPORT","PREDICTABILITY","REGIME","EVENT","DTE","SAFE_STRIKE","LIQUIDITY","CREDIT_WIDTH"]}
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
-    context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, "QQQ")
+    context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
     for day in train.date:
         if execution_dates and pd.Timestamp(day).normalize() not in execution_date_set:
             continue
@@ -221,7 +231,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                     if rules["event_gate"]:
                         event_key = (pd.Timestamp(day).normalize(), pd.Timestamp(exp).normalize())
                         if event_key not in event_cache:
-                            event_cache[event_key] = EventGate().evaluate(tc, calendar)
+                            event_cache[event_key] = EventGate(trading_sessions=daily.date).evaluate(tc, calendar)
                         gate_results.append(event_cache[event_key])
                     gate_results.append(DTEGate(gate_rules).evaluate(tc))
                     gate_results.append(SafeStrikeGate(gate_rules, price_basis_service).evaluate(tc))
@@ -233,6 +243,10 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                         continue
                     rec["candidate_id"] = _identity(spec.ticker, day, exp, short.strike, long.strike); rec["initial_credit"] = credit; candidates.append(rec)
     frame = pd.DataFrame(candidates)
+    if len(frame):
+        identity_columns = ["ticker", "date", "expiration", "short_strike", "long_strike"]
+        if frame.duplicated(identity_columns, keep=False).any():
+            raise LifecycleAdapterError("DUPLICATE_CANDIDATE_IDENTITY")
     if broad_new_entry and len(frame):
         width_order = {float(width): rank for rank, width in enumerate(rules["allowed_widths"])}
         frame["_width_rank"] = frame["spread_width"].map(width_order).fillna(999)
@@ -242,18 +256,20 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     life_rows = []
     lifecycle_quotes = pd.DataFrame()
     if len(frame):
+        lifecycle_end = min((pd.to_datetime(frame["date"]) + pd.Timedelta(days=60)).max(), option_last_date)
+        if horizon == "SPLIT_CUTOFF": lifecycle_end = min(lifecycle_end, train_end)
         lifecycle_quotes = access.read_quotes(
             spec.ticker,
             frame["date"].min(),
-            min((pd.to_datetime(frame["date"]) + pd.Timedelta(days=20)).max(), option_last_date),
+            lifecycle_end,
         )
         lifecycle_quotes = lifecycle_quotes[["symbol", "trade_date", "expiration_date",
                                              "strike", "call_put", "bid", "ask"]]
         lifecycle_quotes["trade_date"] = pd.to_datetime(lifecycle_quotes["trade_date"]).dt.normalize()
         lifecycle_quotes["expiration_date"] = pd.to_datetime(lifecycle_quotes["expiration_date"]).dt.normalize()
     for r in frame.to_dict("records"):
-        q = lifecycle_quotes[(lifecycle_quotes.trade_date >= pd.Timestamp(r["date"])) &
-                             (lifecycle_quotes.trade_date <= min(pd.Timestamp(r["expiration"]), pd.Timestamp(r["date"])+pd.Timedelta(days=20))) &
+        q = lifecycle_quotes[(lifecycle_quotes.trade_date > pd.Timestamp(r["date"])) &
+                             (lifecycle_quotes.trade_date <= min(pd.Timestamp(r["expiration"]), pd.Timestamp(r["date"])+pd.Timedelta(days=60), train_end if horizon == "SPLIT_CUTOFF" else pd.Timestamp(r["expiration"]))) &
                              (lifecycle_quotes.expiration_date == pd.Timestamp(r["expiration"])) &
                              (lifecycle_quotes.strike.isin([r["short_strike"], r["long_strike"]]))]
         try:
@@ -263,15 +279,22 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
             if str(exc) == "CORPORATE_ACTION_CONTRACT_MAPPING_UNAVAILABLE":
                 continue
             raise
-    adapter = Stage4ALifecycleReplayAdapter(pd.DataFrame(life_rows), ReplayPolicy()) if life_rows else None
+    eligible_ids = {str(row["candidate_id"]) for row in life_rows}
+    eligible_records = [r for r in frame.to_dict("records") if str(r["candidate_id"]) in eligible_ids]
+    adapter = Stage4ALifecycleReplayAdapter(pd.DataFrame(life_rows), ReplayPolicy(), pd.DatetimeIndex(daily.date)) if life_rows else None
     results = []
-    for r in frame.to_dict("records"):
-        if adapter is None: break
+    for r in eligible_records:
+        if adapter is None: continue
         x = adapter(r); results.append({**r, **x})
     result_frame = pd.DataFrame(results); out = Path(output_dir) / spec.research_id; out.mkdir(parents=True, exist_ok=True)
-    if len(frame): frame.to_parquet(out / "candidates.parquet", index=False)
-    if len(result_frame): result_frame.to_parquet(out / "lifecycle_results.parquet", index=False)
-    if context_rows: pd.DataFrame(context_rows).drop_duplicates("decision_date").to_parquet(out / "entry_context.parquet", index=False)
+    # A rerun must not inherit artifacts from a prior candidate population.
+    # Only replay-owned files are invalidated; source data and unrelated
+    # research artifacts remain untouched.
+    for stale in ("candidates.parquet", "lifecycle_results.parquet", "entry_context.parquet", "yearly_metrics.json", "replay_report.json"):
+        (out / stale).unlink(missing_ok=True)
+    if len(frame): _atomic_parquet(frame, out / "candidates.parquet")
+    if len(result_frame): _atomic_parquet(result_frame, out / "lifecycle_results.parquet")
+    if context_rows: _atomic_parquet(pd.DataFrame(context_rows).drop_duplicates("decision_date"), out / "entry_context.parquet")
     summary = summarize_replay(result_frame) if len(result_frame) else pd.DataFrame()
     metrics = summary.iloc[0].to_dict() if len(summary) else {}
     yearly_metrics = []
@@ -291,5 +314,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
             })
     (out / "yearly_metrics.json").write_text(json.dumps(yearly_metrics, indent=2), encoding="utf-8")
     report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":len(train),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "final_oos_read":False,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
+    report["outcome_horizon_policy"] = {"mode": horizon, "cutoff": str(train_end.date()) if horizon == "SPLIT_CUTOFF" else None}
+    report["benchmark_symbol"] = benchmark_symbol
     (out / "replay_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report

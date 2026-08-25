@@ -76,9 +76,9 @@ def _daily(path: str | Path, symbol: str | None = None, access: PCSDataAccess | 
 
 
 def _atr14(d: pd.DataFrame) -> pd.Series:
-    prev = d.close.shift(1)
-    tr = pd.concat([(d.high - d.low), (d.high - prev).abs(), (d.low - prev).abs()], axis=1).max(axis=1)
-    return tr.rolling(14, min_periods=14).mean()
+    # Safe Strike and replay must use the same Wilder ATR implementation as
+    # the production trend indicators, not a simple rolling true-range mean.
+    return calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
 
 
 def _quote_ok(row: pd.Series) -> bool:

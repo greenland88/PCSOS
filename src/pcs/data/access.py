@@ -310,7 +310,22 @@ class PCSDataAccess:
         spec = self.resolve_source(dataset, symbol)
         manifest = self._manifest if self.manifest_path == Path("data/manifests/storage_manifest.csv") else self._read_manifest(self.manifest_path)
         rows = manifest[(manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == str(symbol).upper())]
-        payload = {"spec": spec.to_dict(), "manifest": rows.sort_index(axis=1).to_dict("records")}
+        files = spec.path.split(";") if ";" in spec.path else [spec.path]
+        physical = []
+        for raw in files:
+            raw_path = Path(raw)
+            if any(ch in raw for ch in "*?["):
+                matches = list(raw_path.parent.glob(raw_path.name)) if raw_path.is_absolute() else list(Path().glob(raw))
+            else:
+                matches = [raw_path]
+            for path in sorted(matches):
+                if path.is_file():
+                    digest = hashlib.sha256()
+                    with path.open("rb") as handle:
+                        for block in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(block)
+                    physical.append({"path": str(path), "sha256": digest.hexdigest()})
+        payload = {"spec": spec.to_dict(), "manifest": rows.sort_index(axis=1).to_dict("records"), "physical": physical}
         return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
 
     def validate_schema(self, frame: pd.DataFrame, dataset: str) -> pd.DataFrame:

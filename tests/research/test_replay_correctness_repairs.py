@@ -26,14 +26,14 @@ def test_identical_canonical_quote_duplicates_coalesce_and_conflicts_fail_closed
 def test_lifecycle_merge_is_one_to_one_and_weekend_horizon_is_quote_days():
     dates = pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"])
     index = {
-        (pd.Timestamp("2026-02-20"), 100.0): pd.DataFrame({"Trade Date": dates, "Bid Price": [1, 1, 1], "Ask Price": [1.1, 1.1, 1.1]}),
-        (pd.Timestamp("2026-02-20"), 95.0): pd.DataFrame({"Trade Date": dates, "Bid Price": [.2, .2, .2], "Ask Price": [.3, .3, .3]}),
+        (pd.Timestamp("2026-02-20"), "p", 100.0): pd.DataFrame({"Trade Date": dates, "Bid Price": [1, 1, 1], "Ask Price": [1.1, 1.1, 1.1]}),
+        (pd.Timestamp("2026-02-20"), "p", 95.0): pd.DataFrame({"Trade Date": dates, "Bid Price": [.2, .2, .2], "Ask Price": [.3, .3, .3]}),
     }
     candidate = {"date": pd.Timestamp("2026-01-02"), "expiration": pd.Timestamp("2026-02-20"), "short_strike": 100.0, "long_strike": 95.0, "credit": .5}
     result = _replay_lifecycle_batch(candidate, index, ReplayPolicy(max_quote_days=2))
     assert result["status"] == "COMPLETE"
     assert result["mark_count"] == 2
-    assert result["exit_date"] == pd.Timestamp("2026-01-05")
-    duplicate = index[(pd.Timestamp("2026-02-20"), 100.0)].iloc[[0, 0]].copy()
+    assert result["exit_date"] == pd.Timestamp("2026-01-06")
+    duplicate = index[(pd.Timestamp("2026-02-20"), "p", 100.0)].iloc[[0, 0]].copy()
     with pytest.raises(pd.errors.MergeError):
-        _replay_lifecycle_batch(candidate, {**index, (pd.Timestamp("2026-02-20"), 100.0): duplicate}, ReplayPolicy())
+        _replay_lifecycle_batch(candidate, {**index, (pd.Timestamp("2026-02-20"), "p", 100.0): duplicate}, ReplayPolicy())

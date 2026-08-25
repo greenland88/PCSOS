@@ -17,6 +17,7 @@ class LifecycleAdapterError(RuntimeError):
 class Stage4ALifecycleReplayAdapter:
     lifecycle: pd.DataFrame
     policy: ReplayPolicy = ReplayPolicy()
+    trading_sessions: pd.DatetimeIndex | None = None
 
     @classmethod
     def from_phase0(cls, path: str | Path = "research_outputs/phase0_20260820/lifecycle_marks.parquet", policy: ReplayPolicy | None = None):
@@ -48,7 +49,7 @@ class Stage4ALifecycleReplayAdapter:
         short = rows[["mark_date", "short_bid", "short_ask"]].rename(columns={"mark_date":"Trade Date", "short_bid":"Bid Price", "short_ask":"Ask Price"})
         long = rows[["mark_date", "long_bid", "long_ask"]].rename(columns={"mark_date":"Trade Date", "long_bid":"Bid Price", "long_ask":"Ask Price"})
         short["Trade Date"] = pd.to_datetime(short["Trade Date"]); long["Trade Date"] = pd.to_datetime(long["Trade Date"])
-        quote_index = {(expected[1], expected[2]): short, (expected[1], expected[3]): long}
+        quote_index = {(expected[1], "p", expected[2]): short, (expected[1], "p", expected[3]): long}
         try:
             result = _replay_lifecycle_batch({"date": pd.Timestamp(candidate["date"]), "expiration": expected[1], "short_strike": expected[2], "long_strike": expected[3], "credit": float(candidate["initial_credit"])}, quote_index, self.policy)
         except Exception as exc:
@@ -59,7 +60,17 @@ class Stage4ALifecycleReplayAdapter:
                        "entry_date": pd.Timestamp(candidate["date"]), "expiration_date": expected[1],
                        "initial_credit": float(candidate["initial_credit"]),
                        "holding_calendar_days": (pd.Timestamp(result["exit_date"]) - pd.Timestamp(candidate["date"])).days if result.get("exit_date") is not None else None,
-                       "holding_trading_days": int(len(pd.bdate_range(pd.Timestamp(candidate["date"]), pd.Timestamp(result["exit_date"])))) if result.get("exit_date") is not None else None,
-                       "stopped": bool(result.get("stop_triggered", False)), "expired": result.get("exit_reason") == "TIME_EXIT",
+                       "holding_trading_days": self._holding_trading_days(candidate["date"], result.get("exit_date")),
+                       "stopped": bool(result.get("stop_triggered", False)),
+                       "expired": bool(result.get("exit_date") is not None and pd.Timestamp(result["exit_date"]).normalize() >= expected[1]),
                        "mfe": result.get("mfe"), "mae": result.get("mae"), "lifecycle_observation_count": result.get("mark_count")})
         return result
+
+    def _holding_trading_days(self, entry_date, exit_date):
+        if exit_date is None:
+            return None
+        entry = pd.Timestamp(entry_date).normalize(); exit_day = pd.Timestamp(exit_date).normalize()
+        sessions = (pd.DatetimeIndex(self.trading_sessions).normalize()
+                    if self.trading_sessions is not None
+                    else pd.DatetimeIndex(self.lifecycle["mark_date"].dropna().unique()).normalize())
+        return int(((sessions > entry) & (sessions <= exit_day)).sum())

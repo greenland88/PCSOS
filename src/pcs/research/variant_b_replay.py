@@ -47,7 +47,7 @@ class ReplayPolicy:
 
 
 def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
-                  expiry: pd.Timestamp) -> str | None:
+                  expiry: pd.Timestamp, trading_sessions=None) -> str | None:
     if calendar is None or calendar.empty:
         return "EVENT_CALENDAR_UNAVAILABLE"
     rows = calendar[(calendar.event_type == "EARNINGS") &
@@ -61,7 +61,10 @@ def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
         if entry <= event <= expiry:
             return "EVENT_EARNINGS_CROSSING"
         # Existing EventGate uses business-day distance rather than calendar days.
-        if 0 <= len(pd.bdate_range(entry, event, inclusive="right")) <= 3:
+        sessions = pd.DatetimeIndex(trading_sessions).normalize() if trading_sessions is not None else None
+        distance = (int(((sessions > entry) & (sessions <= event)).sum())
+                    if sessions is not None else len(pd.bdate_range(entry, event, inclusive="right")))
+        if 0 <= distance <= 3:
             return "EVENT_PRE_EARNINGS_BLACKOUT"
     return None
 
@@ -137,7 +140,8 @@ def _replay_lifecycle(candidate: dict[str, Any], quotes: pd.DataFrame,
     if quotes.empty:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES"}
     q = quotes[(quotes.Strike.isin([candidate["short_strike"], candidate["long_strike"]])) &
-               (quotes["Trade Date"] >= candidate["date"])].copy()
+               (quotes["Call/Put"].astype(str).str.lower() == "p") &
+               (quotes["Trade Date"] > candidate["date"])].copy()
     marks = []
     for day, rows in q.groupby("Trade Date"):
         short = rows[rows.Strike == candidate["short_strike"]]
@@ -219,21 +223,22 @@ def build_targeted_quote_index(symbol: str, requests: list[dict[str, Any]], db_p
         raise DataAccessError(f"active canonical route unavailable for {symbol}") from exc
     quotes["Trade Date"] = pd.to_datetime(quotes.get("Trade Date"), errors="coerce")
     quotes["Expiry Date"] = pd.to_datetime(quotes.get("Expiry Date"), errors="coerce")
-    index = {(pd.Timestamp(exp).normalize(), float(strike)): group.sort_values("Trade Date").copy() for (exp, strike), group in quotes.groupby(["Expiry Date", "Strike"], sort=False)}
+    index = {(pd.Timestamp(exp).normalize(), str(call_put).lower(), float(strike)): group.sort_values("Trade Date").copy() for (exp, call_put, strike), group in quotes.groupby(["Expiry Date", "Call/Put", "Strike"], sort=False)}
     return index, {"source": meta_source, "partitions_requested": len(partitions), "rows_retained": len(quotes), "contracts_indexed": len(index)}
 
 
 def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, pd.DataFrame],
                             policy: ReplayPolicy) -> dict[str, Any]:
     """Replay using cached leg histories; semantics match _replay_lifecycle."""
-    short = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["short_strike"])))
-    long = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["long_strike"])))
+    identity = pd.Timestamp(candidate["expiration"]).normalize()
+    short = quote_index.get((identity, "p", float(candidate["short_strike"])))
+    long = quote_index.get((identity, "p", float(candidate["long_strike"])))
     if short is None or long is None:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES"}
     merged = short.merge(long, on="Trade Date", how="outer", suffixes=("_short", "_long"), validate="one_to_one").sort_values("Trade Date")
     marks = []
     missing = 0
-    for _, row in merged[merged["Trade Date"] >= candidate["date"]].iterrows():
+    for _, row in merged[merged["Trade Date"] > candidate["date"]].iterrows():
         required = ["Bid Price_short", "Ask Price_short", "Bid Price_long", "Ask Price_long"]
         if any(pd.isna(row.get(field)) for field in required):
             missing += 1
@@ -344,7 +349,7 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
         close = float(row.iloc[0].close); atr = float(row.iloc[0].atr14)
         setup = {**context, "ticker": ticker}
         for candidate in _spread_candidates(chain, day, close, atr, setup, policy):
-            event_reason = _event_reason(calendar, ticker, day, candidate["expiration"])
+            event_reason = _event_reason(calendar, ticker, day, candidate["expiration"], stock.date)
             event_date = next((x for x in pd.to_datetime(calendar.loc[(calendar.event_type == "EARNINGS") & ((calendar.symbol == ticker) | calendar.symbol.isna()), "event_date"]).dt.normalize() if x >= day), None)
             crosses = bool(event_date is not None and day <= event_date <= candidate["expiration"])
             if event_reason == "EVENT_PRE_EARNINGS_BLACKOUT":

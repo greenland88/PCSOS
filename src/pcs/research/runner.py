@@ -34,7 +34,7 @@ def _status_for_funnel(records: list[Any]) -> str:
     return next((r.status.value for r in records if r.output_count == 0), ResearchStatus.COMPUTABLE.value)
 
 
-def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str) -> list[dict[str, Any]]:
+def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str, checkpoint_dir: str | Path | None = None) -> list[dict[str, Any]]:
     """Evaluate the existing PIT adapter with reusable daily-only inputs."""
     config = TrendIndicatorConfig()
     indicators = calculate_base_indicators(daily, config)
@@ -76,11 +76,38 @@ def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str) -> list[dict[str, A
     # Threads share the read-only caches and avoid eight copies of the full
     # historical DataFrame on Windows.  Sort by original chunk start to keep
     # byte/order semantics deterministic.
+    checkpoint = Path(checkpoint_dir) if checkpoint_dir is not None else None
+    if checkpoint is not None:
+        checkpoint.mkdir(parents=True, exist_ok=True)
+
+    def persist_chunk(start, chunk):
+        if checkpoint is None:
+            return
+        target = checkpoint / f"chunk_{start:08d}.json"
+        temp = target.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(chunk, default=str), encoding="utf-8")
+        os.replace(temp, target)
+
+    cached_chunks = {}
+    for start, end in bounds:
+        if checkpoint is None:
+            continue
+        path = checkpoint / f"chunk_{start:08d}.json"
+        if path.exists():
+            try:
+                rows = json.loads(path.read_text(encoding="utf-8"))
+                if len(rows) == end - start:
+                    cached_chunks[start] = rows
+            except (OSError, ValueError, TypeError):
+                continue
+    missing_bounds = [item for item in bounds if item[0] not in cached_chunks]
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="pcs-msft-pit") as pool:
-        completed = list(pool.map(evaluate_chunk, bounds))
+        for start, chunk in pool.map(evaluate_chunk, missing_bounds):
+            persist_chunk(start, chunk)
+            cached_chunks[start] = chunk
     result = []
-    for _, chunk in sorted(completed, key=lambda item: item[0]):
-        result.extend(chunk)
+    for start, _ in bounds:
+        result.extend(cached_chunks[start])
     gc.collect()
     return result
 
@@ -253,7 +280,7 @@ class ResearchRunner:
                 or manifest.get("code_version") != "pcs.research.runner:1.1"):
             raise RuntimeError("STALE_ARTIFACT")
         try:
-            current_data_version = PCSDataAccess().resolve_source("daily", self.spec.ticker).source_version
+            current_data_version = PCSDataAccess().source_data_identity("daily", self.spec.ticker)
         except Exception as exc:
             raise RuntimeError("STALE_ARTIFACT") from exc
         if manifest.get("data_version") != current_data_version:
@@ -301,29 +328,34 @@ class ResearchRunner:
         daily_source = access.resolve_source("daily", self.spec.ticker, start_date, end_date)
         cache_meta = build_pit_cache_identity(
             symbol=self.spec.ticker,
-            daily_data_identity=daily_source.source_version,
+            daily_data_identity=access.source_data_identity("daily", self.spec.ticker),
             date_range={"start": str(daily.date.min().date()), "end": str(daily.date.max().date())},
             feature_config=asdict(TrendIndicatorConfig()), research_config=self.spec.rules,
         )
         cache_created_at = datetime.now(timezone.utc).isoformat()
         cache_action = "MISS_REBUILT"
         if timeline_path.exists():
-            cached = pd.read_parquet(timeline_path)
-            cache_valid = cache_identity_matches(cached, cache_meta)
-            cached_ready = sum(
-                bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
-                for row in cached.to_dict("records")
-            )
-            if cache_valid and len(cached) == len(daily) and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker} and cached_ready > 0:
-                states = cached.to_dict("records")
-                cache_action = "REUSED_COMPATIBLE"
-            else:
-                identity_compatible = cache_valid
-                states = _evaluate_pit_timeline(daily, self.spec.ticker)
+            try:
+                cached = pd.read_parquet(timeline_path)
+                cache_valid = cache_identity_matches(cached, cache_meta)
+                cached_ready = sum(
+                    bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
+                    for row in cached.to_dict("records")
+                )
+                if cache_valid and len(cached) == len(daily) and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker} and cached_ready > 0:
+                    states = cached.to_dict("records")
+                    cache_action = "REUSED_COMPATIBLE"
+                else:
+                    identity_compatible = cache_valid
+                    states = _evaluate_pit_timeline(daily, self.spec.ticker, self.output_dir / "pit_chunks" / cache_meta["identity_sha256"])
+                    cache_valid = False
+                    cache_action = ("IDENTITY_COMPATIBLE_BUT_NOT_READY_REBUILT" if identity_compatible else "STALE_OR_MISSING_IDENTITY_REBUILT")
+            except Exception:
+                states = _evaluate_pit_timeline(daily, self.spec.ticker, self.output_dir / "pit_chunks" / cache_meta["identity_sha256"])
                 cache_valid = False
-                cache_action = ("IDENTITY_COMPATIBLE_BUT_NOT_READY_REBUILT" if identity_compatible else "STALE_OR_MISSING_IDENTITY_REBUILT")
+                cache_action = "CORRUPT_ARTIFACT_REBUILT"
         else:
-            states = _evaluate_pit_timeline(daily, self.spec.ticker)
+            states = _evaluate_pit_timeline(daily, self.spec.ticker, self.output_dir / "pit_chunks" / cache_meta["identity_sha256"])
             cache_valid = False
         if not timeline_path.exists() or not cache_valid:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -341,7 +373,10 @@ class ResearchRunner:
                     timeline_frame[column] = timeline_frame[column].map(
                         lambda value: json.dumps(value, default=str) if isinstance(value, (list, dict, tuple)) else value
                     )
-            timeline_frame.to_parquet(timeline_path, index=False)
+            temp_timeline = timeline_path.with_suffix(".parquet.tmp")
+            timeline_frame.to_parquet(temp_timeline, index=False)
+            pd.read_parquet(temp_timeline, columns=list(timeline_frame.columns))
+            temp_timeline.replace(timeline_path)
         state_ready = sum(
             bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
             for row in states
