@@ -4,14 +4,17 @@ import json
 import numpy as np
 import pandas as pd
 from pcs.data.access import PCSDataAccess
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 
-ROOT=Path('research_outputs/qqq_entry_discovery_agent_v1'); ART=ROOT/'artifacts'
+REPO_ROOT=Path(__file__).resolve().parents[3]
+ROOT=REPO_ROOT/'research_outputs/qqq_entry_discovery_agent_v1'; ART=ROOT/'artifacts'
 
 def _features():
     d=PCSDataAccess().read_prices('QQQ','2010-01-01','2023-12-31').copy()
     d.date=pd.to_datetime(d.date).dt.normalize(); d=d.sort_values('date').reset_index(drop=True)
-    c=d.close; prev=c.shift(1); tr=pd.concat([(d.high-d.low),(d.high-prev).abs(),(d.low-prev).abs()],axis=1).max(axis=1)
-    f=pd.DataFrame({'trade_date':d.date,'close':c,'sma50':c.rolling(50).mean(),'sma200':c.rolling(200).mean(),'atr14':tr.rolling(14).mean(),'ret5':c.pct_change(5),'ret10':c.pct_change(10),'drawdown60':c/c.rolling(60).max()-1,'realized_vol20':c.pct_change().rolling(20).std()*np.sqrt(252),'volume_ratio20':d.volume/d.volume.rolling(20).mean()})
+    c=d.close; atr14=calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
+    f=pd.DataFrame({'trade_date':d.date,'close':c,'sma50':c.rolling(50).mean(),'sma200':c.rolling(200).mean(),'atr14':atr14,'ret5':c.pct_change(5),'ret10':c.pct_change(10),'drawdown60':c/c.rolling(60).max()-1,'realized_vol20':c.pct_change().rolling(20).std()*np.sqrt(252),'volume_ratio20':d.volume/d.volume.rolling(20).mean()})
     f['close_sma50_atr']=(f.close-f.sma50)/f.atr14; f['close_sma200_atr']=(f.close-f.sma200)/f.atr14
     f['atr_pct_rank']=f.atr14.rolling(252,min_periods=60).rank(pct=True); f['vol_pct_rank']=f.realized_vol20.rolling(252,min_periods=60).rank(pct=True)
     for c in ('close_sma50_atr','close_sma200_atr','atr_pct_rank','vol_pct_rank','drawdown60'):
