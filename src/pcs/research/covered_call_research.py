@@ -147,10 +147,14 @@ def discover_and_select_entries(symbol: str, daily, market, *, data_access: PCSD
     selected = []
     bulk = None
     if signals and data_access is not None and hasattr(data_access, "read_quotes_for_windows"):
-        dates = [(x["date"], x["date"]) for x in signals]
-        bulk = data_access.read_quotes_for_windows(symbol, dates,
-            columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask", "delta", "open_interest", "volume"])
-        bulk["trade_date"] = pd.to_datetime(bulk.trade_date).dt.normalize()
+        signal_dates = pd.to_datetime([x["date"] for x in signals]).normalize()
+        chunks = []
+        for period, group in pd.Series(signal_dates).groupby(signal_dates.to_period("Q")):
+            chunks.append(data_access.read_quotes_for_windows(symbol,
+                [(group.min(), group.max())],
+                columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask", "delta", "open_interest", "volume"]))
+        bulk = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+        if not bulk.empty: bulk["trade_date"] = pd.to_datetime(bulk.trade_date).dt.normalize()
     for candidate in signals:
         chain = (_contracts_from_frame(bulk[bulk.trade_date.eq(pd.Timestamp(candidate["date"]).normalize())], symbol)
                  if bulk is not None else read_pit_call_chain(symbol, candidate["date"], data_access=data_access))
@@ -182,9 +186,12 @@ def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *
         start, end = entry["date"], entry["expiration"]
         prices = access.read_prices(symbol, start, end)
         price_by_date = {str(pd.Timestamp(r.date).date()): float(r.close) for r in prices.itertuples()}
-        quotes = access.read_quotes_for_windows(
-            symbol, [(start, end)],
-            columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"])
+        try:
+            quotes = access.read_quotes_for_windows(
+                symbol, [(start, end)],
+                columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"])
+        except (ValueError, FileNotFoundError):
+            continue
         quotes = quotes[(quotes.expiration_date == pd.Timestamp(end).date()) &
                         (quotes.strike == float(entry["strike"]))]
         quotes["trade_date"] = pd.to_datetime(quotes.trade_date).dt.normalize()
