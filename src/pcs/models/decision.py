@@ -8,6 +8,7 @@ class Action(StrEnum):
     HOLD = "HOLD"
     CLOSE = "CLOSE"
     ROLL = "ROLL"
+    NO_TRADE = "NO_TRADE"
 
 
 class SizeClass(StrEnum):
