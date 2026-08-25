@@ -9,6 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json, os
+import hashlib
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
@@ -19,6 +20,18 @@ from pcs.research.variant_b_replay import ReplayPolicy
 
 YEARS = (2020, 2021, 2022, 2023)
 MODULE = "pcs.research.qqq_h006_new_entry_sharded"
+
+def _shard_identity(year: int) -> dict:
+    access = PCSDataAccess()
+    daily = access.resolve_source("daily", "QQQ", "2010-01-01", f"{year}-12-31")
+    options = access.resolve_source("options", "QQQ", f"{year}-01-01", f"{year}-12-31")
+    code = Path(__file__).resolve()
+    payload = {"module": MODULE, "version": "v1", "year": int(year),
+               "daily_source_version": daily.source_version,
+               "options_source_version": options.source_version,
+               "implementation_sha256": hashlib.sha256(code.read_bytes()).hexdigest()}
+    payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    return payload
 
 def _atr14(d):
     prev = d.close.shift(1)
@@ -33,7 +46,13 @@ def _features(d):
 
 def _one_year(year: int, root: Path) -> dict:
     target=root/f"shard_{year}.parquet"; summary=target.with_suffix(".json")
-    if target.exists() and summary.exists(): return json.loads(summary.read_text())
+    if target.exists() and summary.exists():
+        try:
+            prior = json.loads(summary.read_text())
+            if prior.get("shard_identity") == _shard_identity(year) and prior.get("status") == "COMPLETED":
+                return prior
+        except Exception:
+            pass
     access=PCSDataAccess(); daily=access.read_prices("QQQ",f"{year}-01-01",f"{year}-12-31").copy()
     daily.date=pd.to_datetime(daily.date).dt.normalize(); all_daily=access.read_prices("QQQ","2010-01-01",f"{year}-12-31").copy(); all_daily.date=pd.to_datetime(all_daily.date).dt.normalize()
     f=_features(all_daily); f=f[f.date.dt.year.eq(year)].copy(); rows=[]; lifecycle_rows=[]; registry=load_corporate_actions()
@@ -84,7 +103,7 @@ def _one_year(year: int, root: Path) -> dict:
         if results:
             rr=pd.DataFrame(results); out=out[~out.trade_date.isin(rr.trade_date)].copy(); out=pd.concat([out,rr],ignore_index=True)
     out=out.sort_values("trade_date"); tmp=target.with_suffix(".tmp.parquet"); out.to_parquet(tmp,index=False); os.replace(tmp,target)
-    counts={"year":year,"rows":len(out),"signal_dates":int(out.signal_date.sum()),"option_data_available":int(out.option_chain_available.sum()),"contract_selected":int(out.contract_selected.sum()),"lifecycle_completed":int(out.lifecycle_completed.sum())}
+    counts={"year":year,"rows":len(out),"signal_dates":int(out.signal_date.sum()),"option_data_available":int(out.option_chain_available.sum()),"contract_selected":int(out.contract_selected.sum()),"lifecycle_completed":int(out.lifecycle_completed.sum()),"status":"COMPLETED","shard_identity":_shard_identity(year)}
     for code in ["NO_OPTION_DATA","NO_DTE","NO_SAFE_STRIKE","LIQUIDITY_FAIL","CREDIT_FAIL","CONTRACT_FAIL","LIFECYCLE_FAIL"]: counts[code]=int(out.reason_code.eq(code).sum())
     summary.write_text(json.dumps(counts,indent=2,default=str),encoding="utf-8"); return counts
 
