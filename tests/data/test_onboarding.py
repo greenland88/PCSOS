@@ -38,16 +38,20 @@ def test_overlap_is_mandatory_and_exact_key_sensitive():
     assert result.status == "READY" and result.mismatched_rows == 1
 
 
-def test_conflict_policy_deduplicates_exact_rows_and_keeps_first_vendor_row():
+def test_conflict_policy_deduplicates_exact_rows_and_blocks_duplicate_identity():
     base = _frame()
     exact = pd.concat([base, base], ignore_index=True)
     result = apply_conflict_policy(exact, base)
-    assert len(result.frame) == 1 and result.exact_duplicates_removed == 1
+    assert len(result.frame) == 0
+    assert result.exact_duplicates_removed == 2
+    assert result.conflicts_blocked == 2
 
     conflicting = base.copy().assign(bid=[.8])
     vendor = pd.concat([base, conflicting], ignore_index=True)
     result = apply_conflict_policy(vendor, pd.DataFrame())
-    assert result.conflicts_resolved == 1 and result.frame.iloc[0].bid == .9
+    assert result.conflicts_resolved == 0
+    assert result.conflicts_blocked == 2
+    assert result.frame.empty
 
 
 def test_onboarding_writes_only_through_access_and_records_provenance(tmp_path):

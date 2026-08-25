@@ -20,7 +20,7 @@ import duckdb
 import pandas as pd
 import yaml
 
-from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, OPTIONS_REQUIRED_FIELDS
+from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, OPTIONS_REQUIRED_FIELDS, audit_option_frame
 
 
 class DataAccessError(RuntimeError):
@@ -387,6 +387,15 @@ class PCSDataAccess:
         self.validate_coverage(out, spec.symbol, start_date, end_date, column)
         if spec.dataset == "options" or spec.dataset.startswith("options"):
             out = self.validate_schema(out, spec.dataset)
+            # The executable boundary is fail-closed even for legacy files
+            # written before the quarantine layer existed.  Do not expose a
+            # provably invalid row to selectors or lifecycle code.
+            out, _, quality = audit_option_frame(
+                out, source_version=spec.source_version,
+                partition="read_boundary",
+            )
+            # Invalid legacy rows are excluded here; the audit/readiness path
+            # reports their quarantine evidence separately.
         return out
 
     def read_option_chain(self, symbol: str, trade_date, expiration=None) -> pd.DataFrame:
@@ -442,12 +451,21 @@ class PCSDataAccess:
             date_clause = " AND trade_date >= ?" if start_date is not None else ""
             params = files + [str(symbol).upper()] + ([pd.Timestamp(start_date).date()] if start_date is not None else [])
             gsql = f"""WITH raw AS ({relations}) SELECT coalesce(sum(CASE WHEN n>1 THEN n ELSE 0 END),0) duplicate_rows, coalesce(count(CASE WHEN n>1 THEN 1 END),0) duplicate_keys, coalesce(count(CASE WHEN n>1 AND versions>1 THEN 1 END),0) conflicting_keys, coalesce(count(CASE WHEN n>1 AND versions=1 THEN 1 END),0) identical_keys FROM (SELECT symbol,trade_date,expiration_date,call_put,strike,count(*) n,count(DISTINCT {hash_expr}) versions FROM raw WHERE symbol=?{date_clause} GROUP BY ALL)"""
-            qsql = f"""WITH raw AS ({relations}) SELECT count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows,count(CASE WHEN symbol IS NULL OR trade_date IS NULL OR expiration_date IS NULL OR call_put IS NULL OR strike IS NULL THEN 1 END) null_identity_rows FROM raw WHERE symbol=?{date_clause}"""
+            qsql = f"""WITH raw AS ({relations}) SELECT count(*) canonical_rows,count(CASE WHEN symbol IS NULL OR trade_date IS NULL OR expiration_date IS NULL OR expiration_date<=trade_date OR call_put NOT IN ('p','c') OR strike IS NULL OR NOT isfinite(strike) OR strike<=0 OR bid IS NULL OR NOT isfinite(bid) OR bid<0 OR ask IS NULL OR NOT isfinite(ask) OR ask<0 OR ask<bid THEN 1 END) executable_invalid_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows,count(CASE WHEN symbol IS NULL OR trade_date IS NULL OR expiration_date IS NULL OR call_put IS NULL OR strike IS NULL THEN 1 END) null_identity_rows FROM raw WHERE symbol=?{date_clause}"""
             g = con.execute(gsql, params).fetchone()
             q = con.execute(qsql, params).fetchone()
         finally:
             con.close()
-        return {"duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[0]), "valid_30_45_dte_quote_rows": int(q[1]), "valid_30_45_dte_expiration_rows": int(q[2]), "valid_30_45_dte_strike_rows": int(q[3]), "null_identity_rows": int(q[4])}
+        quarantine_files = list((self.parquet_root / "quarantine" / spec.dataset / f"symbol={str(symbol).upper()}").rglob("*.parquet"))
+        quarantined_rows = 0; reason_breakdown = {}; affected_dates = set(); affected_partitions = set()
+        for path in quarantine_files:
+            qf = pd.read_parquet(path, columns=["reason_code", "trade_date", "partition"])
+            quarantined_rows += len(qf)
+            reason_breakdown.update({k: int(reason_breakdown.get(k, 0) + v) for k, v in qf["reason_code"].value_counts().items()})
+            affected_dates.update(str(x) for x in qf["trade_date"].dropna().unique())
+            affected_partitions.update(str(x) for x in qf["partition"].dropna().unique())
+        canonical_rows = int(q[0]); invalid_rows = int(q[1])
+        return {"raw_rows": canonical_rows + quarantined_rows, "canonical_rows": canonical_rows, "quarantined_rows": quarantined_rows, "executable_rows": canonical_rows - invalid_rows, "executable_invalid_rows": invalid_rows, "reason_breakdown": reason_breakdown, "affected_dates": sorted(affected_dates), "affected_partitions": sorted(affected_partitions), "affected_percentage": (100.0 * quarantined_rows / (canonical_rows + quarantined_rows)) if canonical_rows + quarantined_rows else 0.0, "duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[2]), "valid_30_45_dte_quote_rows": int(q[3]), "valid_30_45_dte_expiration_rows": int(q[4]), "valid_30_45_dte_strike_rows": int(q[5]), "null_identity_rows": int(q[6])}
 
     def read_quotes_for_windows(self, symbol: str, windows: list[tuple[object, object]], columns: list[str] | None = None) -> pd.DataFrame:
         """Read selected canonical quote windows with one bounded query."""
@@ -466,6 +484,9 @@ class PCSDataAccess:
             con.close()
         self.validate_coverage(out, spec.symbol, min(a for a, _ in normalized), max(b for _, b in normalized), "trade_date")
         out = self.validate_schema(out, spec.dataset)
+        out, _, quality = audit_option_frame(
+            out, source_version=spec.source_version, partition="read_boundary"
+        )
         return out
 
     def read_partition(self, dataset: str, symbol: str, partition: str, filename: str | None = None) -> pd.DataFrame:
@@ -483,7 +504,20 @@ class PCSDataAccess:
 
     def write(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False) -> Path:
         symbol = self._symbol(symbol)
-        checked = self.validate_schema(frame, dataset)
+        if dataset == "options" or dataset.startswith("options"):
+            checked, quarantined, quality = audit_option_frame(frame, source_version=source_version, partition=partition)
+            if len(quarantined):
+                qdir = self.parquet_root / "quarantine" / dataset / f"symbol={symbol}" / partition
+                qdir.mkdir(parents=True, exist_ok=True)
+                qname = (filename or f"{symbol}_{partition.replace('=', '_').replace('/', '_')}.parquet").replace(".parquet", ".quarantine.parquet")
+                quarantined.to_parquet(qdir / qname, index=False)
+            if quality["partition_status"] == "PARTITION_REPAIR_REQUIRED":
+                reasons = quality.get("reason_breakdown", {})
+                detail = "ambiguous/conflicting option identity" if reasons.get("OPTION_CONFLICTING_IDENTITY") else "structural option quote corruption"
+                raise DataQualityError(f"PARTITION_REPAIR_REQUIRED:{symbol}:{partition}:{quality['affected_percentage']:.4f}% invalid option rows ({detail})")
+        else:
+            checked = frame
+        checked = self.validate_schema(checked, dataset)
         self.validate_coverage(checked, symbol, date_column="trade_date" if dataset == "options" or dataset.startswith("options") else "date")
         target = self.parquet_root / dataset / f"symbol={symbol}" / partition
         target.mkdir(parents=True, exist_ok=True)

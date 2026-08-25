@@ -1,5 +1,6 @@
 """Canonical schemas for derived local storage."""
 
+import numpy as np
 import pandas as pd
 
 OPTIONS_SCHEMA_VERSION = 1
@@ -22,6 +23,74 @@ def option_schema_map():
 
 
 OPTION_KEY_FIELDS = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+
+OPTION_QUARANTINE_REASON_CODES = (
+    "QUOTE_BID_INVALID", "QUOTE_ASK_INVALID", "QUOTE_CROSSED",
+    "OPTION_IDENTITY_INVALID", "OPTION_EXPIRATION_INVALID", "OPTION_STRIKE_INVALID",
+    "OPTION_DUPLICATE_IDENTITY", "OPTION_CONFLICTING_IDENTITY",
+)
+
+
+def audit_option_frame(frame, *, source=None, source_file=None, source_member=None,
+                       source_version=None, partition=None, structural_threshold=0.20):
+    """Partition raw option rows into executable and quarantined populations.
+
+    This is the single canonical quote-quality boundary.  It never repairs a
+    source row.  Every row participating in a duplicate or conflicting
+    identity is quarantined, so executable reads cannot select a first row
+    implicitly.
+    """
+    raw = frame.copy()
+    for field in OPTION_FIELDS:
+        if field not in raw:
+            raw[field] = pd.NA
+    raw = raw[OPTION_FIELDS + [c for c in raw.columns if c not in OPTION_FIELDS]].copy()
+    raw["symbol"] = raw["symbol"].where(raw["symbol"].notna(), pd.NA)
+    raw["symbol"] = raw["symbol"].astype("string").str.strip().str.upper()
+    raw["trade_date"] = pd.to_datetime(raw["trade_date"], errors="coerce").dt.date
+    raw["expiration_date"] = pd.to_datetime(raw["expiration_date"], errors="coerce").dt.date
+    raw["call_put"] = raw["call_put"].astype("string").str.strip().str.lower()
+    raw["strike"] = pd.to_numeric(raw["strike"], errors="coerce")
+    raw["bid"] = pd.to_numeric(raw["bid"], errors="coerce")
+    raw["ask"] = pd.to_numeric(raw["ask"], errors="coerce")
+    reasons = pd.Series(pd.NA, index=raw.index, dtype="string")
+    reasons = reasons.mask(raw.symbol.isna() | ~raw.symbol.str.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", na=False), "OPTION_IDENTITY_INVALID")
+    reasons = reasons.mask(reasons.isna() & raw.trade_date.isna(), "OPTION_IDENTITY_INVALID")
+    reasons = reasons.mask(reasons.isna() & raw.expiration_date.isna(), "OPTION_EXPIRATION_INVALID")
+    reasons = reasons.mask(reasons.isna() & raw.expiration_date.le(raw.trade_date), "OPTION_EXPIRATION_INVALID")
+    reasons = reasons.mask(reasons.isna() & ~raw.call_put.isin(["p", "c"]), "OPTION_IDENTITY_INVALID")
+    reasons = reasons.mask(reasons.isna() & (raw.strike.isna() | ~np.isfinite(raw.strike) | raw.strike.le(0)), "OPTION_STRIKE_INVALID")
+    reasons = reasons.mask(reasons.isna() & (raw.bid.isna() | ~np.isfinite(raw.bid) | raw.bid.lt(0)), "QUOTE_BID_INVALID")
+    reasons = reasons.mask(reasons.isna() & (raw.ask.isna() | ~np.isfinite(raw.ask) | raw.ask.lt(0)), "QUOTE_ASK_INVALID")
+    reasons = reasons.mask(reasons.isna() & raw.ask.lt(raw.bid), "QUOTE_CROSSED")
+    eligible = reasons.isna()
+    key = raw[OPTION_KEY_FIELDS].astype(object).astype(str).agg("|".join, axis=1)
+    duplicate = eligible & key.duplicated(keep=False)
+    if duplicate.any():
+        payload = [c for c in OPTION_FIELDS if c not in OPTION_KEY_FIELDS]
+        varying = raw.loc[eligible].groupby(key[eligible], sort=False, dropna=False)[payload].nunique(dropna=False).gt(1).any(axis=1)
+        conflict_keys = set(varying[varying].index)
+        reasons = reasons.mask(duplicate & key.isin(conflict_keys), "OPTION_CONFLICTING_IDENTITY")
+        reasons = reasons.mask(duplicate & ~key.isin(conflict_keys), "OPTION_DUPLICATE_IDENTITY")
+    meta = {"source": source, "source_file": source_file, "source_member": source_member,
+            "source_version": source_version, "partition": partition}
+    quarantine = raw.loc[reasons.notna()].copy()
+    for field, value in meta.items(): quarantine[field] = value
+    quarantine["reason_code"] = reasons.loc[reasons.notna()].astype(str).to_numpy()
+    # Keep optional vendor columns on valid rows; only the executable quality
+    # decision is canonicalized.  Raw/source payload is never repaired.
+    valid = raw.loc[reasons.isna()].reset_index(drop=True)
+    invalid = int(len(quarantine)); total = int(len(raw))
+    summary = {
+        "raw_rows": total, "canonical_rows": len(valid), "quarantined_rows": invalid,
+        "executable_rows": len(valid), "executable_invalid_rows": 0,
+        "reason_breakdown": quarantine.reason_code.value_counts().astype(int).to_dict() if len(quarantine) else {},
+        "affected_dates": sorted({str(x) for x in quarantine.trade_date.dropna().unique()}),
+        "affected_partitions": sorted({str(x) for x in quarantine.partition.dropna().unique()}),
+        "affected_percentage": (100.0 * invalid / total) if total else 0.0,
+        "partition_status": "PARTITION_REPAIR_REQUIRED" if total and invalid / total >= structural_threshold else "VALIDATED",
+    }
+    return valid, quarantine.reset_index(drop=True), summary
 
 
 def canonicalize_option_frame(frame):

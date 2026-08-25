@@ -27,7 +27,7 @@ import yaml
 
 from .access import PCSDataAccess, DataQualityError
 from .import_option_archives import OPTION_COLUMNS
-from .storage_schema import OPTION_FIELDS
+from .storage_schema import OPTION_FIELDS, audit_option_frame
 
 KEY = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
 COMPARE = ["last", "bid", "ask", "bid_iv", "ask_iv", "open_interest", "volume"]
@@ -87,9 +87,13 @@ class ConflictPolicyResult:
 
 
 def apply_conflict_policy(txt: pd.DataFrame, clickhouse: pd.DataFrame) -> ConflictPolicyResult:
-    """Apply ``VENDOR_CONFLICT_RESOLVED_BY_FIRST_RAW_ROW`` deterministically."""
+    """Apply the canonical fail-closed identity policy.
+
+    Conflicting identities are not resolved by source order.  They are
+    excluded from the executable population and counted for quarantine/audit.
+    """
     frame = txt[OPTION_FIELDS].copy()
-    for data in (frame, clickhouse):
+    for data in (frame, clickhouse.copy() if clickhouse is not None else None):
         if data is None or data.empty:
             continue
         data["symbol"] = data["symbol"].astype(str).str.upper()
@@ -97,18 +101,21 @@ def apply_conflict_policy(txt: pd.DataFrame, clickhouse: pd.DataFrame) -> Confli
             data[col] = pd.to_datetime(data[col], errors="coerce").dt.date
         data["call_put"] = data["call_put"].astype(str).str.lower()
         data["strike"] = pd.to_numeric(data["strike"], errors="coerce")
-    exact = frame.drop_duplicates(subset=OPTION_FIELDS, keep="last")
+    checked, _, quality = audit_option_frame(frame, source="onboarding")
+    exact = checked.drop_duplicates(subset=OPTION_FIELDS, keep="last")
     removed = len(frame) - len(exact)
     groups = exact.groupby(KEY, sort=False, dropna=False)
     if all(len(group) == 1 for _, group in groups):
-        return ConflictPolicyResult(exact.reset_index(drop=True), removed, 0, 0)
+        blocked = int(quality["reason_breakdown"].get("OPTION_DUPLICATE_IDENTITY", 0))
+        blocked += int(quality["reason_breakdown"].get("OPTION_CONFLICTING_IDENTITY", 0))
+        return ConflictPolicyResult(exact.reset_index(drop=True), removed, 0, blocked)
     selected = []
-    resolved = blocked = 0
+    blocked = 0
     for _, group in groups:
         if len(group) == 1:
             selected.append(group.iloc[0]); continue
-        selected.append(group.iloc[0]); resolved += 1
-    return ConflictPolicyResult(pd.DataFrame(selected, columns=OPTION_FIELDS).reset_index(drop=True), removed, resolved, 0)
+        blocked += 1
+    return ConflictPolicyResult(pd.DataFrame(selected, columns=OPTION_FIELDS).reset_index(drop=True), removed, 0, blocked)
 
 
 def _sha256_bytes(data: bytes) -> str:
