@@ -22,7 +22,12 @@ def main():
     for symbol, (start, end) in WINDOWS.items():
         stock = daily(symbol, end)
         benchmark = daily("QQQ", end)
-        result = run_backtest(stock, benchmark, option_root=f"data/raw/options/{symbol}", start=start, end=end, backend="duckdb")
+        # The DuckDB/legacy backend is intentionally disabled in
+        # credit_stop.  Keep this runner on the same canonical PCSDataAccess
+        # route as the replay engine; otherwise the script either fails after
+        # doing preflight work or, if a legacy backend is reintroduced, can
+        # diverge from the authoritative option source.
+        result = run_backtest(stock, benchmark, option_root=f"data/raw/options/{symbol}", start=start, end=end, backend="canonical")
         trades = pd.DataFrame([{**{k: v for k, v in row.items() if k != "events"}, "ticker": symbol, "entry_date": row["date"], "spot": row["close"], "ATR": row["atr14"], "Trend Gate": row.get("trend_gate"), "DTE": (pd.Timestamp(row["expiration"]) - pd.Timestamp(row["date"])).days, "width": row["short_strike"] - row["long_strike"], "credit": row["initial_credit"], "short_delta": None} for row in result["trades"]])
         all_trades.append(trades)
         trend = stock[(stock.date >= pd.Timestamp(start)) & (stock.date <= pd.Timestamp(end))]
