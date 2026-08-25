@@ -23,6 +23,12 @@ from pcs.research.variant_b_replay import ReplayPolicy
 YEARS = (2020, 2021, 2022, 2023)
 MODULE = "pcs.research.qqq_h006_new_entry_sharded"
 
+
+def _atomic_json(path: Path, value: dict) -> None:
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
+    os.replace(temp, path)
+
 def _shard_identity(year: int) -> dict:
     access = PCSDataAccess()
     daily = access.resolve_source("daily", "QQQ", "2010-01-01", f"{year}-12-31")
@@ -121,12 +127,15 @@ def _one_year(year: int, root: Path) -> dict:
     shard_status = "COMPLETED" if option_failures == 0 and lifecycle_failures == 0 else "BLOCKED_INCOMPLETE_CANONICAL_REPLAY"
     counts={"year":year,"rows":len(out),"signal_dates":int(out.signal_date.sum()),"option_data_available":int(out.option_chain_available.sum()),"contract_selected":int(out.contract_selected.sum()),"lifecycle_completed":int(out.lifecycle_completed.sum()),"option_read_failures":option_failures,"lifecycle_failures":lifecycle_failures,"status":shard_status,"shard_identity":_shard_identity(year)}
     for code in ["NO_OPTION_DATA","NO_DTE","NO_SAFE_STRIKE","LIQUIDITY_FAIL","CREDIT_FAIL","CONTRACT_FAIL","LIFECYCLE_FAIL"]: counts[code]=int(out.reason_code.eq(code).sum())
-    summary.write_text(json.dumps(counts,indent=2,default=str),encoding="utf-8"); return counts
+    _atomic_json(summary, counts); return counts
 
 def run(output_dir="research_outputs/qqq_entry_discovery_agent_v1_h006_timing_train/shards", workers=4):
-    root=Path(output_dir); root.mkdir(parents=True,exist_ok=True); workers=min(8,max(1,int(workers)))
+    root=Path(output_dir)
+    if not root.is_absolute(): root=Path(__file__).resolve().parents[3]/root
+    root.mkdir(parents=True,exist_ok=True); workers=min(8,max(1,int(workers)))
     with ThreadPoolExecutor(max_workers=workers) as pool: parts=list(pool.map(lambda y:_one_year(y,root),YEARS))
     if any(part.get("status") != "COMPLETED" for part in parts):
         return {"module":MODULE,"version":"v1","status":"BLOCKED_INCOMPLETE_CANONICAL_REPLAY","data_source":"PCS_CANONICAL_DATA","workers":workers,"shards":parts,"rows":0,"final_oos_read":False,"validation_read":False,"production_changes":False}
-    frames=[pd.read_parquet(root/f"shard_{y}.parquet") for y in YEARS]; merged=pd.concat(frames,ignore_index=True).sort_values(["trade_date","ticker"]); merged.to_parquet(root/"merged.parquet",index=False)
+    frames=[pd.read_parquet(root/f"shard_{y}.parquet") for y in YEARS]; merged=pd.concat(frames,ignore_index=True).sort_values(["trade_date","ticker"])
+    merged_tmp=root/".merged.parquet.tmp"; merged.to_parquet(merged_tmp,index=False); os.replace(merged_tmp,root/"merged.parquet")
     return {"module":MODULE,"version":"v1","status":"COMPLETED","data_source":"PCS_CANONICAL_DATA","workers":workers,"shards":parts,"rows":len(merged),"final_oos_read":False,"validation_read":False,"production_changes":False}
