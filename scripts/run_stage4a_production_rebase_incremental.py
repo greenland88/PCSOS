@@ -1,6 +1,6 @@
 """Resumable physical-partition builder for the Stage 4A production universe."""
 from __future__ import annotations
-import hashlib, json, os, sys
+import hashlib, json, os, sys, uuid
 from pathlib import Path
 import pandas as pd
 
@@ -16,10 +16,18 @@ POPS={"NVDA":ROOT/"candidate_inputs/NVDA.parquet","AMD":ROOT/"candidate_inputs/A
 PARTITION_COLUMNS=STRUCTURAL_OPPORTUNITY_COLUMNS+("opportunity_id","pit_asof","source_partition","source_provenance")
 
 def atomic_json(path: Path, value: object):
-    tmp=path.with_suffix(path.suffix+".tmp"); tmp.write_text(json.dumps(value,indent=2,default=str),encoding="utf-8"); os.replace(tmp,path)
+    tmp=path.with_name(f".{path.name}.{os.getpid()}.{hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:12]}.tmp"); tmp.write_text(json.dumps(value,indent=2,default=str),encoding="utf-8"); os.replace(tmp,path)
 
 def atomic_parquet(frame: pd.DataFrame, path: Path):
-    tmp=path.with_suffix(path.suffix+".tmp"); frame.to_parquet(tmp,index=False); os.replace(tmp,path)
+    tmp=path.with_name(f".{path.name}.{os.getpid()}.{hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:12]}.tmp")
+    try:
+        frame.to_parquet(tmp,index=False); os.replace(tmp,path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "ABSENT"
 
 def main():
     OUT.mkdir(parents=True,exist_ok=True); part_dir=OUT/"production_universe_partitions"; part_dir.mkdir(exist_ok=True)
@@ -33,13 +41,22 @@ def main():
         files=[None]
         for file in files:
             key=f"{ticker}|canonical-route"
+            identity = {
+                "ticker": ticker,
+                "population_sha256": file_digest(pop_path),
+                "daily_source_identity": access.source_data_identity("daily", ticker),
+                "options_source_identity": access.source_data_identity("options", ticker),
+                "runner_sha256": file_digest(Path(__file__).resolve()),
+                "generator_sha256": file_digest(Path(__file__).resolve().parents[1] / "src/pcs/research/stage4a_production_universe.py"),
+            }
             final=part_dir/(hashlib.sha256(key.encode()).hexdigest()[:20]+".parquet")
             existing=progress["partitions"].get(key)
             if existing and existing.get("status")=="COMPLETE" and final.exists():
                 existing_frame=pd.read_parquet(final)
                 schema_ok=set(PARTITION_COLUMNS).issubset(existing_frame.columns)
                 identity_ok=existing_frame.empty or (existing_frame.opportunity_id.notna().all() and not existing_frame.opportunity_id.duplicated().any())
-                if schema_ok and identity_ok and len(existing_frame)==existing.get("opportunities",-1):
+                if (schema_ok and identity_ok and len(existing_frame)==existing.get("opportunities",-1)
+                        and existing.get("identity") == identity):
                     continue
             raw=access.read_quotes(ticker, min(dates), max(dates))
             raw["trade_date"]=pd.to_datetime(raw["trade_date"]).dt.normalize(); raw=raw[raw.trade_date.isin(dates)]
@@ -50,7 +67,7 @@ def main():
                     identity="|".join([ticker,str(day.date()),str(row["expiration"].date()),"p",str(row["short_strike"]),str(row["long_strike"])])
                     row.update({"opportunity_id":hashlib.sha256(identity.encode()).hexdigest()[:24],"pit_asof":str(day.date()),"source_partition":"PCSDataAccess.resolve_source(options)","source_provenance":"PCSDataAccess canonical resolved route"}); rows.append(row)
             frame=pd.DataFrame(rows,columns=PARTITION_COLUMNS); atomic_parquet(frame,final)
-            progress["partitions"][key]={"ticker":ticker,"source_partition":str(file),"decision_dates":int(raw.trade_date.nunique()),"raw_chain_rows":int(len(raw)),"opportunities":int(len(frame)),"duplicate_ids":int(frame.opportunity_id.duplicated().sum()) if not frame.empty else 0,"status":"COMPLETE","validation":"PASS"}
+            progress["partitions"][key]={"ticker":ticker,"source_partition":str(file),"decision_dates":int(raw.trade_date.nunique()),"raw_chain_rows":int(len(raw)),"opportunities":int(len(frame)),"duplicate_ids":int(frame.opportunity_id.duplicated().sum()) if not frame.empty else 0,"status":"COMPLETE","validation":"PASS","identity":identity}
             atomic_json(progress_path,progress)
     frames=[pd.read_parquet(p) for p in part_dir.glob("*.parquet")]
     universe=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
