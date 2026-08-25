@@ -23,11 +23,12 @@ RUNNER = Path(__file__).resolve()
 
 def shard_identity(symbol, start, end):
     access = PCSDataAccess()
-    daily = access.resolve_source("daily", symbol)
-    options = access.resolve_source("options", symbol)
     payload = {"ticker": symbol, "start": str(pd.Timestamp(start).date()), "end": str(pd.Timestamp(end).date()),
-               "daily_source_version": daily.source_version, "options_source_version": options.source_version,
-               "runner_sha256": hashlib.sha256(RUNNER.read_bytes()).hexdigest()}
+               "daily_source_identity": access.source_data_identity("daily", symbol),
+               "benchmark_source_identity": access.source_data_identity("daily", "QQQ"),
+               "options_source_identity": access.source_data_identity("options", symbol),
+               "runner_sha256": hashlib.sha256(RUNNER.read_bytes()).hexdigest(),
+               "backtest_sha256": hashlib.sha256((RUNNER.parents[1] / "src/pcs/research/credit_stop.py").read_bytes()).hexdigest()}
     payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
     return payload
 
