@@ -6,7 +6,9 @@ import pandas as pd
 import yaml
 from pcs.data.access import PCSDataAccess
 from pcs.research.rules.core import resolve_scenario
-from run_qqq_frozen_validation_20260824 import first_per_episode, replay, stats, select, context, load_quotes_duckdb
+from run_qqq_frozen_validation_20260824 import first_per_episode, replay, stats, select, context
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/"research_outputs"/"qqq_frozen_historical_test_2024_2025"
@@ -17,13 +19,12 @@ ART=ROOT/"research_outputs/qqq_entry_discovery_agent_v1/artifacts"
 def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def features(access):
     d=access.read_prices("QQQ","2010-01-01","2025-12-31").copy(); d.date=pd.to_datetime(d.date).dt.normalize(); d=d.sort_values("date").reset_index(drop=True)
-    prev=d.close.shift(1); tr=pd.concat([(d.high-d.low),(d.high-prev).abs(),(d.low-prev).abs()],axis=1).max(axis=1)
-    d["atr14"]=tr.rolling(14,min_periods=14).mean(); d["ret5"]=d.close.pct_change(5); d["ret10"]=d.close.pct_change(10); d["ret20"]=d.close.pct_change(20); d["ret60"]=d.close.pct_change(60)
+    d["atr14"]=calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]; d["ret5"]=d.close.pct_change(5); d["ret10"]=d.close.pct_change(10); d["ret20"]=d.close.pct_change(20); d["ret60"]=d.close.pct_change(60)
     for n in (20,50,200): d[f"sma{n}"]=d.close.rolling(n,min_periods=n).mean(); d[f"close_sma{n}"]=d.close/d[f"sma{n}"]-1; d[f"sma{n}_slope20"]=d[f"sma{n}"].pct_change(20)
     d["drawdown60"]=d.close/d.close.rolling(60,min_periods=60).max()-1; d["close_sma50_atr"]=(d.close-d.sma50)/d.atr14; d["prior_close_sma50_atr"]=d.close_sma50_atr.shift(1); d["realized_vol20"]=d.close.pct_change().rolling(20).std()*252**.5
     return d
 def selector_daily(access):
-    d=access.read_prices("QQQ","2010-01-01","2025-12-31").copy(); d.date=pd.to_datetime(d.date).dt.normalize(); d=d.sort_values("date").drop_duplicates("date"); prev=d.close.shift(1); tr=pd.concat([(d.high-d.low),(d.high-prev).abs(),(d.low-prev).abs()],axis=1).max(axis=1); d["atr"]=tr.rolling(14,min_periods=14).mean(); return d
+    d=access.read_prices("QQQ","2010-01-01","2025-12-31").copy(); d.date=pd.to_datetime(d.date).dt.normalize(); d=d.sort_values("date").drop_duplicates("date"); d["atr"]=calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]; return d
 def run_one(name, dates, scenario, ds): return replay(name, dates, scenario, END, ds)
 def duration_rows(strategy, frame, calendar):
     out=[]
