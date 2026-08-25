@@ -24,6 +24,8 @@ from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, Lifecy
 from pcs.research.scheduled_event_calendar import load_calendar
 from pcs.research.variant_b_replay import ReplayPolicy, summarize_replay, _replay_lifecycle_batch, _load_replay_calendar
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def _atomic_parquet(frame: pd.DataFrame, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -168,7 +170,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                 & opts.expiration_date.gt(opts.trade_date)].copy()
     by_day = {d: g.copy() for d, g in opts.groupby("trade_date")}
     rules_cfg = load_rules(); gate_rules = json.loads(json.dumps(rules_cfg)); gate_rules["entry"]["hard_dte_min"] = int(rules["dte_min"]); gate_rules["entry"]["hard_dte_max"] = int(rules["dte_max"]); gate_rules["entry"]["safe_strike_atr"] = float(rules["safe_strike_atr"]); gate_rules["entry"]["min_credit_width_ratio"] = float(rules["min_credit_width_ratio"]); market_factory = canonical_market_state_factory(); regime_engine = MarketRegimeEngine(gate_rules)
-    calendar = _load_replay_calendar("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+    calendar = _load_replay_calendar(REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
     setup_rows = []; candidates = []; context_rows = []; event_cache = {}; rejected = {k: 0 for k in ["TREND","PULLBACK","SUPPORT","PREDICTABILITY","REGIME","EVENT","DTE","SAFE_STRIKE","LIQUIDITY","CREDIT_WIDTH"]}
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
     context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
