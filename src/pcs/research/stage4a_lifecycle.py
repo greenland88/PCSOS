@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from pcs.research.variant_b_replay import ReplayPolicy, _replay_lifecycle_batch
+from .integrity_contract import LedgerContract, LedgerKind, require_kind
 
 
 class LifecycleAdapterError(RuntimeError):
@@ -24,6 +25,12 @@ class Stage4ALifecycleReplayAdapter:
         if not p.exists():
             raise LifecycleAdapterError("LIFECYCLE_ARTIFACT_MISSING")
         return cls(pd.read_parquet(p), policy or ReplayPolicy())
+
+    @classmethod
+    def from_selected_trade_ledger(cls, ledger: LedgerContract, policy: ReplayPolicy | None = None):
+        """Admit only the canonical selected-economic-trade ledger."""
+        require_kind(ledger, LedgerKind.SELECTED_TRADE)
+        return cls(pd.DataFrame([dict(row) for row in ledger.rows]), policy or ReplayPolicy())
 
     def __post_init__(self):
         required = {"ticker", "candidate_id", "mark_date", "expiration", "short_strike", "long_strike", "short_bid", "short_ask", "long_bid", "long_ask", "option_type"}

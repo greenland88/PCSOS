@@ -309,8 +309,7 @@ class PCSDataAccess:
             raise FileNotFoundError(f"canonical {dataset} source unavailable for {symbol}")
         lo, hi = pd.Timestamp(rows.min_date.min()), pd.Timestamp(rows.max_date.max())
         # A readiness/executable window may begin before a ticker's physical
-        # route starts (NVDA v3 begins in 2020 while the universal boundary is
-        # earlier). Clamp the lower bound to available canonical coverage;
+        # route starts. Clamp the lower bound to available canonical coverage;
         # retain fail-closed behavior for an end date beyond source coverage.
         if start_date is not None and pd.Timestamp(start_date) < lo:
             if self.routing_mode == "canonical":

@@ -99,7 +99,12 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     if population.entry_contract_version.ne(ENTRY_CONTRACT_V2).any():
         raise ValueError("CONTRACT_FAILURE: non-v2 candidate row")
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    if lifecycle_replay is None:
+    needs_lifecycle = any(
+        str(row.get("event_state", "")) != config.event_unsupported_state
+        and bool(row.get("historical_replay_eligible", True))
+        for row in population.to_dict("records")
+    )
+    if lifecycle_replay is None and needs_lifecycle:
         from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
         lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
     portfolio = portfolio or {"planned_risk": 0, "bucket_risk": {}}

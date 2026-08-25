@@ -6,7 +6,6 @@ lifecycle execution remain delegated to the canonical PCS replay layer.
 from __future__ import annotations
 
 from typing import Any
-from dataclasses import replace
 from pathlib import Path
 import json
 import pandas as pd
@@ -15,7 +14,7 @@ from pcs.data.access import PCSDataAccess
 from pcs.strategies.research_templates.catalog import (
     GENERAL_PCS_RESEARCH_STRATEGIES, Evaluation, evaluate,
 )
-from pcs.strategies.adaptive_profiles import resolve_strategy_config
+from pcs.strategies.frozen_adaptive_config import load_frozen_strategy_config
 from .strategy_transfer_runner import _features
 from .research_framework import from_mapping
 from .runner import ResearchRunner
@@ -32,25 +31,18 @@ def evaluate_general_pcs(ticker: str, train_start: str = "2018-01-01",
     if mode not in {"FIXED", "ADAPTIVE"}: raise ValueError(f"UNKNOWN_STRATEGY_MODE:{mode}")
     access = data_access or PCSDataAccess.canonical()
     daily = access.read_prices(ticker, train_start, train_end)
-    resolved_configs = {strategy_id: resolve_strategy_config(strategy_id, ticker, daily).to_dict() for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES}
+    if mode == "ADAPTIVE":
+        frozen = load_frozen_strategy_config(ticker)
+        resolved_configs = {strategy_id: {**frozen.to_dict(), "strategy_id": strategy_id} for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES}
+    else:
+        resolved_configs = {}
     configs_by_date = {}
     if mode == "ADAPTIVE":
         daily_dates = pd.to_datetime(daily["date"]).drop_duplicates().sort_values().reset_index(drop=True)
-        # Resolve on a fixed 20-session PIT cadence and carry forward only
-        # configs already known at each later date; this keeps the replay
-        # bounded without allowing future observations into an earlier row.
-        config_dates = daily_dates.iloc[59::20]
-        for day in config_dates:
-            base = resolve_strategy_config(GENERAL_PCS_RESEARCH_STRATEGIES[0], ticker, daily, as_of=day)
-            configs_by_date[day.date().isoformat()] = {
-                strategy_id: replace(base, strategy_id=strategy_id).to_dict()
-                for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES
-            }
-        checkpoints = sorted(configs_by_date)
+        frozen_start = pd.Timestamp(frozen.as_of)
         for day in daily_dates:
-            key = day.date().isoformat()
-            prior = [x for x in checkpoints if x <= key]
-            if prior: configs_by_date[key] = configs_by_date[prior[-1]]
+            if day >= frozen_start:
+                configs_by_date[day.date().isoformat()] = resolved_configs
     windows = tuple(w for by_strategy in configs_by_date.values() for c in by_strategy.values() for w in (c["momentum_window_days"], c["recovery_window_days"])) if mode == "ADAPTIVE" else ()
     frame = _features(daily, return_windows=windows)
     rows = []
@@ -68,13 +60,16 @@ def evaluate_general_pcs(ticker: str, train_start: str = "2018-01-01",
                 ev = Evaluation(strategy_id, ticker.upper(), row.date, "NO_QUALIFY", "adaptive config warmup unavailable", ("ADAPTIVE_CONFIG_WARMUP",), {})
             else:
                 ev = evaluate(strategy_id, ticker, row.date, row.to_dict(), mode=mode, config=config)
+                if mode == "ADAPTIVE" and not ev.consumed_config_fields:
+                    raise RuntimeError("CONFIG_NOT_CONSUMED")
             evaluations[strategy_id] = ev
             if ev.status == "QUALIFY":
                 matches.append(strategy_id)
         rows.append({"ticker": ticker.upper(), "date": pd.Timestamp(row.date),
                      "matched_strategy_ids": matches,
                      "signal_overlap": len(matches) > 1,
-                     "evaluations": {k: {"status": v.status, "reason_codes": list(v.reason_codes)} for k, v in evaluations.items()}})
+                     "evaluations": {k: {"status": v.status, "reason_codes": list(v.reason_codes),
+                                         "consumed_config_fields": list(v.consumed_config_fields)} for k, v in evaluations.items()}})
     signals = pd.DataFrame(rows)
     return {"strategy_family": "GENERAL_PCS", "ticker": ticker.upper(), "mode": mode,
             "strategies": list(GENERAL_PCS_RESEARCH_STRATEGIES),

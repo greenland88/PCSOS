@@ -3,6 +3,7 @@ import pandas as pd
 from types import SimpleNamespace
 
 from pcs.strategies.adaptive_profiles import measure_characteristics, resolve_strategy_config
+from pcs.strategies.frozen_adaptive_config import load_frozen_strategy_config
 from pcs.strategies.research_templates.catalog import evaluate
 
 
@@ -50,3 +51,10 @@ def test_adaptive_predicate_uses_resolved_window_and_differs_from_fixed():
     assert evaluate("PCS_TREND_CONTINUATION_V1", "META", "2024-01-02", features).status == "NO_QUALIFY"
     assert evaluate("PCS_TREND_CONTINUATION_V1", "META", "2024-01-02", features,
                     mode="ADAPTIVE", config=config).status == "QUALIFY"
+
+
+def test_frozen_adaptive_config_is_readable_and_execution_constants_remain_frozen():
+    config = load_frozen_strategy_config("META")
+    assert config.as_of == "2019-12-31"
+    assert config.momentum_window_days == 6
+    assert (config.dte_min, config.dte_max, config.safe_strike_atr, config.min_credit_width) == (30, 45, 2.3, 0.10)

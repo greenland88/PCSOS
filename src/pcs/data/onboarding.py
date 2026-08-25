@@ -283,7 +283,12 @@ def _checkpoint_path(root: Path, symbol: str) -> Path:
 
 
 def activate_authoritative_route(symbol: str, *, dataset: str, manifest_path: str, parquet_root: str, routes_path: str | Path = "config/data_source_routes.yaml") -> None:
-    """Atomically activate a fully finalized generic ticker route."""
+    """Atomically activate a fully finalized and readable generic ticker route.
+
+    A successful manifest row is metadata, not proof that the execution
+    account can open the partition.  Promotion therefore performs a bounded
+    physical/schema smoke check before changing the route configuration.
+    """
     manifest = Path(manifest_path)
     if not manifest.exists():
         raise DataQualityError(f"CANONICAL_MANIFEST_MISSING:{manifest}")
@@ -294,6 +299,20 @@ def activate_authoritative_route(symbol: str, *, dataset: str, manifest_path: st
     selected = rows[(rows.dataset.astype(str) == str(dataset)) & (rows.symbol.astype(str).str.upper() == str(symbol).upper())]
     if selected.empty or not selected.status.astype(str).str.upper().eq("SUCCESS").all():
         raise DataQualityError(f"CANONICAL_MANIFEST_NOT_VALIDATED:{str(symbol).upper()}")
+    unreadable = []
+    for raw in selected.get("parquet_path", pd.Series(dtype=str)).dropna().astype(str):
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        try:
+            with candidate.open("rb"):
+                pass
+            # Metadata/schema read only; do not materialize the partition.
+            pd.read_parquet(candidate, engine="pyarrow", columns=[])
+        except (OSError, PermissionError, ValueError, ImportError) as exc:
+            unreadable.append({"path": str(candidate), "error": str(exc)})
+    if unreadable:
+        raise DataQualityError(f"CANONICAL_FILE_NOT_READABLE:{str(symbol).upper()}:{unreadable[:3]}")
     path = Path(routes_path); config = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
     config.setdefault("options", {}).setdefault("by_symbol", {})[str(symbol).upper()] = {"dataset": dataset, "manifest_path": manifest_path, "parquet_root": parquet_root}
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp"); tmp.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8"); os.replace(tmp, path)

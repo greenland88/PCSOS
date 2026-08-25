@@ -1,0 +1,24 @@
+status: FROZEN
+config_id: QQQ-adaptive-v1
+ticker: QQQ
+strategy_id: PCS_TREND_CONTINUATION_V1
+as_of: '2017-12-29'
+characteristics:
+  realized_volatility: 0.16513485497
+  normal_pullback_depth: -0.0207906937
+  trend_persistence: 0.2
+  recovery_speed_days: 68.0
+  volume_ratio_median: 0.9412243740
+  option_quote_coverage: null
+momentum_window_days: 4
+recovery_window_days: 20
+pullback_depth: -0.020791
+volume_ratio_floor: 0.847102
+dte_min: 30
+dte_max: 45
+safe_strike_atr: 2.3
+min_credit_width: 0.10
+module: pcs.strategies.adaptive_profiles
+version: '1.0'
+calculation_version: pit-behavior-v1
+reason_codes: [PIT_CHARACTERISTICS, RESEARCH_ONLY, NO_PNL_INPUT]

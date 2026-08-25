@@ -1,0 +1,24 @@
+status: FROZEN
+config_id: NVDA-adaptive-v1
+ticker: NVDA
+strategy_id: PCS_TREND_CONTINUATION_V1
+as_of: '2019-12-31'
+characteristics:
+  realized_volatility: 0.0
+  normal_pullback_depth: -0.1247439108
+  trend_persistence: 0.1
+  recovery_speed_days: 25.0
+  volume_ratio_median: 0.8996336554
+  option_quote_coverage: null
+momentum_window_days: 4
+recovery_window_days: 20
+pullback_depth: -0.124744
+volume_ratio_floor: 0.809670
+dte_min: 30
+dte_max: 45
+safe_strike_atr: 2.3
+min_credit_width: 0.10
+module: pcs.strategies.adaptive_profiles
+version: '1.0'
+calculation_version: pit-behavior-v1
+reason_codes: [PIT_CHARACTERISTICS, RESEARCH_ONLY, NO_PNL_INPUT]

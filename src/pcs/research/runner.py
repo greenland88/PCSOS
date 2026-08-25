@@ -11,6 +11,7 @@ import json
 import hashlib
 import os
 import gc
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import pandas as pd
@@ -28,6 +29,7 @@ from pcs.trend.indicators import calculate_base_indicators
 from pcs.trend.market_structure import _find_confirmed_swings
 from pcs.trend.relative_strength import RelativeStrengthResult, _classify_state, _is_stock_specific_weakness, _safe_return
 from .pit_cache_identity import build_pit_cache_identity, cache_identity_matches
+from .integrity_contract import REPRODUCIBILITY_REQUIRED, validate_reproducibility_manifest
 
 
 def _status_for_funnel(records: list[Any]) -> str:
@@ -209,9 +211,21 @@ class ResearchRunner:
     def _sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    @staticmethod
+    def _git_commit_sha() -> str:
+        """Return the exact source revision, never a semantic placeholder."""
+        try:
+            return subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
+                text=True, cwd=Path.cwd(), timeout=5,
+            ).strip()
+        except (OSError, subprocess.SubprocessError):
+            return "UNKNOWN_GIT_COMMIT"
+
     def write_artifact_manifest(self, files: list[str], *, data_version: str,
                                 population_semantics: str,
-                                artifact_version: str = "1.0") -> Path:
+                                artifact_version: str = "1.0",
+                                reproducibility: Mapping[str, Any] | None = None) -> Path:
         """Write the one CURRENT manifest for this research id."""
         for sibling in self.output_dir.parent.glob(f"{self.spec.research_id}*"):
             sibling_manifest = sibling / "artifact_manifest.json"
@@ -228,13 +242,37 @@ class ResearchRunner:
             if not path.is_file():
                 raise FileNotFoundError(f"artifact manifest file missing: {relative}")
             records.append({"path": relative.replace("\\", "/"), "sha256": self._sha256(path)})
+        identity = dict(reproducibility or {})
+        identity.setdefault("git_commit_sha", self._git_commit_sha())
+        identity.setdefault("research_spec_hash", spec_hash(self.spec))
+        identity.setdefault("runner_version", "pcs.research.runner:1.1")
+        identity.setdefault("feature_calculation_version", "UNKNOWN")
+        identity.setdefault("strategy_definition_hash", "UNKNOWN")
+        identity.setdefault("daily_source_version", data_version)
+        identity.setdefault("options_source_version", "UNKNOWN")
+        identity.setdefault("daily_manifest_path", "UNKNOWN")
+        identity.setdefault("options_manifest_path", "UNKNOWN")
+        identity.setdefault("daily_manifest_sha", "UNKNOWN")
+        identity.setdefault("options_manifest_sha", "UNKNOWN")
+        identity.setdefault("corporate_action_version", "UNKNOWN")
+        identity.setdefault("config_hash", "UNKNOWN")
+        identity.setdefault("population_hash", "UNKNOWN")
+        identity.setdefault("candidates_ledger_hash", "UNKNOWN")
+        identity.setdefault("selected_trade_ledger_hash", "UNKNOWN")
+        identity.setdefault("lifecycle_ledger_hash", "UNKNOWN")
+        complete = all(identity.get(key) not in (None, "", "UNKNOWN") for key in REPRODUCIBILITY_REQUIRED)
         manifest = {
-            "research_id": self.spec.research_id, "status": "CURRENT",
+            "research_id": self.spec.research_id,
+            "status": "CURRENT" if complete else "LEGACY_REFERENCE_INCOMPLETE",
             "artifact_version": artifact_version, "population_semantics": population_semantics,
             "data_source": "PCS_CANONICAL_DATA", "ticker": self.spec.ticker,
-            "created_at": datetime.now(timezone.utc).isoformat(), "code_version": "pcs.research.runner:1.1",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "code_version": "pcs.research.runner:1.1",
+            "git_commit_sha": self._git_commit_sha(),
             "data_version": data_version, "spec_hash": spec_hash(self.spec), "files": records,
-            "current": True,
+            "current": complete,
+            "reproducibility_complete": complete,
+            **identity,
         }
         target = self.output_dir / "artifact_manifest.json"
         temp = target.with_suffix(".json.tmp")
@@ -248,7 +286,8 @@ class ResearchRunner:
         if not path.is_file():
             raise RuntimeError("STALE_ARTIFACT")
         manifest = json.loads(path.read_text(encoding="utf-8"))
-        if (manifest.get("current") is not True or manifest.get("data_source") != "PCS_CANONICAL_DATA"
+        if ((manifest.get("current") is not True and manifest.get("status") != "LEGACY_REFERENCE_INCOMPLETE")
+                or manifest.get("data_source") != "PCS_CANONICAL_DATA"
                 or manifest.get("research_id") != self.spec.research_id
                 or manifest.get("spec_hash") != spec_hash(self.spec)
                 or manifest.get("code_version") != "pcs.research.runner:1.1"):
@@ -259,10 +298,24 @@ class ResearchRunner:
             raise RuntimeError("STALE_ARTIFACT") from exc
         if manifest.get("data_version") != current_data_version:
             raise RuntimeError("STALE_ARTIFACT")
+        recorded_git = manifest.get("git_commit_sha")
+        if recorded_git and recorded_git != self._git_commit_sha():
+            raise RuntimeError("STALE_ARTIFACT")
+        if manifest.get("reproducibility_complete") is True:
+            try:
+                validate_reproducibility_manifest(manifest)
+                current_options = PCSDataAccess().resolve_source("options", self.spec.ticker)
+            except Exception as exc:
+                raise RuntimeError("STALE_ARTIFACT") from exc
+            if manifest.get("options_source_version") != current_options.source_version:
+                raise RuntimeError("STALE_ARTIFACT")
         for record in manifest.get("files", []):
             file_path = self.output_dir / record["path"]
             if not file_path.is_file() or self._sha256(file_path) != record.get("sha256"):
                 raise RuntimeError("STALE_ARTIFACT")
+        if (manifest.get("status") == "LEGACY_REFERENCE_INCOMPLETE"
+                or manifest.get("reproducibility_complete") is not True):
+            raise RuntimeError("LEGACY_REFERENCE_INCOMPLETE")
         return manifest
 
     def dry_run(self, **kwargs: Any) -> dict[str, Any]:

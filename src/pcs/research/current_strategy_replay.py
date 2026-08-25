@@ -25,6 +25,9 @@ from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, Lifecy
 from pcs.research.scheduled_event_calendar import load_calendar
 from pcs.research.ticker_readiness import assert_research_ready
 from pcs.research.variant_b_replay import ReplayPolicy, summarize_replay, _replay_lifecycle_batch, _load_replay_calendar
+from pcs.research.integrity_contract import LedgerContract, LedgerKind, validate_execution_cardinality, deterministic_hash
+from pcs.research.research_framework import spec_hash
+from pcs.research.runner import ResearchRunner
 
 
 def _identity(ticker, day, expiry, short, long):
@@ -266,7 +269,11 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                         continue
                     rec["candidate_id"] = _identity(spec.ticker, day, exp, short.strike, long.strike); rec["initial_credit"] = credit; candidates.append(rec)
     frame = pd.DataFrame(candidates)
-    if broad_new_entry and len(frame):
+    # Explicit execution-date replays represent frozen decision dates and
+    # must use the same one-economic-contract-per-date selector as NEW_ENTRY.
+    # Without this, CURRENT_STRATEGY_REPLAY emitted every width/expiry choice
+    # for a frozen date and inflated lifecycle/aggregate metrics.
+    if (broad_new_entry or bool(execution_dates)) and len(frame):
         width_order = {float(width): rank for rank, width in enumerate(rules["allowed_widths"])}
         frame["_width_rank"] = frame["spread_width"].map(width_order).fillna(999)
         frame = (frame.sort_values(["date", "_width_rank", "dte", "credit"], ascending=[True, True, True, False])
@@ -321,6 +328,21 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         if adapter is None or str(r["candidate_id"]) not in eligible_candidate_ids: continue
         x = adapter(r); results.append({**r, **x})
     result_frame = pd.DataFrame(results); out = Path(output_dir) / spec.research_id; out.mkdir(parents=True, exist_ok=True)
+    if len(frame):
+        selected_ledger = LedgerContract.build(
+            LedgerKind.SELECTED_TRADE,
+            frame.to_dict("records"), symbol=spec.ticker, run_id=spec.research_id,
+        )
+        lifecycle_ledger = LedgerContract.build(
+            LedgerKind.LIFECYCLE,
+            result_frame.to_dict("records"), symbol=spec.ticker, run_id=spec.research_id,
+        )
+        validate_execution_cardinality(
+            signal_count=len(execution_dates) or len(frame),
+            episode_count=len(execution_dates) or len(frame),
+            selected=selected_ledger, lifecycle=lifecycle_ledger,
+            one_entry_per_episode=bool(execution_dates),
+        )
     if len(frame): frame.to_parquet(out / "candidates.parquet", index=False)
     if len(result_frame): result_frame.to_parquet(out / "lifecycle_results.parquet", index=False)
     if context_rows: pd.DataFrame(context_rows).drop_duplicates("decision_date").to_parquet(out / "entry_context.parquet", index=False)
@@ -351,4 +373,37 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     event_gate_applied = bool(rules["event_gate"] and event_available and event_pit_verified)
     report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "event_data_available":event_available, "event_pit_verified":event_pit_verified, "event_gate_applied":event_gate_applied, "event_gate_result":"APPLIED" if event_gate_applied else "NOT_AVAILABLE", "event_reason":calendar.attrs.get("event_reason", "NO_TICKER_EVENT_ROWS"), "funnel":{"TRADING_DAYS":len(decision_days),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "max_options_read_date":str(max_read_date.date()) if pd.notna(max_read_date) else None,"final_oos_read":final_oos_read,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
     (out / "replay_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    # Every canonical replay publishes a complete dependency identity.  The
+    # manifest is written only after all output files and cardinality checks
+    # succeed, so a partial replay cannot become CURRENT.
+    def file_hash(path):
+        import hashlib
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    _, daily_manifest, _ = access._resolve_route("daily", spec.ticker)
+    _, options_manifest, _ = access._resolve_route("options", spec.ticker)
+    manifest_files = [name for name in ("candidates.parquet", "lifecycle_results.parquet",
+                                        "entry_context.parquet", "yearly_metrics.json", "replay_report.json")
+                      if (out / name).is_file()]
+    identity = {
+        "research_spec_hash": spec_hash(spec),
+        "strategy_definition_hash": deterministic_hash(rules),
+        "feature_calculation_version": "current-strategy-replay-v1",
+        "daily_source_version": daily_source.source_version,
+        "options_source_version": option_source.source_version,
+        "daily_manifest_path": str(daily_manifest),
+        "options_manifest_path": str(options_manifest),
+        "daily_manifest_sha": file_hash(daily_manifest),
+        "options_manifest_sha": file_hash(options_manifest),
+        "corporate_action_version": deterministic_hash(price_basis_service.to_dict() if hasattr(price_basis_service, "to_dict") else str(price_basis_service)),
+        "config_hash": deterministic_hash({"rules": rules, "frozen_parameters": spec.frozen_parameters}),
+        "population_hash": deterministic_hash(sorted(str(x) for x in execution_dates) or sorted(str(x) for x in frame.get("date", []))),
+        "candidates_ledger_hash": selected_ledger.ledger_hash if len(frame) else deterministic_hash([]),
+        "selected_trade_ledger_hash": selected_ledger.ledger_hash if len(frame) else deterministic_hash([]),
+        "lifecycle_ledger_hash": lifecycle_ledger.ledger_hash if len(frame) else deterministic_hash([]),
+    }
+    ResearchRunner(spec, output_dir=output_dir).write_artifact_manifest(
+        manifest_files, data_version=daily_source.source_version,
+        population_semantics=report["population_semantics"],
+        reproducibility=identity,
+    )
     return report
