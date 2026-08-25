@@ -66,6 +66,28 @@ def test_routed_source_identity_uses_resolved_dataset_rows_only(tmp_path):
     assert first == second
 
 
+def test_source_identity_recursive_partitions_is_cwd_independent(tmp_path, monkeypatch):
+    data_root = tmp_path / "canonical-data"
+    manifest_dir = data_root / "manifests"
+    first = data_root / "parquet" / "options_v2" / "symbol=ZZZ" / "year=2026" / "quarter=1"
+    second = data_root / "parquet" / "options_v2" / "symbol=ZZZ" / "year=2026" / "quarter=2"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    first_file = first / "q1.parquet"
+    second_file = second / "q2.parquet"
+    pd.DataFrame({"symbol": ["ZZZ"], "trade_date": ["2026-01-02"]}).to_parquet(first_file, index=False)
+    pd.DataFrame({"symbol": ["ZZZ"], "trade_date": ["2026-04-01"]}).to_parquet(second_file, index=False)
+    manifest_dir.mkdir(parents=True)
+    pd.DataFrame([{"dataset": "options_v2", "symbol": "ZZZ", "status": "SUCCESS",
+                   "row_count": 2, "min_date": "2026-01-02", "max_date": "2026-04-01",
+                   "schema_version": "1"}]).to_csv(manifest_dir / "storage_manifest.csv", index=False)
+    access = PCSDataAccess(data_root=data_root, source_routes={"options": {"by_symbol": {"ZZZ": {"dataset": "options_v2"}}}})
+    original = access.source_data_identity("options", "ZZZ")
+    monkeypatch.chdir(tmp_path)
+    changed_cwd = access.source_data_identity("options", "ZZZ")
+    assert original == changed_cwd
+
+
 def _options(rows):
     return pd.DataFrame(rows, columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "last", "bid", "ask", "bid_iv", "ask_iv", "open_interest", "volume", "delta", "gamma", "vega", "theta", "rho"])
 
