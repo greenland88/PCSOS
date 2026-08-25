@@ -12,10 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
-from pcs.research.credit_stop import (
-    load_spread_quotes_duckdb,
-    run_backtest,
-)
+from pcs.research.credit_stop import load_spread_quotes_canonical, run_backtest
 
 OUT = Path("research_outputs/spy_qqq_pcs_baseline_20260821")
 START = pd.Timestamp("2020-01-02")
@@ -90,8 +87,8 @@ def _build_lifecycle(symbol: str, contract: dict, initial_credit: float) -> list
     entry = pd.Timestamp(contract["decision_date"])
     expiry = pd.Timestamp(contract["expiration"])
     tracking_end = min(expiry, entry + pd.Timedelta(days=45))
-    quotes = load_spread_quotes_duckdb(
-        ":memory:", symbol, entry, tracking_end, expiry,
+    quotes, _ = load_spread_quotes_canonical(
+        symbol, entry, tracking_end, expiry,
         [contract["short_strike"], contract["long_strike"]],
     )
     rows = []
