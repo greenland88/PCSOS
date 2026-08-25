@@ -1,6 +1,8 @@
 """Predeclared PIT-safe QQQ BAD_STATE / NO_TRADE diagnostics."""
 from pathlib import Path
 import json
+import os
+import uuid
 import pandas as pd
 
 ROOT = Path("research_outputs/qqq_entry_discovery_agent_v1")
@@ -21,10 +23,14 @@ def metrics(frame):
     }
 
 
-def episode_first(frame):
+def episode_first(frame, calendar):
     x = frame.sort_values("trade_date").copy()
-    x["episode_gap_days"] = x.trade_date.diff().dt.days.fillna(999)
-    x["episode_id"] = (x.episode_gap_days > 4).cumsum()
+    sessions = pd.DatetimeIndex(pd.to_datetime(calendar).dt.normalize().drop_duplicates().sort_values())
+    positions = pd.Series(range(len(sessions)), index=sessions)
+    x["session_index"] = x.trade_date.map(positions)
+    if x["session_index"].isna().any():
+        raise ValueError("QQQ_BAD_STATE_SESSION_INDEX_INCOMPLETE")
+    x["episode_id"] = x.session_index.diff().fillna(999).ne(1).cumsum()
     return x.groupby("episode_id", as_index=False).first()
 
 
@@ -53,8 +59,8 @@ def main():
     for name, mask in states.items():
         kept = d.loc[~mask]
         bad = d.loc[mask]
-        kept_ep = episode_first(kept)
-        bad_ep = episode_first(bad)
+        kept_ep = episode_first(kept, d.trade_date)
+        bad_ep = episode_first(bad, d.trade_date)
         out["states"][name] = {
             "bad_dates": int(mask.sum()),
             "bad_date_share": float(mask.mean()),
@@ -66,7 +72,13 @@ def main():
             "removed_tail_losses": int((bad.outcome_class == "TAIL_LOSS").sum()),
             "year_retained": {str(y): metrics(g) for y, g in kept.assign(year=kept.trade_date.dt.year).groupby("year")},
         }
-    Path(ART / "bad_state_no_trade_analysis.json").write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+    target = ART / "bad_state_no_trade_analysis.json"
+    temp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     print(json.dumps(out, indent=2, default=str))
 
 
