@@ -27,6 +27,11 @@ def connect(path: str = "data/pcs.db"):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    try:
+        conn.execute("ALTER TABLE decisions ADD COLUMN event_key TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS decisions_event_key_uq ON decisions(event_key) WHERE event_key IS NOT NULL")
     conn.commit()
     return conn
 

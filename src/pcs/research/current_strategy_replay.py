@@ -86,10 +86,14 @@ def build_lifecycle_quote_rows(quotes: pd.DataFrame, candidate: dict[str, Any]) 
         legs = {}
         for strike in (float(candidate["short_strike"]), float(candidate["long_strike"])):
             leg = group[group.strike.eq(strike)]
-            if len(leg) != 1:
-                reason = "MISSING" if len(leg) == 0 else "DUPLICATE"
-                raise LifecycleAdapterError("CANONICAL_PUT_LEG_MATCH_FAILURE:" + reason)
+            if len(leg) > 1:
+                raise LifecycleAdapterError("CANONICAL_PUT_LEG_MATCH_FAILURE:DUPLICATE")
+            if len(leg) == 0:
+                legs = None
+                break
             legs[strike] = leg.iloc[0]
+        if legs is None:
+            continue
         short = legs[float(candidate["short_strike"])]
         long = legs[float(candidate["long_strike"])]
         rows.append({"ticker": str(candidate["ticker"]).upper(), "candidate_id": candidate["candidate_id"], "option_type": "p",
@@ -158,14 +162,14 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         # Read only each requested decision window (plus lifecycle horizon)
         # instead of materializing the ticker's entire options history.
         requested = sorted({pd.Timestamp(x).normalize() for x in execution_dates})
-        windows = [(day, min(day + pd.Timedelta(days=50), option_last_date)) for day in requested]
+        windows = [(day, day) for day in requested]
         opts = access.read_quotes_for_windows(spec.ticker, windows)
         if len(opts):
             key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
             if opts.duplicated(key, keep=False).any():
                 raise LifecycleAdapterError("CANONICAL_QUOTE_DUPLICATE_IDENTITY")
     else:
-        opts = access.read_quotes(spec.ticker, max(train.date.min(), pd.Timestamp(option_source.first_date)), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
+        opts = access.read_quotes(spec.ticker, max(train.date.min(), pd.Timestamp(option_source.first_date)), min(train.date.max(), option_last_date))
     # The canonical reader returns the full options schema.  The replay only
     # needs these fields; retaining Greeks and provenance columns through the
     # per-day grouping otherwise multiplies memory use without changing any
@@ -184,6 +188,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     setup_rows = []; candidates = []; context_rows = []; event_cache = {}; rejected = {k: 0 for k in ["TREND","PULLBACK","SUPPORT","PREDICTABILITY","REGIME","EVENT","DTE","SAFE_STRIKE","LIQUIDITY","CREDIT_WIDTH"]}
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
     context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
+    broad_new_entry = spec.research_mode.value == "NEW_ENTRY"
     for day in train.date:
         if pd.Timestamp(day) < requested_start:
             continue
@@ -194,7 +199,6 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         feature_ready += 1
         tg = getattr(ctx.get("trend_gate_result"), "trend_gate_result", None); pg = getattr(ctx.get("pullback_gate_result"), "pullback_gate_result", None)
         clean = getattr(ctx.get("snapshot").cleanliness, "available", False)
-        broad_new_entry = spec.research_mode.value == "NEW_ENTRY"
         checks = [] if (track_a_execution_only or broad_new_entry) else [("TREND", rules["trend_gate"], tg == "PASS"), ("PULLBACK", rules["pullback_gate"], pg == "PASS"),
                   ("SUPPORT", rules["support_gate"], getattr(ctx.get("snapshot").support, "support_confluence_state", None) in {"moderate", "strong"}),
                   ("PREDICTABILITY", rules["predictability_gate"], clean)]

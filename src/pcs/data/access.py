@@ -115,6 +115,7 @@ class PCSDataAccess:
                         Path("data/manifests/storage_manifest_options_v3.csv"),
                     ])
                 matches = []
+                identities = set()
                 for candidate_manifest in candidates:
                     manifest = self._read_manifest(candidate_manifest)
                     if manifest.empty or "dataset" not in manifest.columns:
@@ -125,12 +126,15 @@ class PCSDataAccess:
                         & manifest.status.astype(str).str.upper().eq("SUCCESS")
                     ]
                     if not found.empty:
-                        matches.extend((str(row.dataset), candidate_manifest) for _, row in found.iterrows())
+                        for _, row in found.iterrows():
+                            identity = (str(row.dataset), str(candidate_manifest), str(row.get("source_version", "")), str(row.get("schema_version", "")))
+                            identities.add(identity)
+                            matches.append((str(row.dataset), candidate_manifest))
                 physical_versions = {name for name, _ in matches if name in {"options_v2", "options_v3"}}
-                if len(physical_versions) > 1:
+                if len(physical_versions) > 1 or len(identities) > 1:
                     raise DataAccessError(
                         f"AMBIGUOUS_CANONICAL_OPTIONS_ROUTE: symbol={self._symbol(symbol)} "
-                        f"datasets={sorted(physical_versions)}"
+                        f"identities={sorted(identities)}"
                     )
                 if matches:
                     dataset_name, manifest_name = sorted(matches, key=lambda x: (x[0], str(x[1])))[0]
@@ -274,22 +278,6 @@ class PCSDataAccess:
         if rows.empty:
             raise FileNotFoundError(f"canonical {dataset} source unavailable for {symbol}")
         lo, hi = pd.Timestamp(rows.min_date.min()), pd.Timestamp(rows.max_date.max())
-        if resolved_dataset.startswith("options_v2"):
-            # A v2 manifest may predate a validated incremental append. Use
-            # physical active partitions to extend coverage metadata without
-            # changing the manifest or accepting arbitrary descendants.
-            v2_files = [str(p) for p in (parquet_root / "options_v2" / f"symbol={symbol}").glob("year=*/quarter=*/*.parquet") if p.is_file()]
-            if v2_files:
-                try:
-                    physical = duckdb.connect().execute(
-                        "select min(trade_date), max(trade_date) from read_parquet(?)", [v2_files]
-                    ).fetchone()
-                    if physical[0] is not None:
-                        lo, hi = min(lo, pd.Timestamp(physical[0])), max(hi, pd.Timestamp(physical[1]))
-                except Exception:
-                    # The manifest remains authoritative when a stale or
-                    # inaccessible legacy physical path is present.
-                    pass
         if (start_date is not None and pd.Timestamp(start_date) < lo) or (end_date is not None and pd.Timestamp(end_date) > hi):
             raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if resolved_dataset == "options":
@@ -299,26 +287,16 @@ class PCSDataAccess:
             # use ** here: recursive discovery can make DuckDB scan the same
             # logical partition through overlapping descendants.
             symbol_root = parquet_root / resolved_dataset / f"symbol={symbol}"
-            active_files: list[Path] = []
+            active_files: list[Path] = [Path(str(p)) for p in rows.get("parquet_path", pd.Series(dtype=str)).dropna().tolist()]
+            active_files = [p if p.is_absolute() else Path.cwd() / p for p in active_files if p.exists()]
             requested_periods = None
             if start_date is not None and end_date is not None:
                 requested_periods = set(pd.period_range(pd.Timestamp(start_date), pd.Timestamp(end_date), freq="Q"))             
-            for partition_dir in symbol_root.glob("year=*/quarter=*"):
-                if requested_periods is not None:
-                    try:
-                        year = int(partition_dir.parent.name.split("=", 1)[1])
-                        quarter = int(partition_dir.name.split("=", 1)[1])
-                        if pd.Period(f"{year}Q{quarter}") not in requested_periods:
-                            continue
-                    except (ValueError, IndexError):
-                        raise DataQualityError(f"invalid option partition directory: {partition_dir}")
-                files = list(partition_dir.glob("*.parquet"))
-                if len(files) > 1:
-                    raise DataQualityError(
-                        f"multiple active option files for {symbol} {partition_dir.name}: "
-                        f"{[str(x) for x in files]}"
-                    )
-                active_files.extend(files)
+            # Only SUCCESS rows in the selected manifest define readable
+            # partitions. Files merely present on disk are unregistered.
+            if requested_periods is not None:
+                active_files = [p for p in active_files if p.parent.parent.name.startswith("year=") and
+                                pd.Period(f"{p.parent.parent.name.split('=', 1)[1]}Q{p.parent.name.split('=', 1)[1]}") in requested_periods]
             # Prefer manifest-listed physical files for the requested
             # partitions when the manifest provides a complete, existing set.
             manifest_files: list[Path] = []
@@ -464,12 +442,12 @@ class PCSDataAccess:
             date_clause = " AND trade_date >= ?" if start_date is not None else ""
             params = files + [str(symbol).upper()] + ([pd.Timestamp(start_date).date()] if start_date is not None else [])
             gsql = f"""WITH raw AS ({relations}) SELECT coalesce(sum(CASE WHEN n>1 THEN n ELSE 0 END),0) duplicate_rows, coalesce(count(CASE WHEN n>1 THEN 1 END),0) duplicate_keys, coalesce(count(CASE WHEN n>1 AND versions>1 THEN 1 END),0) conflicting_keys, coalesce(count(CASE WHEN n>1 AND versions=1 THEN 1 END),0) identical_keys FROM (SELECT symbol,trade_date,expiration_date,call_put,strike,count(*) n,count(DISTINCT {hash_expr}) versions FROM raw WHERE symbol=?{date_clause} GROUP BY ALL)"""
-            qsql = f"""WITH raw AS ({relations}) SELECT count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows FROM raw WHERE symbol=?{date_clause}"""
+            qsql = f"""WITH raw AS ({relations}) SELECT count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows,count(CASE WHEN symbol IS NULL OR trade_date IS NULL OR expiration_date IS NULL OR call_put IS NULL OR strike IS NULL THEN 1 END) null_identity_rows FROM raw WHERE symbol=?{date_clause}"""
             g = con.execute(gsql, params).fetchone()
             q = con.execute(qsql, params).fetchone()
         finally:
             con.close()
-        return {"duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[0]), "valid_30_45_dte_quote_rows": int(q[1]), "valid_30_45_dte_expiration_rows": int(q[2]), "valid_30_45_dte_strike_rows": int(q[3])}
+        return {"duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[0]), "valid_30_45_dte_quote_rows": int(q[1]), "valid_30_45_dte_expiration_rows": int(q[2]), "valid_30_45_dte_strike_rows": int(q[3]), "null_identity_rows": int(q[4])}
 
     def read_quotes_for_windows(self, symbol: str, windows: list[tuple[object, object]], columns: list[str] | None = None) -> pd.DataFrame:
         """Read selected canonical quote windows with one bounded query."""
