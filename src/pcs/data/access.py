@@ -314,7 +314,7 @@ class PCSDataAccess:
                 for raw_path in rows.parquet_path.dropna().astype(str):
                     candidate = Path(raw_path)
                     if not candidate.is_absolute():
-                        candidate = Path.cwd() / candidate
+                        candidate = self._storage_path(candidate)
                     if candidate.exists() and candidate.suffix == ".parquet":
                         manifest_files.append(candidate)
                 if manifest_files and requested_periods is not None:
