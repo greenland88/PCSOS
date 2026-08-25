@@ -54,6 +54,16 @@ def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _atomic_text(value: str, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(value, encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def canonical_market_state_factory(path: str | Path = "data/derived/canonical_pit_market_states.parquet") -> MarketStateFactory:
     """Return a fail-closed date-keyed factory for canonical PIT states."""
     if str(path).replace("\\", "/") == "data/derived/canonical_pit_market_states.parquet":
@@ -208,18 +218,24 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     _atomic_parquet(opened_df, config.output_dir / "stage4a_opened_trades.parquet")
     _atomic_parquet(results_df, config.output_dir / "stage4a_trade_results.parquet")
     summary = {"rows": len(population), "decisions": len(decisions_df), "opened": len(opened_df), "results": len(results_df), "decision_engine_evaluated": int((decisions_df.status == "REPLAYED").sum()) if len(decisions_df) else 0, "annualized": annualized_performance_metrics(results_df)}
-    (config.output_dir / "stage4a_entry_funnel.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    _atomic_text(json.dumps(summary, indent=2, default=str), config.output_dir / "stage4a_entry_funnel.json")
     if len(decisions_df):
         ticker_summary = decisions_df.groupby("ticker", as_index=False).agg(
             frozen=("candidate_id", "size"), decision_engine_evaluated=("status", lambda s: int((s == "REPLAYED").sum())),
             accepted=("accepted", "sum"), rejected=("accepted", lambda s: int((~s.fillna(False)).sum())))
     else:
         ticker_summary = pd.DataFrame(columns=["ticker", "frozen", "decision_engine_evaluated", "accepted", "rejected"])
-    ticker_summary.to_csv(config.output_dir / "stage4a_ticker_summary.csv", index=False)
-    (config.output_dir / "stage4a_full_replay_report.md").write_text(
+    csv_temp = config.output_dir / f".stage4a_ticker_summary.{uuid.uuid4().hex}.tmp"
+    try:
+        ticker_summary.to_csv(csv_temp, index=False)
+        os.replace(csv_temp, config.output_dir / "stage4a_ticker_summary.csv")
+    finally:
+        csv_temp.unlink(missing_ok=True)
+    _atomic_text(
         "# Stage 4A Full Replay\n\n" + json.dumps(summary, indent=2, default=str) +
-        "\n\nThis report is produced by the canonical orchestration boundary.\n", encoding="utf-8")
-    (config.output_dir / "stage4a_validation.json").write_text(json.dumps({"candidate_ids_unique": bool(decisions_df.candidate_id.is_unique) if len(decisions_df) else True, "opened_trade_ids_unique": bool(opened_df.opened_trade_id.is_unique) if len(opened_df) else True, "entry_contract_version": ENTRY_CONTRACT_V2}, indent=2), encoding="utf-8")
+        "\n\nThis report is produced by the canonical orchestration boundary.\n",
+        config.output_dir / "stage4a_full_replay_report.md")
+    _atomic_text(json.dumps({"candidate_ids_unique": bool(decisions_df.candidate_id.is_unique) if len(decisions_df) else True, "opened_trade_ids_unique": bool(opened_df.opened_trade_id.is_unique) if len(opened_df) else True, "entry_contract_version": ENTRY_CONTRACT_V2}, indent=2), config.output_dir / "stage4a_validation.json")
     return summary
 
 
