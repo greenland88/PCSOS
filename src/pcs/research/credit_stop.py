@@ -84,7 +84,10 @@ def load_quotes_canonical(symbol: str, start, end, root: str | Path | None = Non
     glob = canonical_option_glob(symbol, root)
     clean = _clean_option_frame_fast(_canonical_to_option_frame(raw))
     meta = {"source": "canonical_partitioned_parquet", "symbol": symbol.upper(), "path": glob,
-            "reader": "PCSDataAccess.read_parquet_duckdb", "rows_returned": len(clean)}
+            "reader": "PCSDataAccess.read_parquet_duckdb", "rows_returned": len(clean),
+            # Preserve the historical research metadata name while exposing
+            # the clearer canonical name used by newer callers.
+            "option_rows_loaded": len(clean)}
     return clean, meta
 
 def load_quotes_canonical_index(symbol: str, start, end, root: str | Path | None = None):

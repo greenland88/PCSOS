@@ -47,6 +47,7 @@ def test_canonical_source_is_ticker_specific_and_manifest_backed():
 def test_canonical_query_cannot_substitute_qqq():
     tsla, meta = load_quotes_canonical("TSLA", "2020-01-02", "2020-01-02")
     assert meta["symbol"] == "TSLA"
+    assert meta["option_rows_loaded"] == meta["rows_returned"]
     assert tsla.empty or tsla["Trade Date"].max() <= pd.Timestamp("2020-01-02")
 
 
