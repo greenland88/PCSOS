@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-import json, uuid
+import json, uuid, os
 import numpy as np
 import pandas as pd
 
@@ -158,7 +158,14 @@ def run_batch(tickers=TICKERS, output_dir="research_outputs/pcs_data_readiness")
     rows=[{"Ticker":r.symbol,"Daily Ready":r.DATA_READY,"Options Ready":r.OPTIONS_READY,"PIT Ready":r.PIT_READY,"Contract Ready":r.CONTRACT_SELECTION_READY,"Lifecycle Ready":r.LIFECYCLE_READY,"PCS Research Ready":r.PCS_RESEARCH_READY,"Primary Blocker":r.blockers[0]["reason_code"] if r.blockers else "NONE"} for r in results]; frame=pd.DataFrame(rows); frame.to_csv(out/"PCS_TICKER_READINESS_MATRIX.csv",index=False); report="# PCS ticker readiness report\n\nInfrastructure preflight only. Strategy edge and FINAL OOS outcomes were not read.\n\n"+frame.to_markdown(index=False)+"\n\n## Blockers\n"+"\n".join(f"### {r.symbol}\n"+"\n".join(f"- `{b['stage']}` `{b['reason_code']}`: {b['detail']}" for b in r.blockers) for r in results); (out/"PCS_TICKER_READINESS_REPORT.md").write_text(report,encoding="utf-8"); return results
 
 def persist_ticker_readiness(result: TickerReadiness, output_dir="research_outputs/pcs_data_readiness") -> Path:
-    out=Path(output_dir); out.mkdir(parents=True, exist_ok=True); path=out/f"{result.symbol.lower()}.json"; path.write_text(json.dumps(asdict(result),indent=2,default=str),encoding="utf-8"); return path
+    out=Path(output_dir); out.mkdir(parents=True, exist_ok=True); path=out/f"{result.symbol.lower()}.json"
+    temp=out/f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp.write_text(json.dumps(asdict(result),indent=2,default=str),encoding="utf-8")
+        os.replace(temp,path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return path
 
 def assert_research_ready(symbol: str, *, access=None):
     result=preflight_ticker(symbol,access=access)
