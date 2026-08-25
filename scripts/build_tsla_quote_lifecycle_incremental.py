@@ -12,6 +12,23 @@ PARTS=ROOT/"quote_partitions"
 VAR=ROOT/"tsla_specialized_candidate_variants.parquet"
 FROZEN=REPO_ROOT/"data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet"
 
+def atomic_json(path, value):
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+def atomic_parquet(frame, path):
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        frame.to_parquet(temp, index=False)
+        pd.read_parquet(temp)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
 def cid(r):
     return hashlib.sha256("|".join(str(r.get(x,"")) for x in ("ticker","date","expiration","short_strike","long_strike")).encode()).hexdigest()[:24]
 
@@ -41,9 +58,9 @@ def build():
                 rec={"base_candidate_id":r.base_candidate_id,"research_variant":r.research_variant,"date":dt,"short_bid":s.iloc[0].get("bid") if hs else pd.NA,"short_ask":s.iloc[0].get("ask") if hs else pd.NA,"long_bid":l.iloc[0].get("bid") if hl else pd.NA,"long_ask":l.iloc[0].get("ask") if hl else pd.NA,"availability":"AVAILABLE" if hs and hl else "MARK_UNAVAILABLE","source":"PCSDataAccess","provenance":"exact_date_expiration_put_strike"}; rows.append(rec)
                 mark=((rec["short_bid"]+rec["short_ask"])/2-(rec["long_bid"]+rec["long_ask"])/2) if hs and hl else pd.NA; marks.append({"base_candidate_id":r.base_candidate_id,"research_variant":r.research_variant,"date":dt,"spread_mark":mark,"mark_method":"MIDPOINT_SHORT_MINUS_LONG","mark_valid":bool(hs and hl)})
         qdf=pd.DataFrame(rows); mdf=pd.DataFrame(marks); tmpq=qpath.with_suffix(".tmp.parquet"); tmpm=mpath.with_suffix(".tmp.parquet"); qdf.to_parquet(tmpq,index=False); mdf.to_parquet(tmpm,index=False); pd.read_parquet(tmpq); pd.read_parquet(tmpm); os.replace(tmpq,qpath); os.replace(tmpm,mpath)
-        rec={"partition":month,"candidate_count":len(g),"required_quote_days":required,"short_quotes_found":found_s,"long_quotes_found":found_l,"both_found":both,"missing":required-both,"status":"COMPLETE" if both==required else "TRUE_SOURCE_GAPS","source":"PCSDataAccess","provenance":"canonical_exact_identity"}; done.write_text(json.dumps(rec,indent=2),encoding="utf-8"); manifest.append(rec)
-    (ROOT/"tsla_specialized_quote_progress.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
-    qs=pd.concat([pd.read_parquet(p) for p in sorted(PARTS.glob("quotes_*.parquet"))],ignore_index=True); ms=pd.concat([pd.read_parquet(p) for p in sorted(PARTS.glob("marks_*.parquet"))],ignore_index=True); qs.to_parquet(ROOT/"tsla_specialized_daily_quotes.parquet",index=False); ms.to_parquet(ROOT/"tsla_specialized_spread_marks.parquet",index=False)
+        rec={"partition":month,"candidate_count":len(g),"required_quote_days":required,"short_quotes_found":found_s,"long_quotes_found":found_l,"both_found":both,"missing":required-both,"status":"COMPLETE" if both==required else "TRUE_SOURCE_GAPS","source":"PCSDataAccess","provenance":"canonical_exact_identity"}; atomic_json(done,rec); manifest.append(rec)
+    atomic_json(ROOT/"tsla_specialized_quote_progress.json",manifest)
+    qs=pd.concat([pd.read_parquet(p) for p in sorted(PARTS.glob("quotes_*.parquet"))],ignore_index=True); ms=pd.concat([pd.read_parquet(p) for p in sorted(PARTS.glob("marks_*.parquet"))],ignore_index=True); atomic_parquet(qs,ROOT/"tsla_specialized_daily_quotes.parquet"); atomic_parquet(ms,ROOT/"tsla_specialized_spread_marks.parquet")
     # Parity is intentionally explicit and fail-closed for lifecycle fields.
     b=v[v.research_variant.eq("ATR_2.3")].merge(base,on="base_candidate_id",suffixes=("_recon","_auth")); parity={"rows":len(b),"short_strike_parity":int((b.short_strike_recon==b.short_strike_auth).sum()),"long_strike_parity":int((b.long_strike_recon==b.long_strike_auth).sum()),"initial_credit_parity":"NOT_COMPARABLE_QUOTE_METHOD","exit_date_parity":"NOT_RUN_LIFECYCLE_REPLAY","exit_reason_parity":"NOT_RUN_LIFECYCLE_REPLAY","pnl_parity":"NOT_RUN_LIFECYCLE_REPLAY","status":"FAIL" if any(x.get("status")!="COMPLETE" for x in manifest) else "FAIL","reason":"LIFECYCLE_REPLAY_PARITY_NOT_AVAILABLE"}; (ROOT/"tsla_baseline_23_parity.json").write_text(json.dumps(parity,indent=2),encoding="utf-8"); return {"manifest":manifest,"coverage":(int(ms.mark_valid.sum())/len(ms) if len(ms) else 0),"parity":parity}
 if __name__=="__main__": print(json.dumps(build(),indent=2,default=str))
