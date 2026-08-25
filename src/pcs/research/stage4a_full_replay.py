@@ -123,9 +123,9 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     if population.entry_contract_version.ne(ENTRY_CONTRACT_V2).any():
         raise ValueError("CONTRACT_FAILURE: non-v2 candidate row")
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    if lifecycle_replay is None:
-        from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
-        lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
+    # Do not load a lifecycle artifact before knowing that a candidate was
+    # accepted.  Rejected/event-unsupported populations must remain auditable
+    # even when no downstream lifecycle artifact exists.
     portfolio = dict(portfolio or {})
     portfolio.setdefault("planned_risk", portfolio.get("planned_loss", 0.0))
     portfolio.setdefault("planned_loss", portfolio.get("planned_risk", 0.0))
@@ -164,8 +164,12 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
             if not accepted:
                 continue
             if lifecycle_replay is None:
-                decisions[-1].update({"status": "DATA_FAILURE", "reason": "LIFECYCLE_REPLAYER_UNAVAILABLE", "accepted": False})
-                continue
+                try:
+                    from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
+                    lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
+                except Exception:
+                    decisions[-1].update({"status": "DATA_FAILURE", "reason": "LIFECYCLE_REPLAYER_UNAVAILABLE", "accepted": False})
+                    continue
             opened_id = hashlib.sha256("|".join(map(str, _identity(row))).encode()).hexdigest()[:24]
             trade = {**row, "opened_trade_id": opened_id}
             lifecycle = lifecycle_replay(trade)
