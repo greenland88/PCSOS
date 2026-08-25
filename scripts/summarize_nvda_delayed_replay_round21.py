@@ -1,16 +1,19 @@
 from pathlib import Path
 import json, numpy as np, pandas as pd
+from pcs.data.access import PCSDataAccess
 R=Path(__file__).resolve().parents[1]; T=R/'research_outputs/nvda_research_agent/round20_episode_timeline_20260824'; A=R/'research_outputs/nvda_research_agent/round21_authoritative_delayed_replay_20260824'; O=A
 states=pd.read_csv(T/'episode_first_state_dates.csv',parse_dates=['episode_start','episode_end','first_baseline_entry','first_downside_slowdown','first_stabilizing','first_ma20_reclaim','first_qqq_above50','first_qqq_slowdown'])
 c=pd.read_parquet(A/'authoritative_candidates.parquet'); l=pd.read_parquet(A/'authoritative_lifecycle.parquet'); c.date=pd.to_datetime(c.date).dt.normalize(); l.date=pd.to_datetime(l.date).dt.normalize(); l=l[l.status.eq('COMPLETE')].copy()
 methods={'BASELINE_FIRST_ENTRY':'first_baseline_entry','FIRST_DOWNSIDE_SLOWDOWN':'first_downside_slowdown','FIRST_STABILIZATION':'first_stabilizing','FIRST_MA20_RECLAIM':'first_ma20_reclaim','FIRST_QQQ_CONFIRMATION':'first_qqq_above50','FIRST_QQQ_SLOWDOWN':'first_qqq_slowdown'}
+sessions=pd.DatetimeIndex(pd.to_datetime(PCSDataAccess().read_prices('NVDA', states.first_baseline_entry.min(), states.episode_end.max()).date).dt.normalize().drop_duplicates().sort_values())
+session_pos=pd.Series(range(len(sessions)),index=sessions)
 priority={5:0,10:1,2:2}; c['width_rank']=c.spread_width.map(priority).fillna(9); c=c.sort_values(['date','expiration','width_rank','short_strike']); chosen=c.groupby('date',as_index=False).head(1).copy()
 rows=[]
 for _,e in states.iterrows():
  for method,col in methods.items():
   sig=e[col]; rec={'episode_id':e.episode_id,'baseline_entry_date':e.first_baseline_entry,'method':method,'signal_date':sig,'delay_trading_days':np.nan,'contract_available':False,'lifecycle_result':'NO_SIGNAL' if pd.isna(sig) else 'NO_CONTRACT','stopped':np.nan,'PnL':np.nan,'max_adverse_excursion':np.nan,'max_favorable_excursion':np.nan}
   if pd.notna(sig):
-   sig=pd.Timestamp(sig).normalize(); rec['delay_trading_days']=len(pd.bdate_range(pd.Timestamp(e.first_baseline_entry),sig))-1; q=chosen[chosen.date.eq(sig)]
+   sig=pd.Timestamp(sig).normalize(); start_pos=session_pos.get(pd.Timestamp(e.first_baseline_entry)); sig_pos=session_pos.get(sig); rec['delay_trading_days']=sig_pos-start_pos if start_pos is not None and sig_pos is not None else np.nan; q=chosen[chosen.date.eq(sig)]
    if len(q):
     x=q.iloc[0]; z=l[l.candidate_id==x.candidate_id]; rec.update({'contract_available':True,'short_strike':x.short_strike,'long_strike':x.long_strike,'expiration':x.expiration,'DTE':x.dte,'credit':x.credit,'safe_strike_distance_ATR':(x.close-x.comparison_short_strike)/x.atr,'lifecycle_result':z.status.iloc[0] if len(z) else 'NO_LIFECYCLE','stopped':bool(z.stopped.iloc[0]) if len(z) else np.nan,'PnL':z.realized_pnl.iloc[0] if len(z) else np.nan,'max_adverse_excursion':z.mae.iloc[0] if len(z) else np.nan,'max_favorable_excursion':z.mfe.iloc[0] if len(z) else np.nan})
   rows.append(rec)
