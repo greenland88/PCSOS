@@ -15,6 +15,19 @@ from pcs.data.universe import load_market_universe
 TICKERS = tuple(load_market_universe(["benchmarks", "pcs_universe"]))
 FEATURES = ("sma20", "sma50", "sma200", "atr", "returns", "drawdown", "support", "predictability", "regime", "state")
 
+def _strict_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes"}:
+            return True
+        if value in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
 @dataclass
 class TickerReadiness:
     module: str = "pcs.research.ticker_readiness"; version: str = "2.0"; symbol: str = ""; as_of: str = ""
@@ -69,7 +82,7 @@ def _pit_checks(r, daily):
     # ``available_data``.  Do not silently accept the legacy ``available``
     # field, otherwise a valid state is reported as unavailable (or an old
     # mock can mask the production schema drift).
-    state_available = bool(state_result.get("available_data", False)) if isinstance(state_result, dict) else False
+    state_available = _strict_bool(state_result.get("available_data", False)) if isinstance(state_result, dict) else False
     x["state"] = np.where(x.sma200.notna() & state_available, "AVAILABLE", None)
     missing={f:int(x[f].isna().sum()) for f in FEATURES}; missing_reasons={f:[{"date":pd.Timestamp(day).date().isoformat(),"reason_code":"PIT_WARMUP_REQUIRED"} for day in x.loc[x[f].isna(),"date"]] for f in FEATURES}; r.checks["pit"]={"required_features":list(FEATURES),"ready_rows":{f:int(x[f].notna().sum()) for f in FEATURES},"missing_rows":missing,"missing_row_reasons":missing_reasons,"state_ready_rows":int(x.state.notna().sum())}
     # Warm-up rows are expected and are retained with exact counts/reasons;
