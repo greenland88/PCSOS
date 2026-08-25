@@ -23,6 +23,7 @@ FEATURE_IMPLEMENTATION_FILES = (
     "src/pcs/research/underlying_state.py",
     "src/pcs/trend/snapshot.py",
     "src/pcs/entry/gates.py",
+    "src/pcs/features/market_features.py",
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
