@@ -282,9 +282,17 @@ def _write_symbol_file(target: Path, symbol_rows: pd.DataFrame) -> tuple[int, bo
     symbol = symbol_rows["代码"].iloc[0]
     symbol_rows["代码"] = symbol_rows["代码"].fillna(symbol).astype(str).str.strip().str.upper()
 
+    def atomic_csv(frame: pd.DataFrame) -> None:
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            frame.to_csv(temp, index=False)
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
+
     if not existed:
         target.parent.mkdir(parents=True, exist_ok=True)
-        symbol_rows.to_csv(target, index=False)
+        atomic_csv(symbol_rows)
         return len(symbol_rows), existed, True
 
     target_columns = pd.read_csv(target, nrows=0).columns.tolist()
@@ -304,7 +312,8 @@ def _write_symbol_file(target: Path, symbol_rows: pd.DataFrame) -> tuple[int, bo
             return 0, existed, False
 
     if can_append:
-        symbol_rows.reindex(columns=target_columns).to_csv(target, mode="a", header=False, index=False)
+        current = pd.read_csv(target)
+        atomic_csv(pd.concat([current, symbol_rows.reindex(columns=target_columns)], ignore_index=True, sort=False))
         return len(symbol_rows), existed, True
 
     current = pd.read_csv(target)
@@ -360,7 +369,13 @@ def _write_daily_partitions_for_years(
             group = source[pd.to_datetime(source.date).dt.year == year]
         group = group[DAILY_FIELDS].sort_values("date").drop_duplicates(["symbol", "date"], keep="last").reset_index(drop=True)
         target.mkdir(parents=True, exist_ok=True)
-        group.to_parquet(path, index=False)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            group.to_parquet(temporary, index=False)
+            pd.read_parquet(temporary)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
         paths.append((path, len(group)))
     return paths
 
