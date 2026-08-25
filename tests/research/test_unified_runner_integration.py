@@ -25,19 +25,23 @@ def test_real_preflight_rejects_end_after_train_without_oos_authorization(tmp_pa
 
 def test_amd_real_daily_calendar_is_manifest_resolved(tmp_path):
     frame = PCSDataAccess().read_prices("AMD")
+    train = PCSDataAccess().read_prices("AMD", end_date="2025-12-31")
     assert len(frame) > 1000
     result = _runner("AMD", tmp_path).real_preflight()
     assert result["data_source"] == "PCS_CANONICAL_DATA"
     assert result["daily_source"] == "PCSDataAccess"
-    assert result["daily_rows"] == len(frame)
+    assert result["daily_rows"] == len(train)
+    assert result["daily_last_date"] == str(train.date.max().date())
 
 
 def test_spy_real_daily_calendar_is_manifest_resolved(tmp_path):
     frame = PCSDataAccess().read_prices("SPY")
+    train = PCSDataAccess().read_prices("SPY", end_date="2025-12-31")
     assert len(frame) > 1000
     result = _runner("SPY", tmp_path).calendar_preflight()
     assert result["data_source"] == "PCS_CANONICAL_DATA"
-    assert result["daily_rows"] == len(frame)
+    assert result["daily_rows"] == len(train)
+    assert result["daily_last_date"] == str(train.date.max().date())
 
 
 def test_real_ticker_calendars_are_not_synthetic_or_frozen(tmp_path):
