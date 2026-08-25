@@ -27,11 +27,22 @@ def _shard_identity(year: int) -> dict:
     access = PCSDataAccess()
     daily = access.resolve_source("daily", "QQQ", "2010-01-01", f"{year}-12-31")
     options = access.resolve_source("options", "QQQ", f"{year}-01-01", f"{year}-12-31")
+    repo = Path(__file__).resolve().parents[3]
     code = Path(__file__).resolve()
+    dependencies = {
+        "shard_runner": code,
+        "current_strategy_replay": repo / "src/pcs/research/current_strategy_replay.py",
+        "lifecycle_adapter": repo / "src/pcs/research/stage4a_lifecycle.py",
+        "price_basis": repo / "src/pcs/data/price_basis.py",
+    }
     payload = {"module": MODULE, "version": "v1", "year": int(year),
                "daily_source_version": daily.source_version,
                "options_source_version": options.source_version,
-               "implementation_sha256": hashlib.sha256(code.read_bytes()).hexdigest()}
+               "implementation_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                         for name, path in dependencies.items()},
+               "corporate_actions_sha256": hashlib.sha256(
+                   (repo / "config/data/corporate_actions.csv").read_bytes()).hexdigest()
+               if (repo / "config/data/corporate_actions.csv").is_file() else "MISSING"}
     payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
     return payload
 
