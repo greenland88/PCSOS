@@ -17,6 +17,13 @@ def main():
     for s in symbols:
         r=get_data_compatibility(s,RANGES[s][0]); smoke.append({"symbol":s,"as_of":RANGES[s][0],"status":r.status,"reason_code":r.reason_code,"json_serializable":bool(json.loads(r.to_json()))})
     pd.DataFrame(smoke).to_csv(OUT/"multi_symbol_agent_compatibility_smoke.csv",index=False)
-    switch=[{"requested_backend":None,"resolved_backend":resolve_option_backend(None),"status":"PASS"},{"requested_backend":"csv","resolved_backend":resolve_option_backend("csv"),"status":"PASS"},{"requested_backend":"duckdb","resolved_backend":resolve_option_backend("duckdb"),"status":"PASS"}]; pd.DataFrame(switch).to_csv(OUT/"research_backend_switch_validation.csv",index=False)
+    switch=[{"requested_backend":None,"resolved_backend":resolve_option_backend(None),"status":"PASS"}]
+    for legacy in ("csv", "duckdb"):
+        try:
+            resolve_option_backend(legacy)
+            switch.append({"requested_backend":legacy,"resolved_backend":legacy,"status":"UNEXPECTEDLY_ENABLED"})
+        except ValueError:
+            switch.append({"requested_backend":legacy,"resolved_backend":None,"status":"DISABLED_CANONICAL_ONLY"})
+    pd.DataFrame(switch).to_csv(OUT/"research_backend_switch_validation.csv",index=False)
     print(rows)
 if __name__=="__main__": main()

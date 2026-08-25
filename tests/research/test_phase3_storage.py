@@ -1,11 +1,15 @@
 import pytest
 import pandas as pd
 from pcs.data.duckdb_store import connect, refresh_views
+import pytest
 from pcs.research.backend import resolve_option_backend
 from pcs.research.compatibility import compatibility, enforce_reliable_range
 
-def test_default_backend_is_duckdb(): assert resolve_option_backend() == "duckdb"
-def test_explicit_csv_reference(): assert resolve_option_backend("csv") == "csv"
+def test_default_backend_is_canonical(): assert resolve_option_backend() == "canonical"
+def test_legacy_backends_are_disabled():
+    for backend in ("csv", "duckdb"):
+        with pytest.raises(ValueError):
+            resolve_option_backend(backend)
 def test_scale_compatibility_separates_availability():
     c=compatibility("NVDA","2020-01-01"); assert c["data_available"] and not c["pcs_research_compatible"] and c["reason_code"]=="SCALE_INCOMPATIBLE"
 def test_reliable_range_rejects_incompatible_dates():
