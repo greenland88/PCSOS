@@ -110,7 +110,7 @@ class ResearchRunner:
         engines.  No fallback to a frozen ledger is permitted.
         """
         counts = dict(counts or {})
-        if self.spec.research_mode != ResearchMode.NEW_ENTRY:
+        if self.spec.research_mode not in {ResearchMode.NEW_ENTRY, ResearchMode.CURRENT_STRATEGY_REPLAY}:
             counts = {k: v for k, v in counts.items() if k not in {
                 FunnelStage.PRECURSOR_EPISODES.value, FunnelStage.SIGNAL_DATES.value}}
         funnel = build_funnel(counts, reasons=reasons, remediations=remediations)
@@ -218,7 +218,7 @@ class ResearchRunner:
             raise ResearchSpecError("COVERED_CALL_PIT_FEATURE_DATASETS_REQUIRED")
         daily = pd.read_parquet(feature_path); market = pd.read_parquet(market_path)
         from .covered_call_research import (discover_and_select_entries, replay_selected_entries,
-                                             validate_covered_call_report)
+                                             validate_covered_call_report, analyze_constraint_failures)
         result = discover_and_select_entries(self.spec.ticker, daily, market, data_access=access)
         replay = replay_selected_entries(self.spec.ticker, result.get("entries", []), data_access=access,
                                          profit_capture=float(self.spec.rules.get("covered_call_config", {}).get("profit_capture", .60)))
@@ -233,6 +233,7 @@ class ResearchRunner:
                        "final_oos_read": False,
                        "production_changes_allowed": False,
                        "reason_codes": result["reason_codes"] + ["TICKER_READINESS_PASSED"]})
+        result["constraint_failure_analysis"] = analyze_constraint_failures(replay)
         # Discovery result is enriched into a full report envelope before the
         # guarded research writer is called.
         validate_covered_call_report(result)
