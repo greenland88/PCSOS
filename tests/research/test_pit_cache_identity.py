@@ -1,6 +1,7 @@
 import pandas as pd
 
 from pcs.research.pit_cache_identity import build_pit_cache_identity, cache_identity_matches
+from pcs.research.nvda_entry_discovery_v2_rebuild_pit_cache import _current_daily_days
 
 
 def identity(**overrides):
@@ -72,3 +73,8 @@ def test_identity_is_independent_of_current_working_directory(tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     second = identity()
     assert first == second
+
+
+def test_pit_rebuild_domain_comes_from_current_daily_source_not_old_timeline():
+    daily = pd.DataFrame({"date": ["2020-01-03", "2020-01-02", "2020-01-03", "2020-01-06"]})
+    assert _current_daily_days(daily) == list(pd.to_datetime(["2020-01-02", "2020-01-03", "2020-01-06"]))
