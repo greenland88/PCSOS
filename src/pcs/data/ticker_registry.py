@@ -66,7 +66,7 @@ def get_ticker_state(ticker: str, *, access: PCSDataAccess | None = None,
                             and saved_identity.get("source_version") == options.source_version)
     stale = bool(readiness and not identity_matches)
     if stale:
-        blockers = list(blockers) + [{"reason_code": "STALE_READINESS_SOURCE_IDENTITY", "detail": "readiness artifact does not match current canonical options route"}]
+        blockers = [{"reason_code": "STALE_READINESS_SOURCE_IDENTITY", "detail": "readiness artifact does not match current canonical options route"}] + list(blockers)
     primary = blockers[0].get("reason_code", "UNKNOWN_READINESS") if blockers else "NONE"
     pit = checks.get("pit", {})
     pit_through = None

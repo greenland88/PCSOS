@@ -308,7 +308,16 @@ class PCSDataAccess:
         if rows.empty:
             raise FileNotFoundError(f"canonical {dataset} source unavailable for {symbol}")
         lo, hi = pd.Timestamp(rows.min_date.min()), pd.Timestamp(rows.max_date.max())
-        if (start_date is not None and pd.Timestamp(start_date) < lo) or (end_date is not None and pd.Timestamp(end_date) > hi):
+        # A readiness/executable window may begin before a ticker's physical
+        # route starts (NVDA v3 begins in 2020 while the universal boundary is
+        # earlier). Clamp the lower bound to available canonical coverage;
+        # retain fail-closed behavior for an end date beyond source coverage.
+        if start_date is not None and pd.Timestamp(start_date) < lo:
+            if self.routing_mode == "canonical":
+                start_date = lo
+            else:
+                raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
+        if end_date is not None and pd.Timestamp(end_date) > hi:
             raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if resolved_dataset == "options":
             path = parquet_root / "options" / f"symbol={symbol}" / "year=*" / "quarter=*" / "*.parquet"
@@ -320,8 +329,9 @@ class PCSDataAccess:
             active_files: list[Path] = [Path(str(p)) for p in rows.get("parquet_path", pd.Series(dtype=str)).dropna().tolist()]
             active_files = [p if p.is_absolute() else Path.cwd() / p for p in active_files if p.exists()]
             requested_periods = None
-            if start_date is not None and end_date is not None:
-                requested_periods = set(pd.period_range(pd.Timestamp(start_date), pd.Timestamp(end_date), freq="Q"))             
+            if start_date is not None:
+                effective_end = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp(rows.max_date.max())
+                requested_periods = set(pd.period_range(pd.Timestamp(start_date), effective_end, freq="Q"))
             # Only SUCCESS rows in the selected manifest define readable
             # partitions. Files merely present on disk are unregistered.
             if requested_periods is not None:
@@ -532,14 +542,14 @@ class PCSDataAccess:
             out = out[out.strike.isin([float(x) for x in strikes])]
         return out.reset_index(drop=True)
 
-    def audit_options_quality(self, symbol: str, start_date=None) -> dict[str, Any]:
+    def audit_options_quality(self, symbol: str, start_date=None, end_date=None) -> dict[str, Any]:
         """Bounded canonical options audit without materializing full history.
 
         This is the readiness path for large option populations. It scans the
         active canonical files in DuckDB and returns only aggregate evidence;
         lifecycle selection still reads its bounded fixture window normally.
         """
-        spec = self.resolve_source("options", symbol)
+        spec = self.resolve_source("options", symbol, start_date=start_date, end_date=end_date)
         files = spec.path.split(";") if ";" in spec.path else [spec.path]
         payload = ["symbol","last","bid","ask","bid_iv","ask_iv","open_interest","volume","delta","gamma","vega","theta","rho","year","quarter"]
         hash_expr = "md5(to_json(struct_pack(" + ",".join(f"{c}:={c}" for c in payload) + ")))"
@@ -568,8 +578,9 @@ class PCSDataAccess:
         # grouped-key cross join; both remain bounded and scan-only.
         con = duckdb.connect()
         try:
-            date_clause = " AND trade_date >= ?" if start_date is not None else ""
-            params = files + [str(symbol).upper()] + ([pd.Timestamp(start_date).date()] if start_date is not None else [])
+            date_clause = (" AND trade_date >= ?" if start_date is not None else "") + (" AND trade_date <= ?" if end_date is not None else "")
+            date_params = ([pd.Timestamp(start_date).date()] if start_date is not None else []) + ([pd.Timestamp(end_date).date()] if end_date is not None else [])
+            params = files + [str(symbol).upper()] + date_params
             gsql = f"""WITH raw AS ({relations}) SELECT coalesce(sum(CASE WHEN n>1 THEN n ELSE 0 END),0) duplicate_rows, coalesce(count(CASE WHEN n>1 THEN 1 END),0) duplicate_keys, coalesce(count(CASE WHEN n>1 AND versions>1 THEN 1 END),0) conflicting_keys, coalesce(count(CASE WHEN n>1 AND versions=1 THEN 1 END),0) identical_keys FROM (SELECT symbol,trade_date,expiration_date,call_put,strike,count(*) n,count(DISTINCT {hash_expr}) versions FROM raw WHERE symbol=?{date_clause} GROUP BY ALL)"""
             qsql = f"""WITH raw AS ({relations}) SELECT count(*) canonical_rows,count(CASE WHEN symbol IS NULL OR trade_date IS NULL OR expiration_date IS NULL OR expiration_date<=trade_date OR call_put NOT IN ('p','c') OR strike IS NULL OR NOT isfinite(strike) OR strike<=0 OR bid IS NULL OR NOT isfinite(bid) OR bid<0 OR ask IS NULL OR NOT isfinite(ask) OR ask<0 OR ask<bid THEN 1 END) executable_invalid_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 THEN 1 END) usable_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND bid IS NOT NULL AND ask IS NOT NULL AND isfinite(bid) AND isfinite(ask) AND bid>=0 AND ask>=bid THEN 1 END) valid_quote_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND expiration_date IS NOT NULL AND expiration_date>trade_date THEN 1 END) valid_expiration_rows,count(CASE WHEN date_diff('day',trade_date,expiration_date) BETWEEN 30 AND 45 AND strike>0 THEN 1 END) valid_strike_rows,count(CASE WHEN symbol IS NULL OR trade_date IS NULL OR expiration_date IS NULL OR call_put IS NULL OR strike IS NULL THEN 1 END) null_identity_rows FROM raw WHERE symbol=?{date_clause}"""
             g = con.execute(gsql, params).fetchone()
@@ -585,7 +596,7 @@ class PCSDataAccess:
             affected_dates.update(str(x) for x in qf["trade_date"].dropna().unique())
             affected_partitions.update(str(x) for x in qf["partition"].dropna().unique())
         canonical_rows = int(q[0]); invalid_rows = int(q[1])
-        return {"raw_rows": canonical_rows + quarantined_rows, "canonical_rows": canonical_rows, "quarantined_rows": quarantined_rows, "executable_rows": canonical_rows - invalid_rows, "executable_invalid_rows": invalid_rows, "reason_breakdown": reason_breakdown, "affected_dates": sorted(affected_dates), "affected_partitions": sorted(affected_partitions), "affected_percentage": (100.0 * quarantined_rows / (canonical_rows + quarantined_rows)) if canonical_rows + quarantined_rows else 0.0, "duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[2]), "valid_30_45_dte_quote_rows": int(q[3]), "valid_30_45_dte_expiration_rows": int(q[4]), "valid_30_45_dte_strike_rows": int(q[5]), "null_identity_rows": int(q[6])}
+        return {"raw_rows": canonical_rows + quarantined_rows, "canonical_rows": canonical_rows, "quarantined_rows": quarantined_rows, "executable_rows": canonical_rows - invalid_rows, "executable_invalid_rows": invalid_rows, "reason_breakdown": reason_breakdown, "invalid_reason_breakdown": {}, "invalid_partition_breakdown": {}, "affected_dates": sorted(affected_dates), "affected_partitions": sorted(affected_partitions), "affected_percentage": (100.0 * quarantined_rows / (canonical_rows + quarantined_rows)) if canonical_rows + quarantined_rows else 0.0, "duplicate_option_rows": int(g[0]), "duplicate_option_keys": int(g[1]), "ambiguous_conflicting_option_keys": int(g[2]), "identical_duplicate_keys": int(g[3]), "usable_30_45_dte_rows": int(q[2]), "valid_30_45_dte_quote_rows": int(q[3]), "valid_30_45_dte_expiration_rows": int(q[4]), "valid_30_45_dte_strike_rows": int(q[5]), "null_identity_rows": int(q[6])}
 
     def read_quotes_for_windows(self, symbol: str, windows: list[tuple[object, object]], columns: list[str] | None = None) -> pd.DataFrame:
         """Read selected canonical quote windows with one bounded query."""

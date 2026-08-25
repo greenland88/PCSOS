@@ -27,7 +27,7 @@ def evaluate_general_pcs(ticker: str, train_start: str = "2018-01-01",
     Dates are attributed independently, while ``matched_strategy_ids`` makes
     overlap explicit so downstream execution can select one economic trade.
     """
-    access = data_access or PCSDataAccess()
+    access = data_access or PCSDataAccess.canonical()
     daily = access.read_prices(ticker, train_start, train_end)
     resolved_configs = {
         strategy_id: resolve_strategy_config(strategy_id, ticker, daily).to_dict()
@@ -63,7 +63,7 @@ def run_general_pcs_replay(ticker: str, train_start: str = "2018-01-01",
     The union is deliberate: overlapping strategy signals are attributed to
     the same economic candidate/lifecycle rather than replayed independently.
     """
-    access = data_access or PCSDataAccess()
+    access = data_access or PCSDataAccess.canonical()
     signal_result = evaluate_general_pcs(ticker, train_start, train_end, data_access=access)
     signals = signal_result["signals"]
     episode_dates: dict[str, list[str]] = {}

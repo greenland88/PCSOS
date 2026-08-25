@@ -23,4 +23,5 @@ def test_registry_rejects_readiness_from_different_options_identity(tmp_path):
     path = tmp_path / "META.json"; path.write_text(json.dumps(readiness), encoding="utf-8")
     state = get_ticker_state("META", access=FakeAccess(), readiness_dir=tmp_path)
     assert state.PCS_RESEARCH_READY == "NO"
+    assert state.PRIMARY_BLOCKER == "STALE_READINESS_SOURCE_IDENTITY"
     assert "STALE_READINESS_SOURCE_IDENTITY" in state.reason_codes

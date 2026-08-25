@@ -113,8 +113,8 @@ def discover_lifecycle_smoke_case(
     return None, {"status": "UNAVAILABLE", "reason": "NO_COMPLETE_LIFECYCLE_WINDOW"}
 
 
-def canonical_route_evidence(access: PCSDataAccess, ticker: str) -> dict[str, Any]:
-    spec: SourceSpec = access.resolve_source("options", ticker)
+def canonical_route_evidence(access: PCSDataAccess, ticker: str, start_date=None, end_date=None) -> dict[str, Any]:
+    spec: SourceSpec = access.resolve_source("options", ticker, start_date=start_date, end_date=end_date)
     # SourceSpec.source_version is the authoritative route manifest identity.
     # Do not report PCSDataAccess's default manifest when a ticker-specific
     # route resolves through an isolated options manifest.
