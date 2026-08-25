@@ -7,13 +7,15 @@ from pcs.engine.decision_engine import DecisionEngine, load_rules
 from pcs.models.market import MarketState
 from pcs.research.stage4a_replay import to_trade_candidate
 from pcs.research.stage4a_context import HistoricalTrendContextProvider
+from pcs.research.scheduled_event_calendar import load_calendar
 
-ROOT=Path("research_outputs/safe_strike_stage4a")
+REPO_ROOT=Path(__file__).resolve().parents[1]
+ROOT=REPO_ROOT / "research_outputs/safe_strike_stage4a"
 
 def main():
     paths={"NVDA":ROOT/"candidate_inputs/NVDA.parquet","AMD":ROOT/"candidate_inputs/AMD.parquet","TSLA":ROOT/"candidate_inputs/TSLA.parquet","AMZN":ROOT/"authoritative_amzn_794_entry_contract_v2.parquet"}
     ev=pd.read_parquet(ROOT/"stage4a_event_readiness_ex_post_historical.parquet"); ev["historical_replay_eligible"] = ~ev["future_window_unsupported"].fillna(False); engine=DecisionEngine(load_rules()); rows=[]; context={}
-    calendar=pd.read_csv("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+    calendar=load_calendar(REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
     for ticker,path in paths.items():
         d=pd.read_parquet(path).merge(ev[["candidate_id","event_state","historical_replay_eligible"]],on="candidate_id",how="left")
         d=d[d.historical_replay_eligible.fillna(False)]

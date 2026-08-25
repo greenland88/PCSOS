@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 from pcs.research.stage4a_replay import audit_inputs
 
-VARIANT = Path("data/parquet/research/variant_b_full")
-OUT = Path("research_outputs/safe_strike_stage4a")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+VARIANT = REPO_ROOT / "data/parquet/research/variant_b_full"
+OUT = REPO_ROOT / "research_outputs/safe_strike_stage4a"
 TICKERS = ("NVDA", "AMD", "TSLA", "AMZN")
 
 
@@ -40,8 +42,7 @@ def frozen_identity(ticker: str) -> dict:
 def build_stage4a_input_from_variant(ticker: str) -> None:
     """Persist the frozen rows with only fields already present in Variant-B."""
     src = pd.read_parquet(VARIANT / f"{ticker}_full_post2020_2d.parquet").copy()
-    daily = pd.read_csv(Path("data/raw/daily_forward_adjusted") / f"{ticker}_daily_qfq.csv")
-    daily = daily.rename(columns={"日期": "date", "收盘价": "close"})
+    daily = PCSDataAccess().read_prices(ticker)
     daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
     close = daily.set_index("date")["close"]
     out = pd.DataFrame({
@@ -64,7 +65,7 @@ def build_stage4a_input_from_variant(ticker: str) -> None:
 
 def attach_existing_trend_fields(ticker: str) -> None:
     """Use the persisted trend-history output, whose producer is the PCS trend pipeline."""
-    path = Path("research_outputs/safe_strike_risk_map_v0_1/trend_histories") / f"{ticker}_trend.parquet"
+    path = REPO_ROOT / "research_outputs/safe_strike_risk_map_v0_1/trend_histories" / f"{ticker}_trend.parquet"
     if not path.exists():
         return
     out_path = OUT / "candidate_inputs" / f"{ticker}.parquet"
