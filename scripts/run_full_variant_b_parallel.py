@@ -1,4 +1,5 @@
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import hashlib
 from pathlib import Path
 import json
 import pandas as pd
@@ -16,10 +17,21 @@ TICKERS = ["AAPL", "AMD", "AMZN", "AVGO", "CRM", "GOOGL", "HOOD", "META",
 
 def run_ticker(ticker: str) -> dict:
     output = OUT / f"{ticker}_full_post2020_2d.parquet"
-    if output.exists():
-        frame = pd.read_parquet(output)
-        return {"ticker": ticker, "reused": True, "rows": len(frame)}
+    receipt = output.with_suffix(".identity.json")
     daily = ROOT / f"{ticker}_daily_qfq.csv"
+    identity_payload = {
+        "ticker": ticker, "daily_sha256": hashlib.sha256(daily.read_bytes()).hexdigest() if daily.exists() else "MISSING",
+        "events_sha256": hashlib.sha256(Path(CAL).read_bytes()).hexdigest() if Path(CAL).exists() else "MISSING",
+        "code_sha256": hashlib.sha256(Path(m.__file__).read_bytes()).hexdigest(),
+        "policy": {"reject_expiration_crossing": False, "pre_earnings_exit_days": 2},
+    }
+    identity = hashlib.sha256(json.dumps(identity_payload, sort_keys=True).encode()).hexdigest()
+    if output.exists() and receipt.exists():
+        saved = json.loads(receipt.read_text(encoding="utf-8"))
+        if saved.get("identity") == identity:
+            
+            frame = pd.read_parquet(output)
+            return {"ticker": ticker, "reused": True, "rows": len(frame)}
     stock = m._daily(daily)
     start_year = 2021 if ticker == "HOOD" else 2020
     dates = list(stock.loc[stock.date.dt.year.ge(start_year), "date"])
@@ -30,7 +42,10 @@ def run_ticker(ticker: str) -> dict:
         policy=ReplayPolicy(reject_expiration_crossing=False,
                             pre_earnings_exit_days=2),
     )
-    frame.to_parquet(output, index=False)
+    tmp = output.with_name(f".{output.name}.tmp")
+    frame.to_parquet(tmp, index=False)
+    tmp.replace(output)
+    receipt.write_text(json.dumps({"identity": identity, "inputs": identity_payload}, indent=2), encoding="utf-8")
     return {
         "ticker": ticker,
         "reused": False,
