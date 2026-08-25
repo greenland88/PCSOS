@@ -20,8 +20,10 @@ def _transfer_identity(access: PCSDataAccess, spec: Any, ticker: str,
     """Return the immutable input identity for a descriptive transfer."""
     sources = {}
     for dependency in spec.data_dependencies:
-        source = access.resolve_source(dependency, ticker, train_start, train_end)
-        sources[dependency] = source.source_version
+        # Use content/routing identity, not only the manifest route label.
+        # Historical corrections must invalidate an otherwise identical
+        # strategy transfer.
+        sources[dependency] = access.source_data_identity(dependency, ticker)
     code_path = Path(__file__).resolve()
     spec_payload = spec.to_dict()
     payload = {
