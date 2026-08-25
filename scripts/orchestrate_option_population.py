@@ -23,6 +23,11 @@ def shard_identity(symbol, a, b):
           'runner_sha256':code,'backtest_sha256':backtest}
  payload['identity_sha256']=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
  return payload
+def output_sha(path):
+ h=hashlib.sha256()
+ with path.open('rb') as f:
+  for block in iter(lambda:f.read(1024*1024),b''): h.update(block)
+ return h.hexdigest()
 def months(a,b):
  c=pd.Timestamp(a).to_period('M'); z=pd.Timestamp(b).to_period('M')
  while c<=z:
@@ -30,7 +35,8 @@ def months(a,b):
 def valid(path,symbol,a,b):
  try:
   identity_path=path.with_suffix('.identity.json')
-  if not identity_path.exists() or json.loads(identity_path.read_text()) != shard_identity(symbol,a,b): return False
+  saved=json.loads(identity_path.read_text())
+  if saved.get('inputs') != shard_identity(symbol,a,b) or saved.get('output_sha256') != output_sha(path): return False
   x=pd.read_parquet(path); req=['ticker','entry_date','spot','ATR','expiration','DTE','short_strike','long_strike','width','credit']; return all(c in x and not x[c].isna().any() for c in req) and (len(x)==0 or (pd.to_datetime(x.entry_date).between(a,b).all() and x.ticker.eq(symbol).all())) and x.duplicated(['ticker','entry_date','expiration','short_strike','long_strike']).sum()==0
  except Exception:return False
 def main():
@@ -47,9 +53,9 @@ def main():
     cp=subprocess.run([sys.executable,str(RUNNER),'--ticker',s,'--start',str(lo.date()),'--end',str(hi.date()),'--output',str(p)],capture_output=True,text=True,cwd=REPO_ROOT)
     stdout,stderr,code=cp.stdout,cp.stderr,cp.returncode
     if code==0 and p.exists():
-     p.with_suffix('.identity.json').write_text(json.dumps(shard_identity(s,lo,hi),indent=2),encoding='utf-8')
+     p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
      if valid(p,s,lo,hi): status='COMPLETE'; break
-   if status=='COMPLETE': p.with_suffix('.identity.json').write_text(json.dumps(shard_identity(s,lo,hi),indent=2),encoding='utf-8')
+  if status=='COMPLETE': p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
    rec={'ticker':s,'year_month':f'{lo:%Y-%m}','status':status,'row_count':len(pd.read_parquet(p)) if status=='COMPLETE' else 0,'output_path':str(p),'child_exit_code':code,'stdout':stdout[-2000:],'stderr':stderr[-2000:],'runtime_seconds':time.time()-start}
    with lock:
     with CK.open('a',encoding='utf-8') as f:f.write(json.dumps(rec,default=str)+'\n')
