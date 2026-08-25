@@ -1,4 +1,4 @@
-import argparse, json
+import argparse, json, os
 from pathlib import Path
 import pandas as pd
 from run_safe_strike_candidates import stock
@@ -10,4 +10,9 @@ root=REPO_ROOT/'research_outputs/safe_strike_stage1_pass_only'/f'{a.atr:.1f}ATR'
 for s,(lo,hi) in W.items():
  r=run_backtest(stock(s,hi),stock('QQQ',hi),option_root=f'data/parquet/options_monthly/{s}',start=lo,end=hi,backend='canonical',safe_strike_atr=a.atr)
  pass_trades=[t for t in r['trades'] if t.get('trend_gate')=='PASS']
- out=pd.DataFrame([{**{k:v for k,v in t.items() if k!='events'},'ticker':s,'target_buffer_atr':a.atr,'candidate_status':'TRADE_QUALIFIED'} for t in pass_trades]); out.to_parquet(root/f'{s}.parquet',index=False); print(json.dumps({'atr':a.atr,'ticker':s,'qualified':len(out),'pass_only':True}),flush=True)
+ out=pd.DataFrame([{**{k:v for k,v in t.items() if k!='events'},'ticker':s,'target_buffer_atr':a.atr,'candidate_status':'TRADE_QUALIFIED'} for t in pass_trades]); target=root/f'{s}.parquet'; temp=target.with_name(f'.{target.name}.{os.getpid()}.tmp')
+ try:
+  out.to_parquet(temp,index=False); pd.read_parquet(temp); os.replace(temp,target)
+ finally:
+  temp.unlink(missing_ok=True)
+ print(json.dumps({'atr':a.atr,'ticker':s,'qualified':len(out),'pass_only':True}),flush=True)
