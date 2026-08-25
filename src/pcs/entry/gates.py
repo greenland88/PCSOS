@@ -40,7 +40,11 @@ class EventGate:
             expiry = pd.Timestamp(candidate.expiration)
             rows = calendar[(calendar.event_type == "EARNINGS") & ((calendar.symbol == candidate.ticker) | calendar.symbol.isna())]
             if pit_required:
-                if rows[known_column].isna().any() or not rows[known_column].astype(bool).all():
+                known = rows[known_column].map(
+                    lambda value: value is True or value == 1
+                    or (isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"})
+                )
+                if not known.all():
                     return GateResult("event", GateStatus.FAIL, ("EVENT_PIT_KNOWLEDGE_UNPROVEN",))
             for date in pd.to_datetime(rows.event_date).dt.normalize():
                 # Historical events strictly before entry cannot create either

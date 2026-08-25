@@ -14,6 +14,8 @@ import pandas as pd
 CALENDAR_VERSION = "scheduled_events_v0.1"
 EVENT_TYPES = ("EARNINGS", "FOMC", "CPI", "NFP_EMPLOYMENT")
 EVENT_TYPE_ALIASES = {"FOMC_POLICY_DECISION":"FOMC", "CPI_RELEASE":"CPI", "EMPLOYMENT_SITUATION":"NFP_EMPLOYMENT"}
+def _known_at_entry(value) -> bool:
+    return value is True or value == 1 or (isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"})
 RAW_EVENT_DIRS = {"FOMC":"fomc", "CPI":"cpi", "NFP_EMPLOYMENT":"employment", "EARNINGS":"earnings"}
 
 CALENDAR_COLUMNS = [
@@ -188,7 +190,8 @@ def tag_entry_dates(trades: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFram
     if "symbol" in out:
         out["symbol"] = out.symbol.astype(str).str.upper()
     knowledge_column = next((c for c in ("event_date_known_at_entry", "known_at_entry") if c in calendar.columns), None)
-    knowledge_proven = knowledge_column is not None
+    knowledge_proven = (knowledge_column is not None
+                        and calendar[knowledge_column].map(_known_at_entry).all())
     for et in EVENT_TYPES:
         nexts=[]; dte_flags=[]
         for _, row in out.iterrows():
@@ -196,7 +199,7 @@ def tag_entry_dates(trades: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFram
             if et == "EARNINGS" and "symbol" in out and "symbol" in event_rows:
                 event_rows = event_rows[(event_rows.symbol.isna()) | (event_rows.symbol.astype(str).str.upper() == row.symbol)]
             if knowledge_column is not None:
-                event_rows = event_rows[event_rows[knowledge_column].astype(bool)]
+                event_rows = event_rows[event_rows[knowledge_column].map(_known_at_entry)]
             dates = pd.DatetimeIndex(event_rows.event_date)
             future = dates[dates >= row.entry_date]
             nexts.append((future[0] - row.entry_date).days if len(future) else pd.NA)
