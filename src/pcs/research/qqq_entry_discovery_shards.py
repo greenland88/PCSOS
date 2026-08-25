@@ -55,7 +55,8 @@ def main() -> dict:
                         and prior.get("global_warmup") is True
                         and prior.get("status") == "COMPLETED_QUOTE_ADAPTATION_ONLY"
                         and prior.get("options_source_valid") is True
-                        and prior.get("shard_identity") == identity):
+                        and prior.get("shard_identity") == identity
+                        and prior.get("output_sha256") == _file_digest(out / "broad_pcs_outcome_map.parquet")):
                     return prior, "REUSED"
             except Exception:
                 # Missing/unresolvable identity is fail-closed: never trust
@@ -65,6 +66,7 @@ def main() -> dict:
         # Persist the same identity that guards future reuse.  If identity
         # cannot be resolved, the run is not considered safely resumable.
         result["shard_identity"] = _shard_identity(year)
+        result["output_sha256"] = _file_digest(out / "broad_pcs_outcome_map.parquet")
         _atomic_json(summary, result)
         return result, "COMPLETED"
     results=[]
