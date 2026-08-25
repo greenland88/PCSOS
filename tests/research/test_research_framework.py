@@ -2,7 +2,7 @@ import pytest
 from pcs.research.research_framework import (
     ResearchMode, ResearchSpecError, ResearchStatus, FunnelStage,
     from_mapping, validate_population_routing, build_funnel, onboarding_report,
-    run_spec, assert_research_output, assert_final_oos_access,
+    run_spec, assert_research_output, assert_final_oos_access, validate_rule_set,
 )
 
 
