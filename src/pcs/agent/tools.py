@@ -25,21 +25,21 @@ def get_option_quotes(symbol, trade_date, expiration_date, strikes):
 
 def get_research_run(run_id):
     json_path=_REPO_ROOT / "data/manifests/research_runs" / f"{run_id}.json"
-    if json_path.exists(): return response("AVAILABLE","DATA_AVAILABLE",[json.loads(json_path.read_text(encoding="utf-8"))])
+    if json_path.exists(): return response("AVAILABLE","DATA_AVAILABLE",[json.loads(json_path.read_text(encoding="utf-8"))], run_id=str(run_id))
     path=_REPO_ROOT / "data/manifests/research_runs.csv"
-    if not path.exists(): return response("UNAVAILABLE","DATA_NOT_FOUND")
+    if not path.exists(): return response("UNAVAILABLE","DATA_NOT_FOUND", run_id=str(run_id))
     try:
         # Never hide a malformed manifest row: a partial result is not an
         # auditable research run and could silently omit the requested run.
         df=pd.read_csv(path, engine="python")
     except (OSError, ValueError, pd.errors.ParserError) as exc:
-        return response("UNAVAILABLE", "MANIFEST_CORRUPT", [], reason_codes=["MANIFEST_CORRUPT", type(exc).__name__])
+        return response("UNAVAILABLE", "MANIFEST_CORRUPT", [], run_id=str(run_id), reason_codes=["MANIFEST_CORRUPT", type(exc).__name__])
     rows=df[df.run_id.astype(str)==str(run_id)].to_dict("records")
-    return response("AVAILABLE" if rows else "UNAVAILABLE", "DATA_AVAILABLE" if rows else "DATA_NOT_FOUND", rows)
+    return response("AVAILABLE" if rows else "UNAVAILABLE", "DATA_AVAILABLE" if rows else "DATA_NOT_FOUND", rows, run_id=str(run_id))
 
 def get_backtest_trades(run_id):
     df=read_backtest_trades(run_id)
-    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"))
+    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), run_id=str(run_id))
 
 def get_trend_snapshot(symbol, as_of, benchmark=None):
     filters={"symbol":symbol,"date":pd.Timestamp(as_of)}
