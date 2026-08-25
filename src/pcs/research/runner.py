@@ -35,6 +35,14 @@ def _status_for_funnel(records: list[Any]) -> str:
     return next((r.status.value for r in records if r.output_count == 0), ResearchStatus.COMPUTABLE.value)
 
 
+def _strict_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    return isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}
+
+
 def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str, checkpoint_dir: str | Path | None = None) -> list[dict[str, Any]]:
     """Evaluate the existing PIT adapter with reusable daily-only inputs."""
     config = TrendIndicatorConfig()
@@ -210,7 +218,7 @@ class ResearchRunner:
                 raise RuntimeError(f"CLEAN_DATASET_UNAVAILABLE:{p}")
             frame = pd.read_parquet(p)
             required = {"date", "symbol", "testable_day"}
-            if not required.issubset(frame.columns) or frame.empty or not bool(frame.testable_day.all()):
+            if not required.issubset(frame.columns) or frame.empty or not frame.testable_day.map(_strict_flag).all():
                 raise RuntimeError("CLEAN_DATASET_VALIDATION_FAILED")
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
             start = pd.Timestamp(self.spec.date_range.get("start"))

@@ -2,13 +2,19 @@ from dataclasses import replace
 
 from pcs.data.access import PCSDataAccess
 from pcs.research.research_framework import load_spec
-from pcs.research.runner import ResearchRunner
+from pcs.research.runner import ResearchRunner, _strict_flag
 
 
 def _runner(ticker, output_dir="research_outputs"):
     spec = replace(load_spec("config/research/templates/new_entry.yaml"),
                    ticker=ticker, research_id=f"{ticker.lower()}_real_calendar_preflight")
     return ResearchRunner(spec, output_dir=output_dir)
+
+
+def test_runner_strict_flag_does_not_treat_false_string_as_true():
+    assert _strict_flag("false") is False
+    assert _strict_flag("UNKNOWN") is False
+    assert _strict_flag("true") is True
 
 
 def test_amd_real_daily_calendar_is_manifest_resolved(tmp_path):
