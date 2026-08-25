@@ -13,9 +13,13 @@ ROOT=REPO_ROOT/'research_outputs/safe_strike_process_isolated'; OUT=ROOT/'qualif
 RUNNER=REPO_ROOT/'scripts/run_option_qualification_chunk.py'
 
 def shard_identity(symbol, a, b):
- access=PCSDataAccess(); daily=access.resolve_source('daily',symbol); options=access.resolve_source('options',symbol)
+ access=PCSDataAccess()
  code=hashlib.sha256(RUNNER.read_bytes()).hexdigest()
- payload={'ticker':symbol,'start':str(pd.Timestamp(a).date()),'end':str(pd.Timestamp(b).date()),'daily_source_version':daily.source_version,'options_source_version':options.source_version,'runner_sha256':code}
+ payload={'ticker':symbol,'start':str(pd.Timestamp(a).date()),'end':str(pd.Timestamp(b).date()),
+          'daily_source_identity':access.source_data_identity('daily',symbol),
+          'benchmark_source_identity':access.source_data_identity('daily','QQQ'),
+          'options_source_identity':access.source_data_identity('options',symbol),
+          'runner_sha256':code}
  payload['identity_sha256']=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
  return payload
 def months(a,b):
