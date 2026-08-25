@@ -19,6 +19,19 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(os.environ.get("PCS_NVDA_SHARD_OUT", str(ROOT / "research_outputs" / "nvda_price_basis_corrected_shards_20260824")))
 YEARS = tuple(int(x) for x in os.environ.get("PCS_NVDA_YEARS", "2020 2021 2022 2023 2024 2025 2026").split())
 
+def _strict_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes"}:
+            return True
+        if value in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
 
 def run_year(year: int) -> dict:
     target = OUT / f"year={year}"
@@ -52,8 +65,8 @@ def run_year(year: int) -> dict:
     benchmark["date"] = pd.to_datetime(benchmark.date).dt.normalize()
     year_dates = daily.loc[daily.date.between(start, end), "date"].reset_index(drop=True)
     contexts = build_historical_setup_context_table(daily, benchmark, year_dates, "NVDA", "QQQ")
-    feature_ready = sum(bool(x.get("available")) for x in contexts.values())
-    setup_dates = [d for d, x in contexts.items() if x.get("available") and getattr(x.get("trend_gate_result"), "trend_gate_result", None) == "PASS" and getattr(x.get("pullback_gate_result"), "pullback_gate_result", None) == "PASS" and x.get("support_state") in {"moderate", "strong"} and getattr(x.get("snapshot").cleanliness, "available", False)]
+    feature_ready = sum(_strict_bool(x.get("available")) for x in contexts.values())
+    setup_dates = [d for d, x in contexts.items() if _strict_bool(x.get("available")) and getattr(x.get("trend_gate_result"), "trend_gate_result", None) == "PASS" and getattr(x.get("pullback_gate_result"), "pullback_gate_result", None) == "PASS" and x.get("support_state") in {"moderate", "strong"} and _strict_bool(getattr(x.get("snapshot").cleanliness, "available", False))]
     quote_start = max(start, pd.Timestamp("2020-01-02"))
     quote_end = min(end + pd.Timedelta(days=50), pd.Timestamp("2026-07-31"))
     quotes = access.read_quotes("NVDA", quote_start, quote_end)
