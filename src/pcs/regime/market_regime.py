@@ -7,9 +7,14 @@ class MarketRegimeEngine:
 
     def classify(self, state: MarketState) -> tuple[Regime, float, list[str]]:
         flags = []
+        # VIX is a required market-risk input for a trustworthy regime decision.
+        # Treating an absent value as "no warning" would allow incomplete state
+        # to reach the GREEN path.
+        if state.vix is None:
+            return Regime.RED, 0, ["VIX_UNAVAILABLE"]
         if state.sharp_selloff or state.recent_drawdown_pct >= self.rules["sharp_selloff_drawdown_pct"]:
             flags.append("sharp selloff")
-        if state.vix is not None and state.vix >= self.rules["red_vix"]:
+        if state.vix >= self.rules["red_vix"]:
             flags.append("VIX red")
         if flags:
             return Regime.RED, 0, flags
@@ -19,7 +24,7 @@ class MarketRegimeEngine:
             state.spy_above_50dma, state.soxx_above_50dma, state.breadth_positive,
         ]
         score = sum(1 for c in checks if c) / len(checks) * 100
-        if state.vix is not None and state.vix >= self.rules["yellow_vix"]:
+        if state.vix >= self.rules["yellow_vix"]:
             score -= 15
             flags.append("elevated VIX")
         if score >= self.rules["green_min_score"]:

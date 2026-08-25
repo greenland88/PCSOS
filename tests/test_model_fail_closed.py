@@ -3,12 +3,21 @@ from pydantic import ValidationError
 
 from pcs.models.market import MarketState
 from pcs.models.position import PCSPosition
+from pcs.engine.decision_engine import load_rules
+from pcs.regime.market_regime import MarketRegimeEngine, Regime
 
 
 def test_market_state_defaults_fail_closed():
     state = MarketState()
     assert not state.qqq_above_200dma
     assert not state.breadth_positive
+
+
+def test_missing_vix_cannot_be_classified_as_green():
+    regime, score, reasons = MarketRegimeEngine(load_rules()).classify(MarketState())
+    assert regime == Regime.RED
+    assert score == 0
+    assert "VIX_UNAVAILABLE" in reasons
 
 
 def test_position_rejects_invalid_risk_values():
