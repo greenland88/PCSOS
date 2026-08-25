@@ -37,7 +37,14 @@ def read_derived(dataset, root="data/parquet/derived", filters=None):
 
 def cache_matches(dataset, filters, versions, root="data/parquet/derived"):
     out=read_derived(dataset,root,filters)
-    return not out.empty and all(out.get(k,pd.Series(dtype=object)).eq(v).all() for k,v in versions.items())
+    if out.empty:
+        return False
+    for key, value in versions.items():
+        if key not in out.columns:
+            return False
+        if not out[key].eq(value).all():
+            return False
+    return True
 
 def write_research_run(record, path="data/manifests/research_runs.csv"):
     fields=list(record); target=Path(path); target.parent.mkdir(parents=True,exist_ok=True)

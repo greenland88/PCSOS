@@ -13,11 +13,13 @@ class AgentResponse:
     symbol: str = None
     data_timestamp: str = None
     calculation_version: str = None
+    as_of: str = None
+    run_id: str = None
 
     def to_dict(self): return asdict(self)
     def to_json(self):
         import json
         return json.dumps(self.to_dict(), default=str, sort_keys=True)
 
-def response(status, reason_code, data=None, symbol=None, calculation_version=None):
-    return AgentResponse("pcs.agent", "v1", str(uuid.uuid4()), status, reason_code, data, symbol, datetime.now(timezone.utc).isoformat(), calculation_version)
+def response(status, reason_code, data=None, symbol=None, calculation_version=None, as_of=None, run_id=None):
+    return AgentResponse("pcs.agent", "v1", str(uuid.uuid4()), status, reason_code, data, symbol, datetime.now(timezone.utc).isoformat(), calculation_version, as_of, run_id)

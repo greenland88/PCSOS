@@ -12,12 +12,12 @@ def _con(symbols=None):
 
 def get_daily_history(symbol, start_date, end_date):
     con=_con([symbol]); df=query_daily(con,symbol,start_date,end_date); con.close()
-    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol)
+    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol, as_of=end_date)
 
 def get_option_chain(symbol, trade_date, expiration_date=None):
     con=_con([symbol]); df=query_option_chain(con,symbol,trade_date); con.close()
     if expiration_date is not None and not df.empty: df=df[pd.to_datetime(df.expiration_date).dt.date==pd.Timestamp(expiration_date).date()]
-    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol)
+    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol, as_of=trade_date)
 
 def get_option_quotes(symbol, trade_date, expiration_date, strikes):
     result=get_option_chain(symbol,trade_date,expiration_date)
@@ -38,9 +38,12 @@ def get_backtest_trades(run_id):
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"))
 
 def get_trend_snapshot(symbol, as_of, benchmark=None):
-    df=read_derived("trend_history",filters={"symbol":symbol,"date":pd.Timestamp(as_of)})
-    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "CALCULATION_UNAVAILABLE", df.to_dict("records"), symbol)
+    filters={"symbol":symbol,"date":pd.Timestamp(as_of)}
+    if benchmark is not None:
+        filters["benchmark_symbol"] = benchmark
+    df=read_derived("trend_history",filters=filters)
+    return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "CALCULATION_UNAVAILABLE", df.to_dict("records"), symbol, as_of=as_of)
 
 def get_data_compatibility(symbol, as_of):
     c=compatibility(symbol,as_of)
-    return response("AVAILABLE" if c["data_available"] else "UNAVAILABLE",c["reason_code"],c,symbol)
+    return response("AVAILABLE" if c["data_available"] else "UNAVAILABLE",c["reason_code"],c,symbol,as_of=as_of)
