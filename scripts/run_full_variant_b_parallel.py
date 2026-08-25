@@ -6,6 +6,7 @@ import pandas as pd
 
 from pcs.research.variant_b_replay import replay_dates, ReplayPolicy
 import pcs.research.entry_candidate_universe as m
+from pcs.data.access import PCSDataAccess
 
 ROOT = Path("data/raw/daily_forward_adjusted")
 OUT = Path("data/parquet/research/variant_b_full")
@@ -18,11 +19,22 @@ TICKERS = ["AAPL", "AMD", "AMZN", "AVGO", "CRM", "GOOGL", "HOOD", "META",
 def run_ticker(ticker: str) -> dict:
     output = OUT / f"{ticker}_full_post2020_2d.parquet"
     receipt = output.with_suffix(".identity.json")
+    # The legacy path arguments are retained for replay_dates compatibility,
+    # but input identity and date discovery must come from the resolved
+    # canonical source.  Reading the first raw export here caused cross-ticker
+    # runs to depend on physical legacy files rather than PCS routing.
+    access = PCSDataAccess()
     daily = ROOT / f"{ticker}_daily_qfq.csv"
+    benchmark = ROOT / "QQQ_daily_qfq.csv"
     identity_payload = {
-        "ticker": ticker, "daily_sha256": hashlib.sha256(daily.read_bytes()).hexdigest() if daily.exists() else "MISSING",
+        "ticker": ticker,
+        "daily_source_identity": access.source_data_identity("daily", ticker),
+        "benchmark_source_identity": access.source_data_identity("daily", "QQQ"),
+        "options_source_identity": access.source_data_identity("options", ticker),
         "events_sha256": hashlib.sha256(Path(CAL).read_bytes()).hexdigest() if Path(CAL).exists() else "MISSING",
-        "code_sha256": hashlib.sha256(Path(m.__file__).read_bytes()).hexdigest(),
+        "code_sha256": hashlib.sha256(
+            (Path(m.__file__).read_bytes() + Path(__file__).read_bytes())
+        ).hexdigest(),
         "policy": {"reject_expiration_crossing": False, "pre_earnings_exit_days": 2},
     }
     identity = hashlib.sha256(json.dumps(identity_payload, sort_keys=True).encode()).hexdigest()
@@ -31,12 +43,12 @@ def run_ticker(ticker: str) -> dict:
         if saved.get("identity") == identity:
             frame = pd.read_parquet(output)
             return {"ticker": ticker, "reused": True, "rows": len(frame)}
-    stock = m._daily(daily)
+    stock = access.read_prices(ticker).copy()
     start_year = 2021 if ticker == "HOOD" else 2020
     dates = list(stock.loc[stock.date.dt.year.ge(start_year), "date"])
     frame = replay_dates(
         ticker, daily, f"data/raw/options/{ticker}", dates,
-        ROOT / "QQQ_daily_qfq.csv", CAL,
+        benchmark, CAL,
         benchmark_symbol="QQQ",
         policy=ReplayPolicy(reject_expiration_crossing=False,
                             pre_earnings_exit_days=2),
