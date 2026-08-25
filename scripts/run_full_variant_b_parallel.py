@@ -36,7 +36,9 @@ def run_ticker(ticker: str) -> dict:
         "options_source_identity": access.source_data_identity("options", ticker),
         "events_sha256": hashlib.sha256(Path(CAL).read_bytes()).hexdigest() if Path(CAL).exists() else "MISSING",
         "code_sha256": hashlib.sha256(
-            (Path(m.__file__).read_bytes() + Path(__file__).read_bytes())
+            (Path(m.__file__).read_bytes()
+             + Path(__file__).read_bytes()
+             + (REPO_ROOT / "src/pcs/research/credit_stop.py").read_bytes())
         ).hexdigest(),
         "policy": {"reject_expiration_crossing": False, "pre_earnings_exit_days": 2},
     }
