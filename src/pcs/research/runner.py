@@ -251,12 +251,30 @@ class ResearchRunner:
             if not path.is_file():
                 raise FileNotFoundError(f"artifact manifest file missing: {relative}")
             records.append({"path": relative.replace("\\", "/"), "sha256": self._sha256(path)})
+        input_identities = {"daily": data_version}
+        access = PCSDataAccess()
+        for dataset in ("options",):
+            try:
+                input_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
+            except Exception:
+                input_identities[dataset] = "UNAVAILABLE"
+        benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
+        if benchmark:
+            try:
+                input_identities["benchmark_daily"] = access.source_data_identity("daily", str(benchmark))
+            except Exception:
+                input_identities["benchmark_daily"] = "UNAVAILABLE"
+        event_path = Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+        input_identities["event_calendar"] = self._sha256(event_path) if event_path.exists() else "UNAVAILABLE"
+        action_path = Path("config/data/corporate_actions.csv")
+        input_identities["corporate_actions"] = self._sha256(action_path) if action_path.exists() else "UNAVAILABLE"
         manifest = {
             "research_id": self.spec.research_id, "status": "CURRENT",
             "artifact_version": artifact_version, "population_semantics": population_semantics,
             "data_source": "PCS_CANONICAL_DATA", "ticker": self.spec.ticker,
             "created_at": datetime.now(timezone.utc).isoformat(), "code_version": "pcs.research.runner:1.1",
-            "data_version": data_version, "spec_hash": spec_hash(self.spec), "files": records,
+            "data_version": data_version, "input_identities": input_identities,
+            "spec_hash": spec_hash(self.spec), "files": records,
             "current": True,
         }
         target = self.output_dir / "artifact_manifest.json"
@@ -277,10 +295,20 @@ class ResearchRunner:
                 or manifest.get("code_version") != "pcs.research.runner:1.1"):
             raise RuntimeError("STALE_ARTIFACT")
         try:
-            current_data_version = PCSDataAccess().source_data_identity("daily", self.spec.ticker)
+            access = PCSDataAccess()
+            current_identities = {"daily": access.source_data_identity("daily", self.spec.ticker)}
+            for dataset in ("options",):
+                current_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
+            benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
+            if benchmark:
+                current_identities["benchmark_daily"] = access.source_data_identity("daily", str(benchmark))
+            event_path = Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+            current_identities["event_calendar"] = self._sha256(event_path) if event_path.exists() else "UNAVAILABLE"
+            action_path = Path("config/data/corporate_actions.csv")
+            current_identities["corporate_actions"] = self._sha256(action_path) if action_path.exists() else "UNAVAILABLE"
         except Exception as exc:
             raise RuntimeError("STALE_ARTIFACT") from exc
-        if manifest.get("data_version") != current_data_version:
+        if manifest.get("input_identities") != current_identities:
             raise RuntimeError("STALE_ARTIFACT")
         for record in manifest.get("files", []):
             file_path = self.output_dir / record["path"]

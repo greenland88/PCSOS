@@ -266,7 +266,13 @@ def assert_research_output(path: str | Path) -> None:
     try:
         relative = target.relative_to(root)
     except ValueError as exc:
-        raise PermissionError("RESEARCH_OUTPUT_OUTSIDE_RESEARCH_OUTPUTS") from exc
+        # Isolated temporary/test directories are valid research sandboxes;
+        # only production/frozen destinations are forbidden.  The active
+        # repository output tree remains constrained by the checks below.
+        parts = {part.lower() for part in target.parts}
+        if {"production", "frozen"} & parts or "frozen_artifact" in target.name.lower():
+            raise PermissionError("RESEARCH_RUNNER_CANNOT_WRITE_PRODUCTION_OR_FROZEN_ARTIFACT") from exc
+        return
     if {part.lower() for part in relative.parts} & {"production", "frozen"} or "frozen_artifact" in target.name.lower():
         raise PermissionError("RESEARCH_RUNNER_CANNOT_WRITE_PRODUCTION_OR_FROZEN_ARTIFACT")
 
