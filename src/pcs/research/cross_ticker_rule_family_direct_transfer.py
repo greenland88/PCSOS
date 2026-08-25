@@ -25,14 +25,19 @@ def metrics(g):
             "leave_one_episode_out": {"min_pnl": min(loo) if loo else None, "negative_count": int(sum(x < 0 for x in loo))},
             "top3_pnl_share": top3}
 
-def episodes(d):
+def episodes(d, trading_sessions=None):
     d = d[_true_flags(d.lifecycle_completed)].sort_values("trade_date").copy()
-    d["gap"] = d.trade_date.diff().dt.days.fillna(999)
-    d["episode_id"] = (d.gap > 10).cumsum()
+    if trading_sessions is None:
+        raise ValueError("DIRECT_TRANSFER_REQUIRES_EXCHANGE_SESSIONS")
+    sessions = pd.DatetimeIndex(trading_sessions).normalize()
+    positions = {day: i for i, day in enumerate(sessions)}
+    d["session_index"] = d.trade_date.map(lambda value: positions.get(pd.Timestamp(value).normalize(), -1))
+    d["episode_id"] = d.session_index.diff().fillna(999).ne(1).cumsum()
     return d.groupby("episode_id", as_index=False).head(1)
 
 def run(ticker="QQQ", outcome_path=QQQ):
     d = pd.read_parquet(outcome_path); d.trade_date = pd.to_datetime(d.trade_date)
+    sessions = PCSDataAccess().read_prices(ticker, d.trade_date.min(), d.trade_date.max()).date
     if "realized_pnl" not in d:
         raise ValueError("DIRECT_TRANSFER_REQUIRES_AUTHORITATIVE_LIFECYCLE_PNL")
     if "sma200" not in d or "ret5" not in d or "ret20" not in d or "volume_ratio20" not in d:
@@ -49,7 +54,7 @@ def run(ticker="QQQ", outcome_path=QQQ):
     results = {}
     for family, mask in specs.items():
         qualifying = d[mask]
-        q = episodes(qualifying)
+        q = episodes(qualifying, sessions)
         m = metrics(q)
         m["qualifying_dates"] = int(len(qualifying))
         m["family"] = family; m["ticker"] = ticker
