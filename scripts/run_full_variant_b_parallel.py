@@ -56,9 +56,12 @@ def run_ticker(ticker: str) -> dict:
         policy=ReplayPolicy(reject_expiration_crossing=False,
                             pre_earnings_exit_days=2),
     )
-    tmp = output.with_name(f".{output.name}.tmp")
-    frame.to_parquet(tmp, index=False)
-    tmp.replace(output)
+    tmp = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        frame.to_parquet(tmp, index=False)
+        os.replace(tmp, output)
+    finally:
+        tmp.unlink(missing_ok=True)
     receipt_tmp = receipt.with_name(f".{receipt.name}.{uuid.uuid4().hex}.tmp")
     try:
         receipt_tmp.write_text(json.dumps({"identity": identity, "inputs": identity_payload}, indent=2), encoding="utf-8")
