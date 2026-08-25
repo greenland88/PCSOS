@@ -24,7 +24,10 @@ def main(root=ROOT, ticker='QQQ', input_name='broad_pcs_outcome_map_train_2020_2
         for r in g.to_dict('records'):
             day=pd.Timestamp(r['trade_date']).normalize(); exp=pd.Timestamp(r['expiration']).normalize(); ss=float(r['short_strike']); ls=float(r['long_strike'])
             cand={'candidate_id':_identity(ticker,day,exp,ss,ls),'ticker':ticker,'date':day,'expiration':exp,'short_strike':ss,'long_strike':ls,'initial_credit':float(r['credit']),'contract_mapping_available':True}
-            q=opts[(opts.trade_date>=day)&(opts.trade_date<=exp)&opts.expiration_date.eq(exp)&opts.strike.isin([ss,ls])].copy()
+            q=opts[(opts.symbol.astype(str).str.upper()==ticker.upper())
+                   & opts.call_put.astype(str).str.lower().eq("p")
+                   & (opts.trade_date>=day)&(opts.trade_date<=exp)
+                   & opts.expiration_date.eq(exp)&opts.strike.isin([ss,ls])].copy()
             try:
                 validate_lifecycle_corporate_action(cand,registry); quote_rows.extend(build_lifecycle_quote_rows(q,cand)); candidates.append(r)
             except Exception as exc:

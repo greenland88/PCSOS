@@ -84,7 +84,7 @@ def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1"
         if not rec["credit_pass"]: rec["reason_code"]="CREDIT_FAIL"; rows.append(rec); continue
         rec["contract_selected"]=True; cand={"candidate_id":_identity(ticker,day,exp,float(short.strike),float(long.strike)),"ticker":ticker,"date":day,"expiration":exp,"short_strike":float(short.strike),"long_strike":float(long.strike),"initial_credit":credit,"contract_mapping_available":True}
         try:
-            q=options_by_expiration.get(pd.Timestamp(exp), pd.DataFrame()).copy(); q=q[(q.trade_date >= day) & (q.trade_date <= pd.Timestamp(exp)) & q.strike.isin([float(short.strike),float(long.strike)])]; validate_lifecycle_corporate_action(cand,registry); lifecycle.extend(build_lifecycle_quote_rows(q,cand)); rec["lifecycle_quotes_adapted"]=True; rec["reason_code"]="QUOTES_ADAPTED_LIFECYCLE_NOT_REPLAYED"
+            q=options_by_expiration.get(pd.Timestamp(exp), pd.DataFrame()).copy(); q=q[q.call_put.astype(str).str.lower().eq("p") & (q.trade_date >= day) & (q.trade_date <= pd.Timestamp(exp)) & q.strike.isin([float(short.strike),float(long.strike)])]; validate_lifecycle_corporate_action(cand,registry); lifecycle.extend(build_lifecycle_quote_rows(q,cand)); rec["lifecycle_quotes_adapted"]=True; rec["reason_code"]="QUOTES_ADAPTED_LIFECYCLE_NOT_REPLAYED"
         except Exception as exc:
             # Preserve every authoritative replay failure in the date-level
             # funnel; a bad quote partition must not abort the shard.
