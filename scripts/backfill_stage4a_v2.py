@@ -51,7 +51,10 @@ def backfill(ticker: str) -> dict:
         chains.get(r["date"], chain.iloc[0:0]), r["expiration"], "p"), axis=1)
     frame["price_confirmation"] = frame["date"].map(confirmations)
     if {"bid", "ask", "volume", "open_interest"}.issubset(chain.columns):
-        quotes = chain[(chain.option_type.astype(str).str.lower() == "p")].drop_duplicates(["trade_date", "expiration", "strike"])
+        side_col = "call_put" if "call_put" in chain.columns else "option_type"
+        quotes = chain[chain[side_col].astype(str).str.lower().eq("p")].copy()
+        quote_key = [c for c in ("symbol", "trade_date", "expiration", side_col, "strike") if c in quotes.columns]
+        quotes = quotes.drop_duplicates(quote_key, keep="first")
         qmap = quotes.set_index(["trade_date", "expiration", "strike"])
         def short_quote(r):
             key = (r["date"], r["expiration"], float(r["short_strike"]))
