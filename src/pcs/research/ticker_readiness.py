@@ -65,7 +65,8 @@ def _pit_checks(r, daily):
     # by ResearchRunner with its cached PIT path.
     smoke_input = x[["date","open","high","low","close","volume"]].tail(400)
     state_result = evaluate_as_of(smoke_input, r.symbol, fixture.date.iloc[0]) if len(fixture) else {}
-    x["state"] = np.where(x.sma200.notna() & bool(state_result), "AVAILABLE", None)
+    state_available = bool(state_result.get("available", False)) if isinstance(state_result, dict) else False
+    x["state"] = np.where(x.sma200.notna() & state_available, "AVAILABLE", None)
     missing={f:int(x[f].isna().sum()) for f in FEATURES}; missing_reasons={f:[{"date":pd.Timestamp(day).date().isoformat(),"reason_code":"PIT_WARMUP_REQUIRED"} for day in x.loc[x[f].isna(),"date"]] for f in FEATURES}; r.checks["pit"]={"required_features":list(FEATURES),"ready_rows":{f:int(x[f].notna().sum()) for f in FEATURES},"missing_rows":missing,"missing_row_reasons":missing_reasons,"state_ready_rows":int(x.state.notna().sum())}
     # Warm-up rows are expected and are retained with exact counts/reasons;
     # they do not make the ticker PIT-unready when every required field has a
