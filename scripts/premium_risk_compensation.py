@@ -2,13 +2,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import json, numpy as np, pandas as pd
 import pcs.research.entry_candidate_universe as m
+from pcs.data.access import PCSDataAccess
 
-ROOT=Path('data/raw/daily_forward_adjusted'); ART=Path('data/parquet/research/variant_b_full'); OUT=Path('data/parquet/research/premium_risk'); OUT.mkdir(parents=True,exist_ok=True)
+REPO_ROOT=Path(__file__).resolve().parents[1]
+ART=REPO_ROOT/'data/parquet/research/variant_b_full'; OUT=REPO_ROOT/'data/parquet/research/premium_risk'; OUT.mkdir(parents=True,exist_ok=True)
 TICKERS=['AAPL','AMD','AMZN','AVGO','CRM','GOOGL','HOOD','META','MSFT','MU','NFLX','NVDA','QQQ','SPY','TSLA','VRT']
 
 def run(t):
     tr=pd.read_parquet(ART/f'{t}_full_post2020_2d.parquet'); tr=tr[tr.status.eq('COMPLETE')].copy(); tr['date']=pd.to_datetime(tr.date); tr['exit_date']=pd.to_datetime(tr.exit_date)
-    d=m._daily(ROOT/f'{t}_daily_qfq.csv'); d['atr14']=m._atr14(d); d['valid_ohlc']=(d.high>=d.low)&(d.high>=d.close)&(d.low<=d.close); anomalies=int((~d.valid_ohlc).sum()); dm=d.set_index('date')
+    d=PCSDataAccess().read_prices(t); d['atr14']=m._atr14(d); d['valid_ohlc']=(d.high>=d.low)&(d.high>=d.close)&(d.low<=d.close); anomalies=int((~d.valid_ohlc).sum()); dm=d.set_index('date')
     rows=[]
     for _,r in tr.iterrows():
         q=d[(d.date>r.date)&(d.date<=r.exit_date)].head(20)
