@@ -85,7 +85,11 @@ def _pit_checks(r, daily):
     # field, otherwise a valid state is reported as unavailable (or an old
     # mock can mask the production schema drift).
     state_available = _strict_bool(state_result.get("available_data", False)) if isinstance(state_result, dict) else False
-    x["state"] = np.where(x.sma200.notna() & state_available, "AVAILABLE", None)
+    # This is a bounded smoke check, not a full historical state build.  Only
+    # the date actually passed through evaluate_as_of may be reported as
+    # state-available; never extrapolate one successful row to the full past.
+    verified_state_date = pd.Timestamp(fixture.date.iloc[0]).normalize() if state_available and len(fixture) else None
+    x["state"] = np.where(x.date.eq(verified_state_date), "AVAILABLE", None)
     missing={f:int(x[f].isna().sum()) for f in FEATURES}; missing_reasons={f:[{"date":pd.Timestamp(day).date().isoformat(),"reason_code":"PIT_WARMUP_REQUIRED"} for day in x.loc[x[f].isna(),"date"]] for f in FEATURES}; r.checks["pit"]={"required_features":list(FEATURES),"ready_rows":{f:int(x[f].notna().sum()) for f in FEATURES},"missing_rows":missing,"missing_row_reasons":missing_reasons,"state_ready_rows":int(x.state.notna().sum())}
     # Warm-up rows are expected and are retained with exact counts/reasons;
     # they do not make the ticker PIT-unready when every required field has a
