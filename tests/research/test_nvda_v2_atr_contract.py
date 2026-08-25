@@ -14,5 +14,5 @@ def test_nvda_v2_atr_contract_uses_canonical_wilder_atr():
         "volume": [1000] * 220,
     })
     atr = _atr14(daily)
-    assert atr.iloc[:13].isna().all()
-    assert atr.iloc[13:].notna().all()
+    assert atr.iloc[:14].isna().all()
+    assert atr.iloc[14:].notna().all()
