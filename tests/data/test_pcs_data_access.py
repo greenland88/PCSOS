@@ -113,6 +113,20 @@ def test_partition_replace_updates_manifest_and_provenance_atomically(tmp_path):
     assert pd.read_csv(tmp_path / "provenance.csv").iloc[0]["source"] == "ClickHouse"
 
 
+def test_partition_write_rolls_back_parquet_when_manifest_commit_fails(tmp_path, monkeypatch):
+    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    frame = _options([["ZZZ", "2026-08-03", "2026-09-18", 100, "p", 1, .9, 1.1, None, None, 1, 1, None, None, None, None, None]])
+
+    def fail_manifest(*args, **kwargs):
+        raise OSError("manifest commit failed")
+
+    monkeypatch.setattr(access, "update_manifest", fail_manifest)
+    with pytest.raises(OSError, match="manifest commit failed"):
+        access.write_partition(frame, "options", "ZZZ", "year=2026/quarter=3", source_version="v1")
+    assert not list((tmp_path / "parquet").rglob("*.parquet"))
+    assert not (tmp_path / "manifest.csv").exists()
+
+
 def test_clickhouse_incremental_sync_records_complete_provenance_and_manifest(tmp_path, monkeypatch):
     """A successful increment must never leave data without an auditable origin."""
     from scripts import sync_clickhouse_options as sync

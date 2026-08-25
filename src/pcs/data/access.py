@@ -532,9 +532,33 @@ class PCSDataAccess:
         if len(verify) != len(checked):
             tmp.unlink(missing_ok=True)
             raise DataQualityError("row-count verification failed after write")
-        os.replace(tmp, path)
-        if update_manifest:
-            self.update_manifest(dataset, symbol, checked, path, source_version, partition, replace_existing=replace_manifest)
+        previous_parquet = path.read_bytes() if path.exists() else None
+        previous_manifest = self.manifest_path.read_bytes() if update_manifest and self.manifest_path.exists() else None
+        try:
+            os.replace(tmp, path)
+            if update_manifest:
+                self.update_manifest(dataset, symbol, checked, path, source_version, partition, replace_existing=replace_manifest)
+        except Exception:
+            # Restore both sides of the logical commit.  This keeps a failed
+            # write from exposing a parquet partition that the manifest does
+            # not describe (or vice versa).
+            restore_tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.rollback")
+            if previous_parquet is None:
+                path.unlink(missing_ok=True)
+            else:
+                restore_tmp.write_bytes(previous_parquet)
+                os.replace(restore_tmp, path)
+            if update_manifest:
+                if previous_manifest is None:
+                    self.manifest_path.unlink(missing_ok=True)
+                else:
+                    manifest_tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.rollback")
+                    manifest_tmp.write_bytes(previous_manifest)
+                    os.replace(manifest_tmp, self.manifest_path)
+                self._manifest = pd.read_csv(self.manifest_path) if self.manifest_path.exists() else pd.DataFrame()
+            raise
+        finally:
+            tmp.unlink(missing_ok=True)
         return path
 
     def append(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str) -> Path:
