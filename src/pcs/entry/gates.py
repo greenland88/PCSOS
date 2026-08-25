@@ -57,10 +57,9 @@ class EventGate:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_EARNINGS_CROSSING",))
                 sessions = self.trading_sessions
                 if sessions is None:
-                    distance = len(pd.bdate_range(entry, date, inclusive="right"))
-                else:
-                    session_index = pd.DatetimeIndex(sessions).normalize()
-                    distance = int(((session_index > entry) & (session_index <= date)).sum())
+                    return GateResult("event", GateStatus.FAIL, ("EVENT_TRADING_CALENDAR_UNAVAILABLE",))
+                session_index = pd.DatetimeIndex(sessions).normalize()
+                distance = int(((session_index > entry) & (session_index <= date)).sum())
                 if 0 <= distance <= 3:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_PRE_EARNINGS_BLACKOUT",))
         except Exception:
