@@ -163,7 +163,7 @@ def main():
         for future in as_completed(futures):
             results.append(future.result())
     results.sort(key=lambda x: x["year"])
-    (OUT / "shard_manifest.json").write_text(json.dumps({"workers":workers,"years":results,"max_workers":8}, indent=2, default=str), encoding="utf-8")
+    _atomic_json(OUT / "shard_manifest.json", {"workers":workers,"years":results,"max_workers":8})
     print(json.dumps({"workers":workers,"years":results}, indent=2, default=str))
 
 
