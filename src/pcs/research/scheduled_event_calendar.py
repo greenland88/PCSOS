@@ -200,7 +200,8 @@ def tag_entry_dates(trades: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFram
                 event_rows = event_rows[(event_rows.symbol.isna()) | (event_rows.symbol.astype(str).str.upper() == row.symbol)]
             if knowledge_column is not None:
                 event_rows = event_rows[event_rows[knowledge_column].map(_known_at_entry)]
-            dates = pd.DatetimeIndex(event_rows.event_date)
+            dates = (pd.DatetimeIndex(event_rows.event_date)
+                     if not event_rows.empty else pd.DatetimeIndex([]))
             future = dates[dates >= row.entry_date]
             nexts.append((future[0] - row.entry_date).days if len(future) else pd.NA)
             dte_flags.append(bool(((dates >= row.entry_date) & (dates <= row.expiration)).any()))
