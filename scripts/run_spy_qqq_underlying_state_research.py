@@ -5,8 +5,8 @@ from hashlib import sha256
 import json, shutil
 import argparse
 import pandas as pd
-import pyarrow.parquet as pq
 
+from pcs.data.access import PCSDataAccess
 from pcs.research.underlying_state import evaluate_as_of
 from scripts.summarize_spy_qqq_modular_replay import select_policy, metrics
 
@@ -15,11 +15,9 @@ END={'train':pd.Timestamp('2025-12-31'),'validation':pd.Timestamp('2026-05-31')}
 SCENARIOS={'UNDERLYING_STATE_DISABLED_BASELINE':set(),'BLOCK_DOWNTREND':{'DOWNTREND'},'BLOCK_DOWNTREND_AND_BREAKDOWN':{'DOWNTREND','BREAKDOWN'},'PULLBACK_REQUIRES_STABILIZING':{'PULLBACK_IN_UPTREND'},'RECOVERY_REQUIRES_RECONFIRMATION':set()}
 def h(p):return sha256(p.read_bytes()).hexdigest()
 def daily(t,end):
- rows=[]
- for y in range(2019,end.year+1):
-  p=ROOT/'data/parquet/daily'/f'symbol={t}'/f'year={y}'/f'{t}_{y}.parquet'
-  if p.exists(): rows.append(pq.read_table(p,filters=[('date','<=',end.to_datetime64())]).to_pandas())
- x=pd.concat(rows,ignore_index=True);x.date=pd.to_datetime(x.date).dt.normalize();return x.sort_values('date').drop_duplicates('date')
+ x=PCSDataAccess().read_prices(t, None, end)
+ x.date=pd.to_datetime(x.date).dt.normalize()
+ return x.sort_values('date').drop_duplicates('date')
 def ledger(split,ticker):
  d=daily(ticker,END[split]);d=d[d.date.le(END[split])]; rows=[]
  for day in d[d.date.between(START[split],END[split])].date: rows.append({**evaluate_as_of(d,ticker,day),'split':split})
