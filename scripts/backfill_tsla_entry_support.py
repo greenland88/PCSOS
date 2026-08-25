@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -72,7 +73,13 @@ def backfill(root: Path = ROOT) -> dict:
             "pit_status": "PIT" if bar is not None and payload is not None else "PIT_DATA_MISSING",
         })
     out = pd.DataFrame(rows)
-    out.to_parquet(root / "tsla_entry_support_backfill.parquet", index=False)
+    support_path = root / "tsla_entry_support_backfill.parquet"
+    support_tmp = support_path.with_name(f".{support_path.name}.{os.getpid()}.tmp")
+    try:
+        out.to_parquet(support_tmp, index=False)
+        os.replace(support_tmp, support_path)
+    finally:
+        support_tmp.unlink(missing_ok=True)
 
     variants_path = root / "tsla_specialized_candidate_variants.parquet"
     variants = pd.read_parquet(variants_path).copy()
@@ -85,7 +92,12 @@ def backfill(root: Path = ROOT) -> dict:
     before = set(variants["base_candidate_id"].dropna())
     join_payload = out.drop(columns=["decision_date"])
     joined = variants.merge(join_payload, left_on="base_candidate_id", right_on="candidate_id", how="left", validate="many_to_one")
-    joined.to_parquet(variants_path, index=False)
+    variants_tmp = variants_path.with_name(f".{variants_path.name}.{os.getpid()}.tmp")
+    try:
+        joined.to_parquet(variants_tmp, index=False)
+        os.replace(variants_tmp, variants_path)
+    finally:
+        variants_tmp.unlink(missing_ok=True)
     future_leakage = int(
         ((pd.to_datetime(out["support_asof"]) > pd.to_datetime(out["decision_date"])) |
          (pd.to_datetime(out["ohlcv_asof"]) > pd.to_datetime(out["decision_date"]))).sum()
@@ -104,7 +116,13 @@ def backfill(root: Path = ROOT) -> dict:
         "pit_status_counts": out.pit_status.value_counts().to_dict(),
         "status": "PASS" if len(out) == 1119 and out.candidate_id.nunique() == 1119 and out.candidate_id.duplicated().sum() == 0 and future_leakage == 0 else "FAIL",
     }
-    (root / "tsla_entry_support_validation.json").write_text(json.dumps(validation, indent=2), encoding="utf-8")
+    validation_path = root / "tsla_entry_support_validation.json"
+    validation_tmp = validation_path.with_name(f".{validation_path.name}.{os.getpid()}.tmp")
+    try:
+        validation_tmp.write_text(json.dumps(validation, indent=2), encoding="utf-8")
+        os.replace(validation_tmp, validation_path)
+    finally:
+        validation_tmp.unlink(missing_ok=True)
     return validation
 
 
