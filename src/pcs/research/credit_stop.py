@@ -251,7 +251,10 @@ def precompute_trend_lookup(stock, benchmark, config=None, start=START, end=END)
 def build_option_indexes(quotes):
     t=time.perf_counter(); result={
         "by_date": {day:g for day,g in quotes.groupby("Trade Date")},
-        "by_contract": {(key[0],key[1]):g for key,g in quotes.groupby(["Expiry Date","Strike"])},
+        # Contract identity must retain option type.  Expiry+strike alone
+        # aliases a call and a put in the same lifecycle index.
+        "by_contract": {(key[0],key[1],str(key[2]).lower()):g
+                        for key,g in quotes.groupby(["Expiry Date","Strike","Call/Put"])},
     }
     result["index_build_seconds"]=time.perf_counter()-t; return result
 
@@ -277,7 +280,7 @@ def track_trade(entry, quotes, short, long, initial, max_days=20, quote_index=No
     if quote_index is None:
         q=quotes[(quotes["Expiry Date"]==entry["expiration"])&quotes["Trade Date"].ge(entry["date"])&quotes.Strike.isin([entry["short_strike"],entry["long_strike"]])]
     else:
-        q=pd.concat([quote_index.get((entry["expiration"],entry["short_strike"]),pd.DataFrame()),quote_index.get((entry["expiration"],entry["long_strike"]),pd.DataFrame())],ignore_index=True)
+        q=pd.concat([quote_index.get((entry["expiration"],entry["short_strike"],"p"),pd.DataFrame()),quote_index.get((entry["expiration"],entry["long_strike"],"p"),pd.DataFrame())],ignore_index=True)
         q=q[q["Trade Date"]>=entry["date"]]
     q=q.pivot_table(index="Trade Date",columns="Strike",values=["Bid Price","Ask Price"],aggfunc="first").sort_index().head(max_days)
     events={"profit50":None,"profit70":None,"stop":None}; valid_days=[]; invalid=0

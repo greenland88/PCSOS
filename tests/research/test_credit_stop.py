@@ -1,5 +1,5 @@
 import pandas as pd
-from pcs.research.credit_stop import credit_bucket, buffer_bucket, valid_entry, select_pair, _quarter_files, DEFAULT_SAFE_STRIKE_ATR, CONSERVATIVE_SAFE_STRIKE_ATR
+from pcs.research.credit_stop import credit_bucket, buffer_bucket, valid_entry, select_pair, build_option_indexes, _quarter_files, DEFAULT_SAFE_STRIKE_ATR, CONSERVATIVE_SAFE_STRIKE_ATR
 
 def test_quote_and_buckets():
     assert valid_entry({'Bid Price':1,'Ask Price':2})
@@ -26,3 +26,15 @@ def test_conservative_safe_strike_requires_explicit_selection():
     conservative,_=select_pair(q,pd.Timestamp('2026-07-01'),110,5,safe_strike_atr=2.5)
     assert default is not None and conservative is not None
     assert DEFAULT_SAFE_STRIKE_ATR != CONSERVATIVE_SAFE_STRIKE_ATR
+
+
+def test_option_index_keeps_call_and_put_contracts_separate():
+    q = pd.DataFrame({
+        'Trade Date': pd.to_datetime(['2026-01-02', '2026-01-02']),
+        'Expiry Date': pd.to_datetime(['2026-02-02', '2026-02-02']),
+        'Strike': [100.0, 100.0], 'Call/Put': ['c', 'p'],
+        'Bid Price': [1.0, 2.0], 'Ask Price': [1.1, 2.1],
+    })
+    index = build_option_indexes(q)['by_contract']
+    assert set(index) == {(pd.Timestamp('2026-02-02'), 100.0, 'c'),
+                          (pd.Timestamp('2026-02-02'), 100.0, 'p')}
