@@ -4,7 +4,7 @@ Each worker writes only its own year directory.  The script intentionally
 keeps the production rules and canonical data read-only.
 """
 from __future__ import annotations
-import json, os, time
+import hashlib, json, os, time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import pandas as pd
@@ -24,11 +24,25 @@ def run_year(year: int) -> dict:
     target = OUT / f"year={year}"
     target.mkdir(parents=True, exist_ok=True)
     marker = target / "shard_summary.json"
-    if marker.exists():
-        return json.loads(marker.read_text(encoding="utf-8")) | {"resumed": True}
     started = time.perf_counter()
     access = PCSDataAccess()
     registry = load_corporate_actions()
+    identity_payload = {
+        "year": year, "quote_start": str(max(pd.Timestamp(f"{year}-01-01"), pd.Timestamp("2020-01-02")).date()),
+        "quote_end": str(min(pd.Timestamp(f"{year}-12-31") + pd.Timedelta(days=50), pd.Timestamp("2026-07-31")).date()),
+        "daily": access.source_data_identity("daily", "NVDA"),
+        "benchmark_daily": access.source_data_identity("daily", "QQQ"),
+        "options": access.source_data_identity("options", "NVDA"),
+        "code": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    identity = hashlib.sha256(json.dumps(identity_payload, sort_keys=True).encode()).hexdigest()
+    if marker.exists():
+        try:
+            saved = json.loads(marker.read_text(encoding="utf-8"))
+            if saved.get("identity") == identity and saved.get("status") == "COMPLETED_QUOTE_ADAPTATION_ONLY":
+                return saved | {"resumed": True}
+        except (OSError, ValueError, TypeError):
+            pass
     start = pd.Timestamp(f"{year}-01-01")
     end = pd.Timestamp(f"{year}-12-31")
     # Include sufficient prior history for PIT indicators, but count only year.
@@ -43,6 +57,8 @@ def run_year(year: int) -> dict:
     quote_start = max(start, pd.Timestamp("2020-01-02"))
     quote_end = min(end + pd.Timedelta(days=50), pd.Timestamp("2026-07-31"))
     quotes = access.read_quotes("NVDA", quote_start, quote_end)
+    if quotes.empty:
+        raise RuntimeError("CANONICAL_OPTIONS_UNAVAILABLE")
     quotes["trade_date"] = pd.to_datetime(quotes.trade_date).dt.normalize()
     quotes["expiration_date"] = pd.to_datetime(quotes.expiration_date).dt.normalize()
     candidates = []
@@ -76,7 +92,7 @@ def run_year(year: int) -> dict:
             lifecycle_completed += 1
         except LifecycleAdapterError:
             lifecycle_failures += 1
-    summary = {"year":year,"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"contract_candidates":len(candidates),"selected_entries":len(candidates),"lifecycles_completed":lifecycle_completed,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False}
+    summary = {"year":year,"status":"COMPLETED_QUOTE_ADAPTATION_ONLY","identity":identity,"identity_inputs":identity_payload,"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"contract_candidates":len(candidates),"selected_entries":len(candidates),"lifecycles_completed":lifecycle_completed,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False}
     marker.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     return summary
 
