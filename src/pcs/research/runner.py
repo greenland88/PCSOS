@@ -30,6 +30,8 @@ from pcs.trend.market_structure import _find_confirmed_swings
 from pcs.trend.relative_strength import RelativeStrengthResult, _classify_state, _is_stock_specific_weakness, _safe_return
 from .pit_cache_identity import build_pit_cache_identity, cache_identity_matches
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def _status_for_funnel(records: list[Any]) -> str:
     return next((r.status.value for r in records if r.output_count == 0), ResearchStatus.COMPUTABLE.value)
@@ -298,9 +300,9 @@ class ResearchRunner:
                 input_identities["benchmark_daily"] = access.source_data_identity("daily", str(benchmark))
             except Exception:
                 input_identities["benchmark_daily"] = "UNAVAILABLE"
-        event_path = Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+        event_path = REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
         input_identities["event_calendar"] = self._sha256(event_path) if event_path.exists() else "UNAVAILABLE"
-        action_path = Path("config/data/corporate_actions.csv")
+        action_path = REPO_ROOT / "config/data/corporate_actions.csv"
         input_identities["corporate_actions"] = self._sha256(action_path) if action_path.exists() else "UNAVAILABLE"
         manifest = {
             "research_id": self.spec.research_id, "status": "CURRENT",
@@ -336,9 +338,9 @@ class ResearchRunner:
             benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
             if benchmark:
                 current_identities["benchmark_daily"] = access.source_data_identity("daily", str(benchmark))
-            event_path = Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+            event_path = REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
             current_identities["event_calendar"] = self._sha256(event_path) if event_path.exists() else "UNAVAILABLE"
-            action_path = Path("config/data/corporate_actions.csv")
+            action_path = REPO_ROOT / "config/data/corporate_actions.csv"
             current_identities["corporate_actions"] = self._sha256(action_path) if action_path.exists() else "UNAVAILABLE"
         except Exception as exc:
             raise RuntimeError("STALE_ARTIFACT") from exc
