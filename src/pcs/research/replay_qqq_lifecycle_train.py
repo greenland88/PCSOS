@@ -8,11 +8,13 @@ from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
 from pcs.research.variant_b_replay import ReplayPolicy
 
 ROOT=Path('research_outputs/qqq_entry_discovery_agent_v1'); ART=ROOT/'artifacts'
+def _true_flag(series: pd.Series) -> pd.Series:
+    return series.map(lambda v: v is True or v == 1 or (isinstance(v, str) and v.strip().lower() in {"true", "1", "yes"}))
 def main(root=ROOT, ticker='QQQ', input_name='broad_pcs_outcome_map_train_2020_2023.parquet', output_name='authoritative_lifecycle_outcomes_train_2020_2023.parquet'):
     root=Path(root); art=root/'artifacts'; art.mkdir(parents=True, exist_ok=True)
     input_path = art/input_name if (art/input_name).is_file() else root/input_name
     base=pd.read_parquet(input_path)
-    selected=base[base.contract_selected.astype(bool) & base.lifecycle_completed.astype(bool)].copy()
+    selected=base[_true_flag(base.contract_selected) & _true_flag(base.lifecycle_completed)].copy()
     access=PCSDataAccess(); registry=load_corporate_actions(); rows=[]
     for year,g in selected.assign(year=pd.to_datetime(selected.trade_date).dt.year).groupby('year',sort=True):
         option_start = pd.Timestamp(g.trade_date.min()).strftime('%Y-%m-%d')
