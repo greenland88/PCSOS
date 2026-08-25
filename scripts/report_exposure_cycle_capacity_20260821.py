@@ -1,5 +1,6 @@
 from pathlib import Path
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 BASE=Path('research_outputs/spy_qqq_pcs_baseline_20260821'); FIX=Path('research_outputs/conditional_exposure_research_v2_20260821'); OUT=Path('research_outputs/exposure_capacity_20260821'); OUT.mkdir(parents=True,exist_ok=True)
 
@@ -18,8 +19,8 @@ def cycles(x):
  if cur: out.append(cur)
  return out
 
-def exposure(x,start,end):
- days=pd.bdate_range(start,end); counts=[int(((x.entry<=d)&(x.exit.isna()|(x.exit>=d))).sum()) for d in days]; s=pd.Series(counts,index=days); runs=[]; cur=0
+def exposure(x,start,end,sessions):
+ days=sessions[(sessions >= pd.Timestamp(start)) & (sessions <= pd.Timestamp(end))]; counts=[int(((x.entry<=d)&(x.exit.isna()|(x.exit>=d))).sum()) for d in days]; s=pd.Series(counts,index=days); runs=[]; cur=0
  for v in s>0: cur=cur+1 if v else 0; runs.append(cur)
  years=(pd.Timestamp(end)-pd.Timestamp(start)).days/365.25
  return {'exposure_days_per_year':float((s>0).sum()/years),'pct_time_with_any_open_pcs':float((s>0).mean()*100),'pct_time_with_1_open':float((s==1).mean()*100),'pct_time_with_2_open':float((s==2).mean()*100),'pct_time_with_3_plus_open':float((s>=3).mean()*100),'max_continuous_exposure_days':max(runs,default=0)}
@@ -27,9 +28,10 @@ def exposure(x,start,end):
 def main():
  rows=[]
  for t in ('SPY','QQQ'):
+  sessions=pd.DatetimeIndex(pd.to_datetime(PCSDataAccess().read_prices(t)["date"]).dt.normalize().drop_duplicates().sort_values())
   for split,(start,end) in {'TRAIN':('2020-02-28','2025-12-31'),'VALIDATION':('2026-01-01','2026-05-31')}.items():
    data={v:load(t,split,v) for v in ('BASELINE','R1_MAX_OPEN_1','R2_MAX_OPEN_2')}; cs={v:cycles(x) for v,x in data.items()}; row={'ticker':t,'split':split,'baseline_cycles':len(cs['BASELINE']),'max1_cycles':len(cs['R1_MAX_OPEN_1']),'max2_cycles':len(cs['R2_MAX_OPEN_2']),'baseline_trades_per_cycle':len(data['BASELINE'])/len(cs['BASELINE']) if cs['BASELINE'] else None,'max1_trades_per_cycle':len(data['R1_MAX_OPEN_1'])/len(cs['R1_MAX_OPEN_1']) if cs['R1_MAX_OPEN_1'] else None,'max2_trades_per_cycle':len(data['R2_MAX_OPEN_2'])/len(cs['R2_MAX_OPEN_2']) if cs['R2_MAX_OPEN_2'] else None,'pct_independent_cycles_retained_max1':len(cs['R1_MAX_OPEN_1'])/len(cs['BASELINE'])*100 if cs['BASELINE'] else None,'pct_independent_cycles_retained_max2':len(cs['R2_MAX_OPEN_2'])/len(cs['BASELINE'])*100 if cs['BASELINE'] else None}
-   for v in data: row.update({f'{v.lower()}_{k}':val for k,val in exposure(data[v],start,end).items()})
+   for v in data: row.update({f'{v.lower()}_{k}':val for k,val in exposure(data[v],start,end,sessions).items()})
    rows.append(row)
  out=pd.DataFrame(rows); out.to_csv(OUT/'exposure_capacity_summary.csv',index=False); print(out.to_string(index=False))
 if __name__=='__main__': main()
