@@ -20,6 +20,20 @@ def sha(path):
     with path.open("rb") as f:
         for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
+def valid_partition(path, period):
+    try:
+        frame = pd.read_parquet(path)
+    except Exception:
+        return False
+    required = {"candidate_id", "ticker", "decision_date", "expiration", "short_strike", "long_strike"}
+    if not required.issubset(frame.columns):
+        return False
+    dates = pd.to_datetime(frame["decision_date"], errors="coerce")
+    p = pd.Period(period)
+    return (frame["ticker"].astype(str).eq("COST").all()
+            and dates.notna().all()
+            and dates.between(p.start_time.normalize(), p.end_time.normalize()).all()
+            and not frame["candidate_id"].duplicated().any())
 def run_identity():
     access=PCSDataAccess(); payload={"ticker":"COST","benchmark":"QQQ","periods":PERIODS,
         "safe_strike_atr":SAFE,"dte_min":DTE_LO,"dte_max":DTE_HI,"credit_ratio":CREDIT,
@@ -58,7 +72,8 @@ def main():
     for p in PERIODS:
         saved=state["partitions"][p]; output=Path(saved.get("output_path",""))
         reusable=(saved.get("status")=="COMMITTED" and output.is_file()
-                  and saved.get("output_checksum")==sha(output))
+                  and saved.get("output_checksum")==sha(output)
+                  and valid_partition(output, p))
         if not reusable: pending.append(p)
     durations=[]
     def report(stage):
