@@ -67,10 +67,13 @@ class PCSDataAccess:
         self.provenance_manifest_path = self.manifest_path.with_name("data_provenance_manifest.csv")
         self.parquet_root = Path(parquet_root) if parquet_root is not None else self.data_root / "parquet"
         self._manifest = pd.read_csv(self.manifest_path) if self.manifest_path.exists() else pd.DataFrame()
-        self.source_routes_path = (
-            Path(source_routes_path).expanduser().resolve()
-            if source_routes_path else None
-        )
+        if source_routes_path:
+            route_path = Path(source_routes_path).expanduser()
+            if not route_path.is_absolute() and str(source_routes_path).replace("\\", "/") == "config/data_source_routes.yaml":
+                route_path = repo_root / route_path
+            self.source_routes_path = route_path.resolve()
+        else:
+            self.source_routes_path = None
         self.source_routes = source_routes if source_routes is not None else self._load_source_routes(self.source_routes_path)
         metadata_path = self.manifest_path.with_name("price_basis_metadata.csv")
         if not metadata_path.exists() and self._uses_default_store:
