@@ -19,6 +19,11 @@ import pandas as pd
 from .access import PCSDataAccess, DataQualityError
 from .daily_provider import normalize_daily_frame
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _resolve_default(value: str | Path, default: str) -> Path:
+    return _REPO_ROOT / default if str(value).replace("\\", "/") == default else Path(value)
+
 
 @dataclass
 class UpdateResult:
@@ -75,7 +80,7 @@ def invalidate_current_derived(symbol: str, affected_partitions: list[str], *, m
     whose source partition overlaps one of these markers and rebuild it.
     """
     symbol = str(symbol).upper()
-    target = Path(manifest_path); target.parent.mkdir(parents=True, exist_ok=True)
+    target = _resolve_default(manifest_path, "data/manifests/derived_invalidations.jsonl"); target.parent.mkdir(parents=True, exist_ok=True)
     marker = {"symbol": symbol, "affected_partitions": sorted(set(affected_partitions)), "created_at": datetime.now(timezone.utc).isoformat()}
     existing = []
     if target.exists():
@@ -93,6 +98,8 @@ def invalidate_current_derived(symbol: str, affected_partitions: list[str], *, m
 
 def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", source_version="incremental") -> tuple[str, list[str], str | None]:
     symbol = symbol.upper()
+    parquet_root = _resolve_default(parquet_root, "data/parquet")
+    manifest_path = _resolve_default(manifest_path, "data/manifests/storage_manifest.csv")
     incoming = incoming.copy()
     if "symbol" not in incoming:
         incoming["symbol"] = symbol
@@ -118,6 +125,8 @@ def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="dat
 
 def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest_options_v2.csv", source_version="incremental") -> tuple[str, list[str], str | None]:
     symbol = symbol.upper()
+    parquet_root = _resolve_default(parquet_root, "data/parquet")
+    manifest_path = _resolve_default(manifest_path, "data/manifests/storage_manifest_options_v2.csv")
     incoming = incoming.copy()
     if "symbol" not in incoming:
         incoming["symbol"] = symbol
@@ -145,6 +154,9 @@ def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="d
 
 
 def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest_options_v2.csv", source_version="incremental") -> dict[str, Any]:
+    parquet_root = _resolve_default(parquet_root, "data/parquet")
+    manifest_path = _resolve_default(manifest_path, "data/manifests/storage_manifest.csv")
+    options_manifest_path = _resolve_default(options_manifest_path, "data/manifests/storage_manifest_options_v2.csv")
     result = UpdateResult(symbol=symbol.upper(), as_of=datetime.now(timezone.utc).isoformat(), data_timestamp=datetime.now(timezone.utc).isoformat())
     try:
         if daily_frame is not None:
@@ -159,7 +171,7 @@ def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, optio
             result.current_derived_artifacts_invalidated = invalidate_current_derived(symbol, result.affected_partitions)
             result.reason_codes.append("DERIVED_INVALIDATION_MARKED")
             try:
-                if Path(parquet_root) != Path("data/parquet"):
+                if Path(parquet_root).resolve() != (_REPO_ROOT / "data/parquet").resolve():
                     result.readiness_refresh_status = "SKIPPED_ISOLATED_STORE"
                     raise StopIteration
                 from pcs.research.ticker_readiness import preflight_ticker, persist_ticker_readiness
