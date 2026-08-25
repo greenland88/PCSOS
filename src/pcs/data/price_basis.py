@@ -86,19 +86,18 @@ EMPTY_REGISTRY = CorporateActionRegistry()
 
 
 def load_corporate_actions(path: str | Path = "config/data/corporate_actions.csv") -> CorporateActionRegistry:
-    """Load verified actions from the authoritative versioned registry."""
+    """Load all declared actions; unverified rows remain fail-closed inputs."""
     target = Path(path)
     if not target.exists():
         return EMPTY_REGISTRY
     actions = []
     with target.open(encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
-            if str(row.get("verified", "")).strip().lower() not in {"true", "1", "yes"}:
-                continue
+            verified = str(row.get("verified", "")).strip().lower() in {"true", "1", "yes"}
             actions.append(CorporateAction(
                 symbol=row["symbol"], effective_date=pd.Timestamp(row["effective_date"]),
                 action_type=CorporateActionType(row["action_type"]), ratio=float(row["ratio"]),
-                source=row["source"], verified=True,
+                source=row["source"], verified=verified,
             ))
     return CorporateActionRegistry(actions)
 
