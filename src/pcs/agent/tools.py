@@ -52,14 +52,22 @@ def get_research_run(run_id):
     return response("AVAILABLE" if rows else "UNAVAILABLE", "DATA_AVAILABLE" if rows else "DATA_NOT_FOUND", rows, run_id=str(run_id))
 
 def get_backtest_trades(run_id):
-    df=read_backtest_trades(run_id)
+    try:
+        df=read_backtest_trades(run_id)
+    except (OSError, ValueError, DataAccessError) as exc:
+        return response("UNAVAILABLE", "ARTIFACT_INVALID", [], run_id=str(run_id),
+                        reason_codes=["ARTIFACT_INVALID", type(exc).__name__])
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), run_id=str(run_id))
 
 def get_trend_snapshot(symbol, as_of, benchmark=None):
     filters={"symbol":symbol,"date":pd.Timestamp(as_of)}
     if benchmark is not None:
         filters["benchmark_symbol"] = benchmark
-    df=read_derived("trend_history",filters=filters)
+    try:
+        df=read_derived("trend_history",filters=filters)
+    except (OSError, ValueError, DataAccessError) as exc:
+        return response("UNAVAILABLE", "ARTIFACT_INVALID", [], symbol, as_of=as_of,
+                        reason_codes=["ARTIFACT_INVALID", type(exc).__name__])
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "CALCULATION_UNAVAILABLE", df.to_dict("records"), symbol, as_of=as_of)
 
 def get_data_compatibility(symbol, as_of):
