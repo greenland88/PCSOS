@@ -29,6 +29,6 @@ def test_realized_vol_requires_full_lookback():
 
 def test_scores_are_missing_until_full_feature_readiness():
     rows = calculate_market_features(_rows(1, 205))
-    assert all(row["feature_ready"] is False for row in rows[:200])
-    assert all(pd.isna(row["trend_score"]) for row in rows[:200])
-    assert rows[200]["feature_ready"] is True
+    assert all(not row["feature_ready"] for row in rows[:199])
+    assert all(pd.isna(row["trend_score"]) for row in rows[:199])
+    assert rows[199]["feature_ready"]
