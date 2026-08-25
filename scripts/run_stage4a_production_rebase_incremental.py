@@ -64,8 +64,8 @@ def main():
             for day,group in raw.groupby("trade_date",sort=True):
                 chain=group.rename(columns={"trade_date":"Trade Date","expiration_date":"Expiry Date","call_put":"Call/Put","strike":"Strike","last":"Last Trade Price","bid":"Bid Price","ask":"Ask Price","delta":"Delta","open_interest":"Open Interest","volume":"Volume"})
                 for row in generate_structural_put_opportunities(chain,ticker,day):
-                    identity="|".join([ticker,str(day.date()),str(row["expiration"].date()),"p",str(row["short_strike"]),str(row["long_strike"])])
-                    row.update({"opportunity_id":hashlib.sha256(identity.encode()).hexdigest()[:24],"pit_asof":str(day.date()),"source_partition":"PCSDataAccess.resolve_source(options)","source_provenance":"PCSDataAccess canonical resolved route"}); rows.append(row)
+                    opportunity_identity="|".join([ticker,str(day.date()),str(row["expiration"].date()),"p",str(row["short_strike"]),str(row["long_strike"])])
+                    row.update({"opportunity_id":hashlib.sha256(opportunity_identity.encode()).hexdigest()[:24],"pit_asof":str(day.date()),"source_partition":"PCSDataAccess.resolve_source(options)","source_provenance":"PCSDataAccess canonical resolved route"}); rows.append(row)
             frame=pd.DataFrame(rows,columns=PARTITION_COLUMNS); atomic_parquet(frame,final)
             progress["partitions"][key]={"ticker":ticker,"source_partition":str(file),"decision_dates":int(raw.trade_date.nunique()),"raw_chain_rows":int(len(raw)),"opportunities":int(len(frame)),"duplicate_ids":int(frame.opportunity_id.duplicated().sum()) if not frame.empty else 0,"status":"COMPLETE","validation":"PASS","identity":identity}
             atomic_json(progress_path,progress)
