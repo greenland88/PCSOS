@@ -26,5 +26,5 @@ def test_stock_daily_uses_private_gateway_and_normalizes_bars():
     frame = client.stock_daily("aapl", "2025-11-03", "2025-11-28")
     assert list(frame.columns) == ["date", "open", "high", "low", "close", "volume"]
     assert frame.iloc[0].close == 274
-    assert session.calls[0][0] == "http://47.109.55.53:3000/v2/aggs/ticker/AAPL/range/1/day/2025-11-03/2025-11-28"
+    assert session.calls[0][0] == "http://38.76.185.106:3000/v2/aggs/ticker/AAPL/range/1/day/2025-11-03/2025-11-28"
     assert session.calls[0][1]["apiKey"] == "secret"

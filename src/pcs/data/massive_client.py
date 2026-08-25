@@ -17,8 +17,8 @@ import requests
 from .daily_provider import DailyDataError, normalize_daily_frame
 
 
-REST_BASE_URL = "http://47.109.55.53:3000"
-WEBSOCKET_BASE_URL = "ws://47.109.55.53:3000/stocks"
+REST_BASE_URL = "http://38.76.185.106:3000"
+WEBSOCKET_BASE_URL = "ws://38.76.185.106:3000/stocks"
 
 
 class MarketGatewayError(RuntimeError):
