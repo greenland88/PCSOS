@@ -104,10 +104,10 @@ def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="dat
     if "symbol" not in incoming:
         incoming["symbol"] = symbol
     incoming["symbol"] = incoming["symbol"].astype(str).str.upper()
-    incoming = normalize_daily_frame(incoming)
-    incoming["symbol"] = symbol
     if set(incoming.symbol) - {symbol}:
         raise DataQualityError(f"ticker isolation failure for {symbol}")
+    incoming = normalize_daily_frame(incoming)
+    incoming["symbol"] = symbol
     access = PCSDataAccess(manifest_path=manifest_path, parquet_root=parquet_root)
     changed: list[str] = []
     for year, new_rows in incoming.groupby(incoming.date.dt.year):

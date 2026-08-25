@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
+from pcs.data.access import DataQualityError
 
 from pcs.data.incremental_update import update_ticker
 
@@ -33,3 +35,11 @@ def test_options_same_partition_is_idempotent(tmp_path):
     assert first["options_update"] == "UPDATED"
     assert second["options_update"] == "NO_OP"
     assert target.read_bytes() == before
+
+
+def test_daily_rejects_wrong_ticker_before_normalization(tmp_path):
+    frame = daily([["2026-08-21", 1, 2, 1, 1.5, 10]])
+    frame["symbol"] = "QQQ"
+    with pytest.raises(DataQualityError, match="ticker isolation"):
+        update_ticker("SPY", daily_frame=frame, parquet_root=tmp_path / "parquet",
+                      manifest_path=tmp_path / "manifest.csv")
