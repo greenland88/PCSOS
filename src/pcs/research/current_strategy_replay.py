@@ -180,6 +180,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         option_end = min(train.date.max() + pd.Timedelta(days=50), option_last_date)
         if horizon == "SPLIT_CUTOFF": option_end = min(option_end, train_end)
         opts = access.read_quotes(spec.ticker, train.date.min(), option_end)
+    opts = _require_unique_quotes(opts)
     # The canonical reader returns the full options schema.  The replay only
     # needs these fields; retaining Greeks and provenance columns through the
     # per-day grouping otherwise multiplies memory use without changing any
