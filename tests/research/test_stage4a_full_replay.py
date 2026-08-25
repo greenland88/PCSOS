@@ -25,6 +25,13 @@ class FakeEngine:
                                      "model_dump": lambda self, mode=None: {"action": "WAIT", "reason": "test rejection", "reason_codes": ["TEST_REJECT"]}})()
 
 
+class OpenEngine:
+    def evaluate_candidate(self, candidate, market, portfolio, **kwargs):
+        return type("Decision", (), {"action": "OPEN", "reason": "test open", "reason_codes": ["TEST_OPEN"],
+                                     "planned_loss": 10.0,
+                                     "model_dump": lambda self, mode=None: {"action": "OPEN", "reason": "test open", "reason_codes": ["TEST_OPEN"]}})()
+
+
 def test_rejected_candidates_persist_and_no_support_skips_engine(tmp_path):
     engine = FakeEngine()
     frame = pd.DataFrame([base_row(), base_row(candidate_id="c2", support_state="NO_SUPPORT", support_level=None)])
@@ -53,3 +60,19 @@ def test_string_false_replay_eligibility_is_not_truthy(tmp_path):
                             market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
                             config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path))
     assert engine.calls == 0
+
+
+def test_lifecycle_failure_replaces_replayed_decision_without_duplicate(tmp_path):
+    frame = pd.DataFrame([base_row()])
+    result = run_stage4a_full_replay(
+        frame,
+        decision_engine=OpenEngine(),
+        lifecycle_replay=lambda row: (_ for _ in ()).throw(RuntimeError("lifecycle boom")),
+        market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
+        config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path),
+    )
+    out = pd.read_parquet(tmp_path / "stage4a_candidate_decisions.parquet")
+    assert result["decisions"] == 1
+    assert out.candidate_id.tolist() == ["c1"]
+    assert out.status.tolist() == ["CONTRACT_FAILURE"]
+    assert out.accepted.tolist() == [False]

@@ -133,6 +133,17 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     portfolio.setdefault("ticker_risk", {})
     market_state_factory = market_state_factory or canonical_market_state_factory()
     decisions, opened, results = [], [], []
+
+    def record_failure(row: dict[str, Any], *, status: str, reason: str) -> None:
+        """Replace the existing decision for a candidate, never append a duplicate."""
+        failure = _decision_record(row, status=status, reason=reason)
+        candidate_id = row.get("candidate_id")
+        for index in range(len(decisions) - 1, -1, -1):
+            if decisions[index].get("candidate_id") == candidate_id:
+                decisions[index] = failure
+                return
+        decisions.append(failure)
+
     ordered = population.sort_values(
         [c for c in ("date", "ticker", "expiration", "short_strike", "long_strike", "candidate_id") if c in population.columns],
         kind="mergesort",
@@ -168,13 +179,13 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
                     from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
                     lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
                 except Exception:
-                    decisions[-1].update({"status": "DATA_FAILURE", "reason": "LIFECYCLE_REPLAYER_UNAVAILABLE", "accepted": False})
+                    record_failure(row, status="DATA_FAILURE", reason="LIFECYCLE_REPLAYER_UNAVAILABLE")
                     continue
             opened_id = hashlib.sha256("|".join(map(str, _identity(row))).encode()).hexdigest()[:24]
             trade = {**row, "opened_trade_id": opened_id}
             lifecycle = lifecycle_replay(trade)
             if lifecycle.get("identity") not in (None, _identity(row)):
-                decisions[-1].update({"status": "IDENTITY_FAILURE", "reason": "STAGE4A_ACCEPTED_SPREAD_IDENTITY_MISMATCH", "accepted": False}); continue
+                record_failure(row, status="IDENTITY_FAILURE", reason="STAGE4A_ACCEPTED_SPREAD_IDENTITY_MISMATCH"); continue
             opened.append(trade); results.append({**trade, **lifecycle})
             reserved = float(getattr(decision, "planned_loss", 0.0) or getattr(decision, "planned_risk", 0.0) or 0.0)
             portfolio["planned_loss"] += reserved
@@ -186,7 +197,7 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
         except Exception as exc:
             from pcs.research.stage4a_lifecycle import LifecycleAdapterError
             status = "DATA_FAILURE" if isinstance(exc, LifecycleAdapterError) else "CONTRACT_FAILURE"
-            decisions.append(_decision_record(row, status=status, reason=str(exc)))
+            record_failure(row, status=status, reason=str(exc))
     decisions_df, opened_df, results_df = map(pd.DataFrame, (decisions, opened, results))
     _atomic_parquet(decisions_df, config.output_dir / "stage4a_candidate_decisions.parquet")
     _atomic_parquet(opened_df, config.output_dir / "stage4a_opened_trades.parquet")
