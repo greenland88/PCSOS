@@ -17,6 +17,9 @@ class PositionSizer:
             planned_target = 0
             flags.append("HIGH EXPOSURE restricts new positions")
         width = c.short_strike - c.long_strike
+        if c.credit <= 0 or width <= 0:
+            flags.append("INVALID_CREDIT_OR_SPREAD_WIDTH")
+            return 0, 0.0, 0.0, flags
         theoretical_per_contract = max(0, (width - c.credit) * 100)
         multiple = self.rules["entry"].get("planned_loss_multiple")
         planned_per_contract = min(theoretical_per_contract, c.credit * float(multiple) * 100) if multiple is not None else theoretical_per_contract
