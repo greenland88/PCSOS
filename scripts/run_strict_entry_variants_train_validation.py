@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from pcs.data.access import PCSDataAccess
 from pcs.research.entry_candidate_universe import build_historical_setup_context
 
 ROOT = Path("research_outputs/strict_entry_variants_20260821")
@@ -37,8 +38,9 @@ def _strict_bool(value: object) -> bool:
 
 
 def _daily(symbol: str) -> pd.DataFrame:
-    paths = sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))
-    x = pd.concat((pd.read_parquet(p) for p in paths), ignore_index=True)
+    # Use routed canonical access so this cross-ticker comparison sees the
+    # same source, duplicate checks, and data identity as replay.
+    x = PCSDataAccess().read_prices(symbol)
     x.date = pd.to_datetime(x.date).dt.normalize()
     return x.sort_values("date").drop_duplicates("date").reset_index(drop=True)
 
