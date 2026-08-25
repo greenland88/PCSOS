@@ -5,6 +5,7 @@ import time
 import pandas as pd
 from pcs.research.entry_candidate_universe import build_historical_setup_context, _atr14
 from pcs.research.credit_stop import load_quotes_canonical_index
+from pcs.data.access import PCSDataAccess
 
 OUT=Path("research_outputs/cost_onboarding_20260821"); OUT.mkdir(parents=True,exist_ok=True)
 SAFE=2.3; DTE_LO=30; DTE_HI=45; CREDIT_RATIO=.10
@@ -16,8 +17,7 @@ def write_progress(stage, started, completed, total, dates, total_dates, candida
     tmp=PROGRESS.with_suffix(".tmp"); tmp.write_text(json.dumps(payload,indent=2),encoding="utf-8"); tmp.replace(PROGRESS)
 
 def daily(symbol):
-    ps=sorted((Path("data/parquet/daily")/f"symbol={symbol}").rglob("*.parquet"))
-    d=pd.concat([pd.read_parquet(p) for p in ps],ignore_index=True).drop_duplicates("date")
+    d=PCSDataAccess().read_prices(symbol).drop_duplicates("date")
     d.date=pd.to_datetime(d.date).dt.normalize()
     return d.sort_values("date").reset_index(drop=True)
 
@@ -27,7 +27,7 @@ def main():
         partition_started=time.time()
         start=max(pd.Timestamp(period.start_time),pd.Timestamp("2020-01-02")); end=min(pd.Timestamp(period.end_time),pd.Timestamp("2026-07-31"))
         if start>end: continue
-        idx,meta=load_quotes_canonical_index("COST",start,end,root="data/parquet/options_v2"); setup=0; qrows=0
+        idx,meta=load_quotes_canonical_index("COST",start,end); setup=0; qrows=0
         for day in sorted(idx):
             if day<start or day>end: continue
             chain=idx[day]; dr=stock[stock.date.eq(day)]

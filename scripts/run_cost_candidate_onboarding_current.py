@@ -6,6 +6,7 @@ import hashlib, json, os, time
 import pandas as pd
 from pcs.research.entry_candidate_universe import build_historical_setup_context, _atr14
 from pcs.research.credit_stop import load_quotes_canonical_index
+from pcs.data.access import PCSDataAccess
 
 OUT=Path("research_outputs/cost_onboarding_20260821"); BATCH=OUT/"candidate_batches"; STATE=OUT/"candidate_checkpoint.json"; PROGRESS=OUT/"candidate_progress.json"; BATCH.mkdir(parents=True,exist_ok=True)
 SAFE=2.3; DTE_LO=30; DTE_HI=45; CREDIT=.10; WORKERS=int(os.getenv("PCS_CANDIDATE_WORKERS","8")); PERIODS=[str(p) for p in pd.period_range("2020Q1","2026Q3",freq="Q")]
@@ -20,9 +21,9 @@ def sha(path):
         for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
 def load_daily(sym):
-    ps=sorted((Path("data/parquet/daily")/f"symbol={sym}").rglob("*.parquet")); d=pd.concat([pd.read_parquet(p) for p in ps],ignore_index=True).drop_duplicates("date"); d.date=pd.to_datetime(d.date).dt.normalize(); d["atr14"]=_atr14(d); return d.sort_values("date").reset_index(drop=True)
+    d=PCSDataAccess().read_prices(sym).drop_duplicates("date"); d.date=pd.to_datetime(d.date).dt.normalize(); d["atr14"]=_atr14(d); return d.sort_values("date").reset_index(drop=True)
 def period_work(period,stock,bench):
-    p=pd.Period(period); start=max(pd.Timestamp(p.start_time),pd.Timestamp("2020-01-02")); end=min(pd.Timestamp(p.end_time),pd.Timestamp("2026-07-31")); idx,meta=load_quotes_canonical_index("COST",start,end,root="data/parquet/options_v2"); rows=[]; dates=0; setup=0
+    p=pd.Period(period); start=max(pd.Timestamp(p.start_time),pd.Timestamp("2020-01-02")); end=min(pd.Timestamp(p.end_time),pd.Timestamp("2026-07-31")); idx,meta=load_quotes_canonical_index("COST",start,end); rows=[]; dates=0; setup=0
     for day in sorted(idx):
         chain=idx[day]; dr=stock[stock.date.eq(day)]
         if dr.empty or pd.isna(dr.iloc[0].atr14): continue
