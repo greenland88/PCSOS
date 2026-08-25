@@ -57,7 +57,7 @@ def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1"
     rows=[]; lifecycle=[]; registry=load_corporate_actions()
     for s in ready.to_dict("records"):
         day=pd.Timestamp(s["date"]).normalize(); chain=options_by_trade_date.get(day, pd.DataFrame()).copy()
-        rec={"trade_date":day,"ticker":ticker,"pit_feature_ready":True,"option_chain_available":bool(options_load_error) or bool(len(chain)),"valid_dte_available":False,"safe_strike_candidates":False,"liquidity_pass":False,"credit_pass":False,"contract_selected":False,"lifecycle_completed":False,"reason_code":""}
+        rec={"trade_date":day,"ticker":ticker,"pit_feature_ready":True,"option_chain_available":(not options_load_error and bool(len(chain))),"valid_dte_available":False,"safe_strike_candidates":False,"liquidity_pass":False,"credit_pass":False,"contract_selected":False,"lifecycle_completed":False,"reason_code":""}
         if options_load_error:
             rec["reason_code"]="CONTRACT_FAIL"; rec["data_quality_error"]=options_load_error; rows.append(rec); continue
         if chain.empty: rec["reason_code"]="NO_OPTION_DATA"; rows.append(rec); continue
