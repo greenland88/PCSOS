@@ -28,6 +28,7 @@ from pcs.models.market import MarketState
 from pcs.models.trade import TradeCandidate
 from pcs.research.entry_confirmation import analyze_entry_confirmation
 from pcs.research.stage4a_context import HistoricalTrendContextProvider
+from pcs.research.scheduled_event_calendar import load_calendar
 from pcs.research.stage4a_production_evaluation import (
     DecisionRowStatus, canonical_breadth, completion_is_valid,
     evaluate_partition, write_completed_partition,
@@ -156,7 +157,7 @@ def main() -> None:
     parser.add_argument("--limit-partitions", type=int)
     args = parser.parse_args()
     run_id = f"stage4a-production-{uuid.uuid4().hex}"
-    access, calendar = PCSDataAccess(), pd.read_csv(EVENT)
+    access, calendar = PCSDataAccess(), load_calendar(EVENT)
     calendar.attrs["historical_pit_required"] = True
     if "event_date_known_at_entry" not in calendar.columns and "known_at_entry" not in calendar.columns:
         raise RuntimeError("EVENT_CALENDAR_PIT_METADATA_MISSING")
