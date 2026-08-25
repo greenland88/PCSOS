@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
+from types import SimpleNamespace
 
 from pcs.strategies.adaptive_profiles import measure_characteristics, resolve_strategy_config
+from pcs.strategies.research_templates.catalog import evaluate
 
 
 def _daily(n=260):
@@ -38,3 +40,13 @@ def test_option_coverage_is_date_coverage_not_quote_row_count():
     options = pd.DataFrame({"trade_date": d.date.iloc[::2]})
     c = measure_characteristics(d, options=options)
     assert 0.49 < c.option_quote_coverage < 0.51
+
+
+def test_adaptive_predicate_uses_resolved_window_and_differs_from_fixed():
+    features = {"close": 110, "sma200": 100, "volume_relative_to_20d_mean": .9,
+                "ret5": 0.0, "ret7": .01}
+    config = SimpleNamespace(momentum_window_days=7, recovery_window_days=20,
+                             pullback_depth=-.05, volume_ratio_floor=.8)
+    assert evaluate("PCS_TREND_CONTINUATION_V1", "META", "2024-01-02", features).status == "NO_QUALIFY"
+    assert evaluate("PCS_TREND_CONTINUATION_V1", "META", "2024-01-02", features,
+                    mode="ADAPTIVE", config=config).status == "QUALIFY"

@@ -15,10 +15,12 @@ class TransferRequest:
     train_start: str
     train_end: str
 
-def _features(d: pd.DataFrame) -> pd.DataFrame:
+def _features(d: pd.DataFrame, return_windows: tuple[int, ...] = ()) -> pd.DataFrame:
     x = d.sort_values("date").copy(); c = pd.to_numeric(x["close"])
     x["sma200"] = c.rolling(200, min_periods=200).mean(); x["sma50"] = c.rolling(50, min_periods=50).mean()
     x["ret5"] = c.pct_change(5); x["ret10"] = c.pct_change(10); x["ret20"] = c.pct_change(20)
+    for window in sorted({int(w) for w in return_windows if int(w) > 0}):
+        x[f"ret{window}"] = c.pct_change(window)
     x["drawdown60"] = c / c.rolling(60, min_periods=60).max() - 1
     if "volume" in x: x["volume_relative_to_20d_mean"] = x.volume / x.volume.rolling(20, min_periods=20).mean()
     else: x["volume_relative_to_20d_mean"] = pd.NA

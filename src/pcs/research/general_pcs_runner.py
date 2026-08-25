@@ -6,13 +6,14 @@ lifecycle execution remain delegated to the canonical PCS replay layer.
 from __future__ import annotations
 
 from typing import Any
+from dataclasses import replace
 from pathlib import Path
 import json
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
 from pcs.strategies.research_templates.catalog import (
-    GENERAL_PCS_RESEARCH_STRATEGIES, evaluate,
+    GENERAL_PCS_RESEARCH_STRATEGIES, Evaluation, evaluate,
 )
 from pcs.strategies.adaptive_profiles import resolve_strategy_config
 from .strategy_transfer_runner import _features
@@ -21,25 +22,52 @@ from .runner import ResearchRunner
 
 
 def evaluate_general_pcs(ticker: str, train_start: str = "2018-01-01",
-                         train_end: str | None = None, *, data_access=None) -> dict[str, Any]:
+                         train_end: str | None = None, *, data_access=None,
+                         mode: str = "FIXED") -> dict[str, Any]:
     """Evaluate all registered general PCS predicates on one PIT daily path.
 
     Dates are attributed independently, while ``matched_strategy_ids`` makes
     overlap explicit so downstream execution can select one economic trade.
     """
+    if mode not in {"FIXED", "ADAPTIVE"}: raise ValueError(f"UNKNOWN_STRATEGY_MODE:{mode}")
     access = data_access or PCSDataAccess.canonical()
     daily = access.read_prices(ticker, train_start, train_end)
-    resolved_configs = {
-        strategy_id: resolve_strategy_config(strategy_id, ticker, daily).to_dict()
-        for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES
-    }
-    frame = _features(daily)
+    resolved_configs = {strategy_id: resolve_strategy_config(strategy_id, ticker, daily).to_dict() for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES}
+    configs_by_date = {}
+    if mode == "ADAPTIVE":
+        daily_dates = pd.to_datetime(daily["date"]).drop_duplicates().sort_values().reset_index(drop=True)
+        # Resolve on a fixed 20-session PIT cadence and carry forward only
+        # configs already known at each later date; this keeps the replay
+        # bounded without allowing future observations into an earlier row.
+        config_dates = daily_dates.iloc[59::20]
+        for day in config_dates:
+            base = resolve_strategy_config(GENERAL_PCS_RESEARCH_STRATEGIES[0], ticker, daily, as_of=day)
+            configs_by_date[day.date().isoformat()] = {
+                strategy_id: replace(base, strategy_id=strategy_id).to_dict()
+                for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES
+            }
+        checkpoints = sorted(configs_by_date)
+        for day in daily_dates:
+            key = day.date().isoformat()
+            prior = [x for x in checkpoints if x <= key]
+            if prior: configs_by_date[key] = configs_by_date[prior[-1]]
+    windows = tuple(w for by_strategy in configs_by_date.values() for c in by_strategy.values() for w in (c["momentum_window_days"], c["recovery_window_days"])) if mode == "ADAPTIVE" else ()
+    frame = _features(daily, return_windows=windows)
     rows = []
     for _, row in frame.iterrows():
         matches = []
         evaluations = {}
         for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES:
-            ev = evaluate(strategy_id, ticker, row.date, row.to_dict())
+            config = configs_by_date.get(pd.Timestamp(row.date).date().isoformat(), {}).get(strategy_id) if mode == "ADAPTIVE" else None
+            # Resolve config dicts are converted to a lightweight object only
+            # at this boundary; fixed mode never consults adaptive fields.
+            if config is not None:
+                from types import SimpleNamespace
+                config = SimpleNamespace(**{k: config[k] for k in ("momentum_window_days", "recovery_window_days", "pullback_depth", "volume_ratio_floor")})
+            if mode == "ADAPTIVE" and config is None:
+                ev = Evaluation(strategy_id, ticker.upper(), row.date, "NO_QUALIFY", "adaptive config warmup unavailable", ("ADAPTIVE_CONFIG_WARMUP",), {})
+            else:
+                ev = evaluate(strategy_id, ticker, row.date, row.to_dict(), mode=mode, config=config)
             evaluations[strategy_id] = ev
             if ev.status == "QUALIFY":
                 matches.append(strategy_id)
@@ -48,23 +76,23 @@ def evaluate_general_pcs(ticker: str, train_start: str = "2018-01-01",
                      "signal_overlap": len(matches) > 1,
                      "evaluations": {k: {"status": v.status, "reason_codes": list(v.reason_codes)} for k, v in evaluations.items()}})
     signals = pd.DataFrame(rows)
-    return {"strategy_family": "GENERAL_PCS", "ticker": ticker.upper(),
+    return {"strategy_family": "GENERAL_PCS", "ticker": ticker.upper(), "mode": mode,
             "strategies": list(GENERAL_PCS_RESEARCH_STRATEGIES),
-            "resolved_configs": resolved_configs,
+            "resolved_configs": resolved_configs, "resolved_configs_by_date": configs_by_date if mode == "ADAPTIVE" else {},
             "signals": signals, "overlap_dates": int(signals.signal_overlap.sum()),
             "economic_trade_policy": "one canonical selected trade per date; preserve all matched_strategy_ids"}
 
 
 def run_general_pcs_replay(ticker: str, train_start: str = "2018-01-01",
                            train_end: str | None = None, *, output_dir="research_outputs/general_pcs_execution",
-                           data_access=None) -> dict[str, Any]:
+                           data_access=None, mode: str = "FIXED") -> dict[str, Any]:
     """Run one canonical replay for the union of general strategy episodes.
 
     The union is deliberate: overlapping strategy signals are attributed to
     the same economic candidate/lifecycle rather than replayed independently.
     """
     access = data_access or PCSDataAccess.canonical()
-    signal_result = evaluate_general_pcs(ticker, train_start, train_end, data_access=access)
+    signal_result = evaluate_general_pcs(ticker, train_start, train_end, data_access=access, mode=mode)
     signals = signal_result["signals"]
     episode_dates: dict[str, list[str]] = {}
     for strategy_id in GENERAL_PCS_RESEARCH_STRATEGIES:
@@ -82,7 +110,7 @@ def run_general_pcs_replay(ticker: str, train_start: str = "2018-01-01",
     if not union_dates:
         return {"strategy_family": "GENERAL_PCS", "ticker": ticker.upper(), "strategies": {}, "economic_trades": [], "signal_union_dates": signal_union_dates, "reason_codes": ["NO_EXECUTABLE_OPTION_COVERAGE"], "final_oos_read": False}
     raw = {
-        "research_id": f"general_pcs_{ticker.lower()}_execution",
+        "research_id": f"general_pcs_{ticker.lower()}_{mode.lower()}_execution",
         "ticker": ticker.upper(), "research_mode": "CURRENT_STRATEGY_REPLAY",
         "hypothesis": "Canonical execution of the ticker-independent GENERAL_PCS strategy family.",
         "population_source": {"type": "ticker_daily_calendar", "point_in_time": True, "frozen": False},
@@ -120,7 +148,7 @@ def run_general_pcs_replay(ticker: str, train_start: str = "2018-01-01",
         episode_pnl = trades.groupby("entry_date").realized_pnl.sum() if len(trades) else pd.Series(dtype=float)
         year_pnl = trades.assign(year=pd.to_datetime(trades.entry_date).dt.year).groupby("year").realized_pnl.sum() if len(trades) else pd.Series(dtype=float)
         per_strategy[strategy_id] = {"qualifying_signals": int(sum(signals.evaluations.map(lambda x: x[strategy_id]["status"] == "QUALIFY"))), "independent_episodes": len(dates), "contract_candidates": int(len(candidates[candidates.entry_date.isin(dates)])) if len(candidates) else 0, "selected_economic_trades": int(len(trades)), "completed_lifecycles": int((trades.status == "COMPLETE").sum()) if len(trades) else 0, "total_pnl": float(pnl.sum()) if len(pnl) else 0.0, "profit_factor": float(wins.sum() / abs(losses.sum())) if len(losses) else None, "expectancy": float(pnl.mean()) if len(pnl) else None, "win_rate": float((pnl > 0).mean()) if len(pnl) else None, "stop_rate": float(trades.stop_triggered.mean()) if len(trades) and "stop_triggered" in trades else None, "average_holding_days": float(pd.to_numeric(trades.holding_trading_days, errors="coerce").mean()) if len(trades) and "holding_trading_days" in trades else None, "episode_pnl": {str(k): float(v) for k, v in episode_pnl.items()}, "year_pnl": {str(k): float(v) for k, v in year_pnl.items()}, "top_episode_contribution_pct": float(episode_pnl.max() / pnl.sum() * 100) if len(episode_pnl) and pnl.sum() else None}
-    result = {"strategy_family": "GENERAL_PCS", "ticker": ticker.upper(), "episode_dates": episode_dates, "union_execution_dates": union_dates, "strategies": per_strategy, "economic_trade_count": int(len(lifecycle)), "replay": replay, "final_oos_read": False, "production_change": False}
+    result = {"strategy_family": "GENERAL_PCS", "ticker": ticker.upper(), "mode": mode, "episode_dates": episode_dates, "union_execution_dates": union_dates, "strategies": per_strategy, "economic_trade_count": int(len(lifecycle)), "replay": replay, "final_oos_read": False, "production_change": False}
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     (Path(output_dir) / f"{ticker.lower()}_general_pcs_family.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     return result
