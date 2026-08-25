@@ -18,7 +18,9 @@ def _shard_identity(year: int) -> dict:
     access = PCSDataAccess()
     daily = access.resolve_source("daily", "QQQ", "2010-01-01", f"{year}-12-31")
     options = access.resolve_source("options", "QQQ", f"{year}-01-01", f"{year}-12-31")
-    code = Path(__file__).resolve().parents[2] / "src/pcs/research/qqq_entry_discovery_v1.py"
+    code = Path(__file__).resolve().parents[3] / "src/pcs/research/qqq_entry_discovery_v1.py"
+    shard_code = Path(__file__).resolve()
+    corporate_actions = Path(__file__).resolve().parents[3] / "config/data/corporate_actions.csv"
     payload = {
         "module_version": "qqq-entry-discovery-v1-broad-outcome-map-v1",
         "year": int(year),
@@ -27,6 +29,8 @@ def _shard_identity(year: int) -> dict:
         "daily_source_version": daily.source_version,
         "options_source_version": options.source_version,
         "implementation_sha256": _file_digest(code),
+        "shard_runner_sha256": _file_digest(shard_code),
+        "corporate_actions_sha256": _file_digest(corporate_actions) if corporate_actions.exists() else "MISSING",
     }
     payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
     return payload
