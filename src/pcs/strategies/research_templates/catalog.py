@@ -16,6 +16,7 @@ class Evaluation:
     reason: str
     reason_codes: tuple[str, ...]
     feature_values: dict[str, Any]
+    consumed_config_fields: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class StrategySpec:
@@ -32,18 +33,20 @@ class StrategySpec:
             raise ValueError(f"UNKNOWN_STRATEGY_MODE:{mode}")
         features = self.features
         predicate = self._predicate
+        consumed: tuple[str, ...] = ()
         if mode == "ADAPTIVE":
             if config is None: raise ValueError("ADAPTIVE_CONFIG_REQUIRED")
             momentum, recovery = int(config.momentum_window_days), int(config.recovery_window_days)
             adaptive_id = "PCS_TREND_CONTINUATION_V1" if self.strategy_id == "PCS_NVDA_TREND_CONTINUATION_V1" else self.strategy_id
             features = _adaptive_features(adaptive_id, momentum, recovery)
             predicate = _adaptive_predicate(adaptive_id, momentum, recovery, config)
+            consumed = ("momentum_window_days", "recovery_window_days", "pullback_depth", "volume_ratio_floor")
         values = {k: pit_features.get(k) for k in features}
         missing = [k for k, v in values.items() if v is None]
         if missing:
-            return Evaluation(self.strategy_id, str(ticker).upper(), date, "NO_QUALIFY", "missing PIT feature", ("PIT_FEATURE_MISSING",), values)
+            return Evaluation(self.strategy_id, str(ticker).upper(), date, "NO_QUALIFY", "missing PIT feature", ("PIT_FEATURE_MISSING",), values, consumed)
         ok = bool(predicate(values))
-        return Evaluation(self.strategy_id, str(ticker).upper(), date, "QUALIFY" if ok else "NO_QUALIFY", "exact rule satisfied" if ok else "exact rule not satisfied", ("QUALIFY" if ok else "RULE_NOT_SATISFIED",), values)
+        return Evaluation(self.strategy_id, str(ticker).upper(), date, "QUALIFY" if ok else "NO_QUALIFY", "exact rule satisfied" if ok else "exact rule not satisfied", ("QUALIFY" if ok else "RULE_NOT_SATISFIED",), values, consumed)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self); d.pop("_predicate", None); return d
@@ -100,7 +103,8 @@ def get_strategy(strategy_id: str) -> StrategySpec:
 def evaluate(strategy_id: str, ticker: str, date: Any, pit_features: dict[str, Any], *, mode: Literal["FIXED", "ADAPTIVE"] = "FIXED", config: Any = None) -> Evaluation:
     result = get_strategy(strategy_id).evaluate(ticker, date, pit_features, mode=mode, config=config)
     if result.strategy_id != strategy_id:
-        return Evaluation(strategy_id, result.ticker, result.date, result.status, result.reason, result.reason_codes, result.feature_values)
+        return Evaluation(strategy_id, result.ticker, result.date, result.status, result.reason, result.reason_codes,
+                          result.feature_values, result.consumed_config_fields)
     return result
 
 
