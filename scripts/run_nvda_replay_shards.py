@@ -37,6 +37,21 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "MISSING"
 
 
+def _atomic_json(path: Path, value: dict) -> None:
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    frame.to_parquet(temp, index=False)
+    if len(pd.read_parquet(temp)) != len(frame):
+        temp.unlink(missing_ok=True)
+        raise RuntimeError("NVDA_SHARD_PARQUET_VALIDATION_FAILED")
+    os.replace(temp, path)
+
+
 def run_year(year: int) -> dict:
     target = OUT / f"year={year}"
     target.mkdir(parents=True, exist_ok=True)
@@ -105,7 +120,7 @@ def run_year(year: int) -> dict:
                     if credit <= 0 or credit/width < .10: continue
                     candidates.append({"date": day, "ticker":"NVDA", "expiration":exp, "short_strike":float(short.strike), "long_strike":float(long.strike), "comparison_short_strike":float(short.comparison_strike), "underlying":close, "atr":atr, "factor":factor, "credit":credit, "spread_width":width})
     frame = pd.DataFrame(candidates)
-    if len(frame): frame.to_parquet(target / "candidates.parquet", index=False)
+    _atomic_parquet(frame, target / "candidates.parquet")
     quote_rows_adapted = 0; lifecycle_failures = 0
     for candidate in candidates:
         try:
@@ -121,7 +136,7 @@ def run_year(year: int) -> dict:
         except LifecycleAdapterError:
             lifecycle_failures += 1
     summary = {"year":year,"status":"COMPLETED_QUOTE_ADAPTATION_ONLY","identity":identity,"identity_inputs":identity_payload,"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"candidate_spreads":len(candidates),"selected_entries":0,"quote_rows_adapted":quote_rows_adapted,"lifecycles_completed":0,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False,"execution_semantics":"quote_adaptation_only_no_lifecycle_exit_or_pnl"}
-    marker.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    _atomic_json(marker, summary)
     return summary
 
 
