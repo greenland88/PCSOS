@@ -22,7 +22,11 @@ def parse_args(argv=None):
 
 def _write(path, rows):
     rows = list(rows)
-    if not rows: return
+    if not rows:
+        # A reused run label must not retain output from a prior run whose
+        # corresponding result was empty.
+        Path(path).unlink(missing_ok=True)
+        return
     keys = sorted({k for r in rows for k in r})
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
