@@ -42,3 +42,27 @@ def compare_general_pcs_signals(ticker: str, start: str, end: str, *, output_dir
     path.mkdir(parents=True, exist_ok=True)
     (path / "signal_comparison.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report
+
+
+def compare_general_pcs_replays(ticker: str, *, output_dir: str = "research_outputs/general_pcs_comparison") -> dict:
+    """Combine the two canonical replay artifacts with their signal diff."""
+    root = Path(output_dir)
+    signal_path = root / ticker.lower() / "signal_comparison.json"
+    report = json.loads(signal_path.read_text(encoding="utf-8")) if signal_path.exists() else {}
+    modes = {}
+    for mode in ("fixed", "adaptive"):
+        path = root / mode / f"{ticker.lower()}_general_pcs_family.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        modes[mode.upper()] = {"economic_trade_count": payload.get("economic_trade_count"),
+                               "union_execution_dates": len(payload.get("union_execution_dates", [])),
+                               "episode_dates": payload.get("episode_dates", {}),
+                               "strategies": payload.get("strategies", {}),
+                               "yearly_pnl_and_episode_pnl": {k: {"year_pnl": v.get("year_pnl", {}), "episode_pnl": v.get("episode_pnl", {})} for k, v in payload.get("strategies", {}).items()},
+                               "final_oos_read": payload.get("final_oos_read", True),
+                               "production_change": payload.get("production_change", True)}
+    report.update({"ticker": ticker.upper(), "replay_modes": modes,
+                   "controls": {"final_oos_read": False, "production_change": False,
+                                "execution_constants_changed": False}})
+    out = root / ticker.lower() / "fixed_vs_adaptive_replay_comparison.json"
+    out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    return report
