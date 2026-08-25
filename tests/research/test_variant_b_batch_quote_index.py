@@ -7,8 +7,9 @@ def test_batch_quote_index_resolves_ticker_from_legacy_partition_path(tmp_path, 
     calls = []
     quotes = pd.DataFrame({
         "Trade Date": pd.to_datetime(["2026-01-02"]),
-        "Expiry Date": pd.to_datetime(["2026-02-20"]),
-        "Strike": [100.0],
+            "Expiry Date": pd.to_datetime(["2026-02-20"]),
+            "Call/Put": ["p"],
+            "Strike": [100.0],
     })
 
     def fake_load(symbol, start, end):
@@ -23,6 +24,6 @@ def test_batch_quote_index_resolves_ticker_from_legacy_partition_path(tmp_path, 
     )
 
     assert calls[0][0] == "QQQ"
-    assert (pd.Timestamp("2026-02-20"), 100.0) in index
+    assert (pd.Timestamp("2026-02-20"), "p", 100.0) in index
     assert metadata["source"] == "canonical_partitioned_parquet"
     assert metadata["compatibility_wrapper"] is True

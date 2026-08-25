@@ -110,7 +110,8 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     configured_start = pd.Timestamp(spec.date_range.get("start")) if spec.date_range.get("start") else None
     boundary_start = pd.Timestamp(resolve_executable_start_date(spec.ticker, access.source_routes))
     requested_start = max(configured_start, boundary_start) if configured_start is not None else boundary_start
-    daily = access.read_prices(spec.ticker, start_date=requested_start)
+    feature_start = requested_start - pd.Timedelta(days=300)
+    daily = access.read_prices(spec.ticker, start_date=feature_start)
     daily["date"] = pd.to_datetime(daily.date).dt.normalize(); daily = daily.sort_values("date").reset_index(drop=True)
     explicit_scope = bool(
         spec.split_policy.get("name")
@@ -121,7 +122,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         or spec.date_range.get("start")
         or spec.date_range.get("end")
     )
-    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max
+    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max()
     option_source = access.resolve_source("options", spec.ticker)
     requested_start = requested_start or pd.Timestamp(daily.date.min())
     # Keep the canonical feature warm-up, but do not load pre-scope history

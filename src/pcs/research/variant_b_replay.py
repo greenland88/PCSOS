@@ -135,8 +135,10 @@ def _replay_lifecycle(candidate: dict[str, Any], quotes: pd.DataFrame,
     if quotes.empty:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES"}
     q = quotes[(quotes.Strike.isin([candidate["short_strike"], candidate["long_strike"]])) &
-               (quotes["Trade Date"] >= candidate["date"])].copy()
+               (quotes["Call/Put"].astype(str).str.lower().eq("p")) &
+               (quotes["Trade Date"] > candidate["date"])].copy()
     marks = []
+    missing = 0
     for day, rows in q.groupby("Trade Date"):
         short = rows[rows.Strike == candidate["short_strike"]]
         long = rows[rows.Strike == candidate["long_strike"]]
@@ -195,7 +197,8 @@ def build_targeted_quote_index(symbol: str, requests: list[dict[str, Any]], db_p
         raise DataAccessError(f"active canonical route unavailable for {symbol}") from exc
     quotes["Trade Date"] = pd.to_datetime(quotes.get("Trade Date"), errors="coerce")
     quotes["Expiry Date"] = pd.to_datetime(quotes.get("Expiry Date"), errors="coerce")
-    index = {(pd.Timestamp(exp).normalize(), float(strike)): group.sort_values("Trade Date").copy() for (exp, strike), group in quotes.groupby(["Expiry Date", "Strike"], sort=False)}
+    quotes = quotes[quotes["Call/Put"].astype(str).str.lower().eq("p")].copy()
+    index = {(pd.Timestamp(exp).normalize(), "p", float(strike)): group.sort_values("Trade Date").copy() for (exp, _, strike), group in quotes.groupby(["Expiry Date", "Call/Put", "Strike"], sort=False)}
     return index, {"source": meta_source, "partitions_requested": len(partitions), "rows_retained": len(quotes), "contracts_indexed": len(index)}
 
 
@@ -212,21 +215,22 @@ def build_batch_quote_index(option_root: str | Path, start: object, end: object)
     if not symbol:
         raise ValueError("option_root contains an empty ticker symbol")
     quotes, meta = load_quotes_canonical(symbol, pd.Timestamp(start), pd.Timestamp(end))
-    index = {(pd.Timestamp(exp).normalize(), float(strike)): group.sort_values("Trade Date").copy() for (exp, strike), group in quotes.groupby(["Expiry Date", "Strike"], sort=False)}
+    quotes = quotes[quotes["Call/Put"].astype(str).str.lower().eq("p")].copy()
+    index = {(pd.Timestamp(exp).normalize(), "p", float(strike)): group.sort_values("Trade Date").copy() for (exp, _, strike), group in quotes.groupby(["Expiry Date", "Call/Put", "Strike"], sort=False)}
     return index, {**dict(meta), "compatibility_wrapper": True, "batch_index_contracts": len(index), "batch_index_rows": len(quotes)}
 
 
 def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, pd.DataFrame],
                             policy: ReplayPolicy) -> dict[str, Any]:
     """Replay using cached leg histories; semantics match _replay_lifecycle."""
-    short = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["short_strike"])))
-    long = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["long_strike"])))
+    short = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), "p", float(candidate["short_strike"])))
+    long = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), "p", float(candidate["long_strike"])))
     if short is None or long is None:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES"}
-    merged = short.merge(long, on="Trade Date", how="outer", suffixes=("_short", "_long")).sort_values("Trade Date")
+    merged = short.merge(long, on="Trade Date", how="outer", suffixes=("_short", "_long"), validate="one_to_one").sort_values("Trade Date")
     marks = []
     missing = 0
-    for _, row in merged[merged["Trade Date"] >= candidate["date"]].iterrows():
+    for _, row in merged[merged["Trade Date"] > candidate["date"]].iterrows():
         required = ["Bid Price_short", "Ask Price_short", "Bid Price_long", "Ask Price_long"]
         if any(pd.isna(row.get(field)) for field in required):
             missing += 1
@@ -251,8 +255,10 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
     profit = min(profits, default=None, key=lambda x: x[0])
     forced = None
     if policy.pre_earnings_exit_days is not None and candidate.get("earnings_date") is not None:
-        cutoff = pd.Timestamp(candidate["earnings_date"]) - pd.offsets.BDay(policy.pre_earnings_exit_days)
-        eligible = [x for x in marks if x[0] <= cutoff]
+        sessions = pd.DatetimeIndex(sorted(pd.to_datetime(merged["Trade Date"].dropna().unique())))
+        prior_sessions = sessions[sessions < pd.Timestamp(candidate["earnings_date"])]
+        cutoff = prior_sessions[-policy.pre_earnings_exit_days] if len(prior_sessions) >= policy.pre_earnings_exit_days else None
+        eligible = [x for x in marks if cutoff is not None and x[0] <= cutoff]
         if eligible:
             forced = eligible[-1]
     if forced is not None and (not profit or forced[0] < profit[0]) and (not stop or forced[0] < stop[0]):

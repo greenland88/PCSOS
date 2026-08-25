@@ -106,24 +106,25 @@ class PCSDataAccess:
             # routes for true dataset/version exceptions (for example v3),
             # but do not require a hand-written ticker entry when the ticker
             # is already present in the active canonical v2 manifest.
-            if dataset == "options_v2":
+            if dataset in {"options", "options_v2", "options_v3"}:
                 candidates = [self.manifest_path]
                 if self.manifest_path == Path("data/manifests/storage_manifest.csv"):
                     candidates.extend([
                         Path("data/manifests/storage_manifest_options_v2.csv"),
                         Path("data/manifests/storage_manifest_v2.csv"),
+                        Path("data/manifests/storage_manifest_options_v3.csv"),
                     ])
                 for candidate_manifest in candidates:
                     manifest = self._read_manifest(candidate_manifest)
                     if manifest.empty or "dataset" not in manifest.columns:
                         continue
                     found = manifest[
-                        manifest.dataset.astype(str).eq("options_v2")
+                        manifest.dataset.astype(str).isin({"options_v2", "options_v3"} if dataset == "options" else {dataset})
                         & manifest.symbol.astype(str).str.upper().eq(self._symbol(symbol))
                         & manifest.status.astype(str).str.upper().eq("SUCCESS")
                     ]
                     if not found.empty:
-                        return "options_v2", candidate_manifest, self.parquet_root
+                        return str(found.dataset.iloc[0]), candidate_manifest, self.parquet_root
             raise DataAccessError(
                 f"canonical route unavailable: requested_dataset={dataset} "
                 f"symbol={self._symbol(symbol)} legacy_fallback_used=NO "
