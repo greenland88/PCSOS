@@ -84,3 +84,18 @@ def write_overall_general_pcs_report(tickers: tuple[str, ...] = ("META", "NVDA")
               "controls": {"final_oos_read": False, "production_change": False, "strategy_thresholds_changed": False}}
     (root / "overall_comparison.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report
+
+
+def record_replay_blocker(ticker: str, mode: str, reason: str, *, output_dir: str = "research_outputs/general_pcs_comparison") -> dict:
+    """Persist an explicit non-result when canonical lifecycle data blocks replay."""
+    root = Path(output_dir) / ticker.lower()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "fixed_vs_adaptive_replay_comparison.json"
+    report = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    report.setdefault("ticker", ticker.upper())
+    report.setdefault("replay_modes", {})[mode.upper()] = {"status": "BLOCKED", "blocker": reason,
+                                                            "pnl_metrics": None, "final_oos_read": False,
+                                                            "production_change": False}
+    report["controls"] = {"final_oos_read": False, "production_change": False, "execution_constants_changed": False}
+    path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    return report
