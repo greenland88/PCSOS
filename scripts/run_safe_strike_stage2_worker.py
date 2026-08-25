@@ -28,7 +28,10 @@ if ck.exists():
  for line in ck.read_text(encoding='utf-8').splitlines():
   try:
    x=json.loads(line)
-   if x.get('status')=='COMPLETE' and x.get('identity') == work_identity(x['ticker'], pd.Timestamp(x['year'], x['month'], 1), pd.Timestamp(x['year'], x['month'], 1)+pd.offsets.MonthEnd(1)):
+   part=root/'chunks'/f"{x['ticker']}_{int(x['year']):04d}-{int(x['month']):02d}.parquet"
+   if (x.get('status')=='COMPLETE'
+       and x.get('identity') == work_identity(x['ticker'], pd.Timestamp(x['year'], x['month'], 1), pd.Timestamp(x['year'], x['month'], 1)+pd.offsets.MonthEnd(1))
+       and part.is_file() and x.get('output_checksum') == hashlib.sha256(part.read_bytes()).hexdigest()):
     done[(x['ticker'],x['year'],x['month'])]=x
   except Exception: pass
 emit({'event':'worker_start','atr':atr,'pid':os.getpid(),'timestamp':datetime.now().isoformat()})
@@ -43,7 +46,7 @@ for ticker,(lo,hi) in WINDOWS.items():
    r=run_backtest(stock(ticker,hi),stock('QQQ',hi),option_root=f'data/parquet/options_monthly/{ticker}',start=start.strftime('%Y-%m-%d'),end=end.strftime('%Y-%m-%d'),backend='canonical',safe_strike_atr=atr)
    ts=[{**{k:v for k,v in z.items() if k!='events'},'ticker':ticker,'target_buffer_atr':atr,'candidate_status':'TRADE_QUALIFIED'} for z in r['trades'] if z.get('trend_gate')=='PASS']
    out=pd.DataFrame(ts); part=root/'chunks'/f'{ticker}_{start:%Y-%m}.parquet'; tmp=part.with_suffix('.parquet.tmp'); out.to_parquet(tmp,index=False); pd.read_parquet(tmp); tmp.replace(part)
-   rec.update(status='COMPLETE',rows_processed=len(ts),qualified_count=len(ts),elapsed_seconds=time.time()-t)
+   rec.update(status='COMPLETE',rows_processed=len(ts),qualified_count=len(ts),elapsed_seconds=time.time()-t,output_path=str(part),output_checksum=hashlib.sha256(part.read_bytes()).hexdigest())
    emit({'event':'month_complete',**rec,'output_path':str(part)})
   except Exception as e:
    rec.update(elapsed_seconds=time.time()-t,error=str(e),traceback=traceback.format_exc()); emit({'event':'month_failed',**rec});
