@@ -5,6 +5,28 @@ from pcs.data.storage_schema import OPTION_FIELDS
 from pcs.data.access import PCSDataAccess, DataQualityError
 
 
+def test_data_root_is_explicit_and_does_not_depend_on_current_directory(tmp_path, monkeypatch):
+    data_root = tmp_path / "canonical-data"
+    (data_root / "manifests").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "other" if (tmp_path / "other").exists() else tmp_path)
+
+    access = PCSDataAccess(data_root=data_root)
+
+    assert access.data_root == data_root
+    assert access.manifest_path == data_root / "manifests" / "storage_manifest.csv"
+    assert access.parquet_root == data_root / "parquet"
+
+
+def test_data_root_can_be_configured_without_changing_callers(tmp_path, monkeypatch):
+    data_root = tmp_path / "configured-data"
+    monkeypatch.setenv("PCS_CANONICAL_DATA_ROOT", str(data_root))
+
+    access = PCSDataAccess()
+
+    assert access.data_root == data_root
+    assert access.manifest_path == data_root / "manifests" / "storage_manifest.csv"
+
+
 def _options(rows):
     return pd.DataFrame(rows, columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "last", "bid", "ask", "bid_iv", "ask_iv", "open_interest", "volume", "delta", "gamma", "vega", "theta", "rho"])
 

@@ -50,16 +50,25 @@ class SourceSpec:
 class PCSDataAccess:
     """Canonical read/write API for market data and persisted PCS artifacts."""
 
-    def __init__(self, manifest_path="data/manifests/storage_manifest.csv", parquet_root="data/parquet", source_routes_path="config/data_source_routes.yaml", source_routes=None):
-        self.manifest_path = Path(manifest_path)
+    def __init__(self, manifest_path=None, parquet_root=None, source_routes_path="config/data_source_routes.yaml", source_routes=None, data_root=None):
+        """Create the canonical data boundary.
+
+        ``data_root`` (or ``PCS_CANONICAL_DATA_ROOT``) makes the storage root
+        explicit for runners launched outside the repository root. Explicit
+        manifest/parquet paths still take precedence for isolated fixtures.
+        """
+        configured_root = data_root or os.environ.get("PCS_CANONICAL_DATA_ROOT")
+        self.data_root = Path(configured_root) if configured_root else Path("data")
+        self._uses_default_store = manifest_path is None and parquet_root is None
+        self.manifest_path = Path(manifest_path) if manifest_path is not None else self.data_root / "manifests" / "storage_manifest.csv"
         self.provenance_manifest_path = self.manifest_path.with_name("data_provenance_manifest.csv")
-        self.parquet_root = Path(parquet_root)
+        self.parquet_root = Path(parquet_root) if parquet_root is not None else self.data_root / "parquet"
         self._manifest = pd.read_csv(self.manifest_path) if self.manifest_path.exists() else pd.DataFrame()
         self.source_routes_path = Path(source_routes_path) if source_routes_path else None
         self.source_routes = source_routes if source_routes is not None else self._load_source_routes(self.source_routes_path)
         metadata_path = self.manifest_path.with_name("price_basis_metadata.csv")
-        if not metadata_path.exists() and self.manifest_path.parent == Path("data/manifests"):
-            metadata_path = Path("data/manifests/price_basis_metadata.csv")
+        if not metadata_path.exists() and self._uses_default_store:
+            metadata_path = self.data_root / "manifests" / "price_basis_metadata.csv"
         self._price_basis_metadata = pd.read_csv(metadata_path) if metadata_path.exists() else pd.DataFrame()
 
     def get_price_basis(self, dataset: str, symbol: str) -> dict[str, Any]:
@@ -85,7 +94,7 @@ class PCSDataAccess:
         # Explicit manifests are isolated stores (tests, fixtures, or
         # caller-provided datasets); production per-ticker routes must not
         # redirect them.
-        if self.manifest_path != Path("data/manifests/storage_manifest.csv"):
+        if not self._uses_default_store:
             if dataset == "options":
                 manifest = self._read_manifest(self.manifest_path)
                 if not manifest.empty and "dataset" in manifest and manifest.dataset.astype(str).str.startswith("options_").any():
@@ -217,7 +226,7 @@ class PCSDataAccess:
         # recorded in the migration manifest before they are folded into the
         # compact storage manifest.  Resolve that manifest generically by
         # ticker; never guess a ticker-specific path or bypass PCSDataAccess.
-        if rows.empty and resolved_dataset == "daily" and self.manifest_path == Path("data/manifests/storage_manifest.csv"):
+        if rows.empty and resolved_dataset == "daily" and self._uses_default_store:
             migration_path = self.manifest_path.with_name("daily_universe_migration.csv")
             migration = self._read_manifest(migration_path)
             migrated = migration[
@@ -308,7 +317,7 @@ class PCSDataAccess:
     def source_data_identity(self, dataset: str, symbol: str) -> str:
         """Return a deterministic identity for the active canonical input."""
         spec = self.resolve_source(dataset, symbol)
-        manifest = self._manifest if self.manifest_path == Path("data/manifests/storage_manifest.csv") else self._read_manifest(self.manifest_path)
+        manifest = self._manifest if self._uses_default_store else self._read_manifest(self.manifest_path)
         rows = manifest[(manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == str(symbol).upper())]
         files = spec.path.split(";") if ";" in spec.path else [spec.path]
         physical = []
