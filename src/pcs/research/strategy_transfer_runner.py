@@ -7,6 +7,8 @@ import json, hashlib
 import pandas as pd
 from pcs.data.access import PCSDataAccess, DataAccessError, DataQualityError
 from pcs.strategies.research_templates.catalog import get_strategy
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 
 @dataclass(frozen=True)
 class TransferRequest:
@@ -47,7 +49,10 @@ def _features(d: pd.DataFrame) -> pd.DataFrame:
     x["drawdown60"] = c / c.rolling(60, min_periods=60).max() - 1
     if "volume" in x: x["volume_relative_to_20d_mean"] = x.volume / x.volume.rolling(20, min_periods=20).mean()
     else: x["volume_relative_to_20d_mean"] = pd.NA
-    atr = (x.high - x.low).rolling(14, min_periods=14).mean()
+    # Transfer must use the same Wilder/TA-Lib ATR as the canonical trend
+    # engine.  A rolling high-low mean changes Safe-Strike-adjacent features
+    # and makes the same strategy appear different across replay paths.
+    atr = calculate_base_indicators(x, TrendIndicatorConfig())["atr14"]
     x["close_sma50_atr"] = (c - x.sma50) / atr
     x["prior_close_sma50_atr"] = x.close_sma50_atr.shift(1)
     return x
