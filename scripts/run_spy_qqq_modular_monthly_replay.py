@@ -3,12 +3,13 @@ from pathlib import Path
 import argparse, hashlib, json, os, time
 import pandas as pd
 import yaml
+from pcs.data.access import PCSDataAccess
 from pcs.research.credit_stop import load_quotes_duckdb,load_spread_quotes_duckdb,track_trade
 from pcs.research.rules.core import evaluate_chain,resolve_scenario,RuleStatus,canonical_hash
 from pcs.research.rules.registry import RULE_REGISTRY
 ROOT=Path(__file__).resolve().parents[1]; OUT=ROOT/"research_outputs/spy_qqq_modular_rule_research_20260821"
 def daily(t):
- x=pd.concat([pd.read_parquet(p) for p in (ROOT/"data/parquet/daily"/f"symbol={t}").rglob("*.parquet")]);x["date"]=pd.to_datetime(x.date).dt.normalize();x=x.sort_values("date").drop_duplicates("date");p=x.close.shift(1);tr=pd.concat([x.high-x.low,(x.high-p).abs(),(x.low-p).abs()],axis=1).max(axis=1);x["atr"]=tr.rolling(14,min_periods=14).mean();return x
+ x=PCSDataAccess().read_prices(t);x["date"]=pd.to_datetime(x.date).dt.normalize();x=x.sort_values("date").drop_duplicates("date");p=x.close.shift(1);tr=pd.concat([x.high-x.low,(x.high-p).abs(),(x.low-p).abs()],axis=1).max(axis=1);x["atr"]=tr.rolling(14,min_periods=14).mean();return x
 def select(q,row):
  q=q[(q.DTE.between(30,45))&(q["Call/Put"].eq("p"))].copy()
  if q.empty or pd.isna(row.atr):return []
