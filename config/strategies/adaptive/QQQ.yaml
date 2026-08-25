@@ -22,3 +22,4 @@ module: pcs.strategies.adaptive_profiles
 version: '1.0'
 calculation_version: pit-behavior-v1
 reason_codes: [PIT_CHARACTERISTICS, RESEARCH_ONLY, NO_PNL_INPUT]
+config_sha256: 59eb4d2131d7d3655a4ec1f935538882b4ba6c5362b4de2f29f9dbca3ec37e31

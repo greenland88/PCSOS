@@ -89,6 +89,20 @@ def read_pit_call_chain(symbol: str, trade_date: Any, *, data_access: PCSDataAcc
     return result
 
 
+def _contracts_from_frame(frame, symbol: str) -> list[CoveredCallContract]:
+    calls = frame[frame.call_put.astype(str).str.lower().isin({"c", "call"})].copy()
+    result = []
+    for row in calls.itertuples(index=False):
+        exp = pd.Timestamp(row.expiration_date).date(); day = pd.Timestamp(row.trade_date).date()
+        result.append(CoveredCallContract(symbol=str(row.symbol).upper(), quote_date=str(day),
+            expiration=str(exp), strike=float(row.strike), bid=float(row.bid), ask=float(row.ask),
+            delta=float(getattr(row, "delta", 0.0)) if getattr(row, "delta", None) is not None else None,
+            open_interest=int(getattr(row, "open_interest", 0)) if getattr(row, "open_interest", None) is not None else None,
+            volume=int(getattr(row, "volume", 0)) if getattr(row, "volume", None) is not None else None,
+            dte=(exp - day).days))
+    return result
+
+
 def replay_expiry_or_close(position: CoveredCallPosition, *, stock_exit_price: float,
                            expiration: bool = False, buy_to_close_price: float | None = None) -> dict[str, Any]:
     """Close a position through the shared covered-call lifecycle and report economics."""
@@ -131,8 +145,15 @@ def discover_and_select_entries(symbol: str, daily, market, *, data_access: PCSD
         signal = sell_call_timing_signal(stock={**row, "symbol": symbol}, market=row, config=cfg)
         if signal["action"] == "OPEN": signals.append({"date": row["date"], "symbol": symbol.upper(), **signal})
     selected = []
+    bulk = None
+    if signals and data_access is not None and hasattr(data_access, "read_quotes_for_windows"):
+        dates = [(x["date"], x["date"]) for x in signals]
+        bulk = data_access.read_quotes_for_windows(symbol, dates,
+            columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask", "delta", "open_interest", "volume"])
+        bulk["trade_date"] = pd.to_datetime(bulk.trade_date).dt.normalize()
     for candidate in signals:
-        chain = read_pit_call_chain(symbol, candidate["date"], data_access=data_access)
+        chain = (_contracts_from_frame(bulk[bulk.trade_date.eq(pd.Timestamp(candidate["date"]).normalize())], symbol)
+                 if bulk is not None else read_pit_call_chain(symbol, candidate["date"], data_access=data_access))
         chosen = select_contract(chain, config=cfg, dte=dte, target_delta=target_delta)
         if chosen is not None:
             selected.append({**candidate, "expiration": chosen.expiration, "strike": chosen.strike,
@@ -161,7 +182,11 @@ def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *
         start, end = entry["date"], entry["expiration"]
         prices = access.read_prices(symbol, start, end)
         price_by_date = {str(pd.Timestamp(r.date).date()): float(r.close) for r in prices.itertuples()}
-        quotes = access.read_quotes(symbol, start, end, expirations=[end], strikes=[entry["strike"]])
+        quotes = access.read_quotes_for_windows(
+            symbol, [(start, end)],
+            columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"])
+        quotes = quotes[(quotes.expiration_date == pd.Timestamp(end).date()) &
+                        (quotes.strike == float(entry["strike"]))]
         quotes["trade_date"] = pd.to_datetime(quotes.trade_date).dt.normalize()
         observations = []
         for q in quotes[quotes.call_put.astype(str).str.lower().isin({"c", "call"})].itertuples():
@@ -175,14 +200,21 @@ def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *
             symbol.upper(), str(pd.Timestamp(start).date()), end, float(entry["strike"]),
             float(entry["bid"]), float(entry["ask"]), float(entry["delta"]), dte=int(entry["dte"])))
         try:
-            rows.append(replay_covered_call(position, observations, profit_capture=profit_capture))
+            replay = replay_covered_call(position, observations, profit_capture=profit_capture)
+            replay.update({"strike": float(entry["strike"]), "dte_at_entry": int(entry["dte"]),
+                           "entry_delta": float(entry["delta"]), "entry_premium": float(entry["bid"] + entry["ask"]) / 2 * 100})
+            rows.append(replay)
         except ValueError as exc:
             # Missing terminal lifecycle observations are a data-quality
             # outcome, not a synthetic exit or an inferred P&L.
             continue
-        rows[-1].update({"buy_and_hold_pnl": (float(observations[-1]["underlying_close"]) - position.stock_entry_price) * 100})
-        rows[-1]["excess_return_vs_buy_and_hold"] = rows[-1]["combined_pnl"] - rows[-1]["buy_and_hold_pnl"]
-        rows[-1]["upside_sacrificed"] = max(rows[-1]["buy_and_hold_pnl"] - rows[-1]["combined_pnl"], 0.0)
+        if "combined_pnl" in rows[-1]:
+            rows[-1].update({"buy_and_hold_pnl": (float(observations[-1]["underlying_close"]) - position.stock_entry_price) * 100})
+            rows[-1]["excess_return_vs_buy_and_hold"] = rows[-1]["combined_pnl"] - rows[-1]["buy_and_hold_pnl"]
+            rows[-1]["upside_sacrificed"] = max(rows[-1]["buy_and_hold_pnl"] - rows[-1]["combined_pnl"], 0.0)
+        else:
+            rows[-1].update({"economic_status": "EXCLUDED_FROM_NORMAL_PNL", "buy_and_hold_pnl": None,
+                             "excess_return_vs_buy_and_hold": None, "upside_sacrificed": None})
     frame = pd.DataFrame(rows)
     yearly = []
     if not frame.empty:
@@ -204,6 +236,20 @@ def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *
             "episode_concentration": concentration,
             "final_oos_read": False, "reason_codes": ["CANONICAL_DAILY_PRICES", "CANONICAL_CALL_QUOTES",
                                                          "PIT_ENTRY_DATES", "LIFECYCLE_REPLAYED"]}
+
+
+def analyze_constraint_failures(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Return descriptive failure partitions without changing any rule."""
+    trades = list(report.get("trades", []))
+    conflicts = [row for row in trades if row.get("status") == "HARD_CONSTRAINT_CONFLICT" or
+                 row.get("exit_state") == "HARD_CONSTRAINT_CONFLICT"]
+    return {"symbol": report.get("symbol"), "total_episodes": len(trades),
+            "conflict_count": len(conflicts),
+            "constraint_failure_rate": len(conflicts) / len(trades) if trades else None,
+            "conflicts_by_dte": pd.Series([r.get("dte_at_entry") for r in conflicts]).value_counts().to_dict(),
+            "conflicts_by_strike": pd.Series([r.get("strike") for r in conflicts]).value_counts().to_dict(),
+            "episodes": conflicts, "reason_codes": ["DESCRIPTIVE_FAILURE_ANALYSIS",
+                                                      "HARD_CONSTRAINTS_UNCHANGED", "NO_PNL_TUNING"]}
 
 
 def build_transfer_matrix(reports: Iterable[Mapping[str, Any]]) -> dict[str, Any]:

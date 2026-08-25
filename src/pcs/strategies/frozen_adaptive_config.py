@@ -19,7 +19,15 @@ DEFAULT_ROOT = Path("config/strategies/adaptive")
 
 
 def load_frozen_strategy_config(ticker: str, *, config_root: str | Path = DEFAULT_ROOT) -> ResolvedStrategyConfig:
-    path = Path(config_root) / f"{str(ticker).lower()}.yaml"
+    root = Path(config_root)
+    requested = str(ticker).lower()
+    path = root / f"{requested}.yaml"
+    if not path.is_file() and root.is_dir():
+        matches = [candidate for candidate in root.iterdir()
+                   if candidate.is_file() and candidate.suffix.lower() == ".yaml"
+                   and candidate.stem.lower() == requested]
+        if len(matches) == 1:
+            path = matches[0]
     if not path.is_file():
         raise FileNotFoundError(f"FROZEN_ADAPTIVE_CONFIG_NOT_FOUND:{str(ticker).upper()}")
     raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -30,9 +38,13 @@ def load_frozen_strategy_config(ticker: str, *, config_root: str | Path = DEFAUL
     payload = dict(raw)
     payload.pop("status", None)
     payload.pop("config_id", None)
+    stored_hash = raw.get("config_sha256")
     payload.pop("config_sha256", None)
     payload["characteristics"] = TickerCharacteristics(**payload["characteristics"])
-    return ResolvedStrategyConfig(**payload)
+    config = ResolvedStrategyConfig(**payload)
+    if not stored_hash or str(stored_hash) != config_sha256(config):
+        raise ValueError(f"FROZEN_CONFIG_INTEGRITY_FAILURE:{path}")
+    return config
 
 
 def frozen_config_dict(config: ResolvedStrategyConfig) -> dict[str, Any]:

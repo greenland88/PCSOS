@@ -217,6 +217,16 @@ class ResearchRunner:
         if not feature_path or not market_path:
             raise ResearchSpecError("COVERED_CALL_PIT_FEATURE_DATASETS_REQUIRED")
         daily = pd.read_parquet(feature_path); market = pd.read_parquet(market_path)
+        option_source = access.resolve_source("options", self.spec.ticker)
+        daily_dates = pd.to_datetime(daily.date).dt.normalize()
+        effective_start = max(daily_dates.min(), pd.Timestamp(option_source.first_date).normalize())
+        effective_end = min(daily_dates.max(), pd.Timestamp(option_source.last_date).normalize())
+        if effective_start > effective_end:
+            raise ResearchSpecError("NO_COMMON_DAILY_OPTIONS_COVERAGE")
+        daily = daily[(pd.to_datetime(daily.date).dt.normalize() >= effective_start) &
+                      (pd.to_datetime(daily.date).dt.normalize() <= effective_end)].copy()
+        market = market[(pd.to_datetime(market.date).dt.normalize() >= effective_start) &
+                        (pd.to_datetime(market.date).dt.normalize() <= effective_end)].copy()
         from .covered_call_research import (discover_and_select_entries, replay_selected_entries,
                                              validate_covered_call_report, analyze_constraint_failures)
         result = discover_and_select_entries(self.spec.ticker, daily, market, data_access=access)
@@ -227,6 +237,8 @@ class ResearchRunner:
                        "parameter_stability": replay.get("parameter_stability", {}),
                        "episode_concentration": replay.get("episode_concentration", {})})
         result.update({"research_id": self.spec.research_id, "as_of": datetime.now(timezone.utc).date().isoformat(),
+                       "effective_research_start_date": str(effective_start.date()),
+                       "effective_research_end_date": str(effective_end.date()),
                        "data_timestamp": datetime.now(timezone.utc).isoformat(),
                        "calculation_version": "covered_call_economic_v1",
                        "run_id": uuid.uuid4().hex, "request_id": uuid.uuid4().hex,
@@ -279,6 +291,13 @@ class ResearchRunner:
                 except json.JSONDecodeError:
                     continue
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        existing_manifest = self.output_dir / "artifact_manifest.json"
+        if existing_manifest.is_file():
+            try:
+                if json.loads(existing_manifest.read_text(encoding="utf-8")).get("current") is True:
+                    raise RuntimeError("ARTIFACT_IMMUTABLE_CURRENT:use a new run_id/output directory")
+            except json.JSONDecodeError:
+                pass
         records = []
         for relative in files:
             path = self.output_dir / relative

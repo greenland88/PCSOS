@@ -52,6 +52,16 @@ def _finite(value: Any, default: float) -> float:
         return default
 
 
+def _require_finite(value: Any, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"CHARACTERISTIC_INVALID:{name}") from exc
+    if not pd.notna(result) or not pd.api.types.is_number(result) or result <= 0:
+        raise ValueError(f"CHARACTERISTIC_INVALID:{name}")
+    return result
+
+
 def measure_characteristics(daily: pd.DataFrame, *, as_of: str | None = None,
                             options: pd.DataFrame | None = None) -> TickerCharacteristics:
     """Measure PIT-safe ticker behavior from a daily frame ending at ``as_of``."""
@@ -91,7 +101,7 @@ def measure_characteristics(daily: pd.DataFrame, *, as_of: str | None = None,
             daily_dates = x["date"].dt.normalize().drop_duplicates()
             quote_coverage = float(od[od.isin(daily_dates)].nunique() / max(1, daily_dates.nunique()))
     return TickerCharacteristics(
-        realized_volatility=_finite(ret.std() * (252 ** .5), 0.0),
+        realized_volatility=_require_finite(ret.std() * (252 ** .5), "realized_volatility"),
         normal_pullback_depth=_finite(drawdown[drawdown < 0].quantile(0.5), -0.02),
         trend_persistence=_finite(persistence.median(), 0.5),
         recovery_speed_days=_finite(pd.Series(recoveries).median() if recoveries else 10, 10),

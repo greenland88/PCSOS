@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from types import SimpleNamespace
 
 from pcs.strategies.adaptive_profiles import measure_characteristics, resolve_strategy_config
@@ -41,6 +42,13 @@ def test_option_coverage_is_date_coverage_not_quote_row_count():
     options = pd.DataFrame({"trade_date": d.date.iloc[::2]})
     c = measure_characteristics(d, options=options)
     assert 0.49 < c.option_quote_coverage < 0.51
+
+
+def test_invalid_realized_volatility_is_blocking():
+    d = _daily()
+    d["close"] = 100.0
+    with pytest.raises(ValueError, match="CHARACTERISTIC_INVALID:realized_volatility"):
+        measure_characteristics(d)
 
 
 def test_adaptive_predicate_uses_resolved_window_and_differs_from_fixed():

@@ -188,7 +188,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     by_day = {d: g.copy() for d, g in opts.groupby("trade_date")}
     rules_cfg = load_rules(); gate_rules = json.loads(json.dumps(rules_cfg)); gate_rules["entry"]["hard_dte_min"] = int(rules["dte_min"]); gate_rules["entry"]["hard_dte_max"] = int(rules["dte_max"]); gate_rules["entry"]["safe_strike_atr"] = float(rules["safe_strike_atr"]); gate_rules["entry"]["min_credit_width_ratio"] = float(rules["min_credit_width_ratio"]); market_factory = canonical_market_state_factory(); regime_engine = MarketRegimeEngine(gate_rules)
     calendar = _load_replay_calendar("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
-    setup_rows = []; candidates = []; context_rows = []; event_cache = {}; rejected = {k: 0 for k in ["TREND","PULLBACK","SUPPORT","PREDICTABILITY","REGIME","EVENT","DTE","SAFE_STRIKE","LIQUIDITY","CREDIT_WIDTH","LIFECYCLE_QUOTES_MISSING"]}
+    setup_rows = []; candidates = []; context_rows = []; event_cache = {}; rejected = {k: 0 for k in ["TREND","PULLBACK","SUPPORT","PREDICTABILITY","REGIME","EVENT","DTE","SAFE_STRIKE","LIQUIDITY","CREDIT_WIDTH","LIFECYCLE_QUOTES_MISSING","CORPORATE_ACTION_CONTRACT_MAPPING_UNAVAILABLE"]}
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
     context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
     broad_new_entry = spec.research_mode.value == "NEW_ENTRY"
@@ -314,6 +314,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
             eligible_candidate_ids.add(str(r["candidate_id"]))
         except LifecycleAdapterError as exc:
             if str(exc) == "CORPORATE_ACTION_CONTRACT_MAPPING_UNAVAILABLE":
+                rejected["CORPORATE_ACTION_CONTRACT_MAPPING_UNAVAILABLE"] += 1
                 continue
             if str(exc) == "CANONICAL_PUT_LIFECYCLE_QUOTES_MISSING":
                 # A missing lifecycle series invalidates this candidate only;

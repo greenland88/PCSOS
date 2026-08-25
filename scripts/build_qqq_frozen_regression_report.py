@@ -40,15 +40,23 @@ def build_metrics(key, label, dirname):
     signals = signal_dates(feature_frame(), key)
     return {"strategy": label, "research_id": replay.get("research_id"), "qualifying_signal_dates": [str(x.date()) for x in signals], "independent_episodes": len(signals), "executable_entry_dates": [str(x.date()) for x in done.entry_date], "contract_candidates": replay.get("funnel", {}).get("CONTRACT_CANDIDATES", 0), "selected_economic_trades": len(x), "completed_lifecycles": len(done), "total_pnl": total, "pf": float(wins.sum()/abs(losses.sum())) if len(losses) else None, "expectancy": float(pnl.mean()), "win_rate": float((pnl > 0).mean()), "stop_rate": float(done.stop_triggered.fillna(False).astype(bool).mean()), "average_holding_trading_days": float(done.holding_trading_days.mean()), "yearly_pnl": {str(y): float(g.realized_pnl.sum()) for y,g in done.groupby(done.entry_date.dt.year)}, "period_metrics": by_period, "episode_pnl": [{"entry_date": str(r.entry_date.date()), "pnl": float(r.realized_pnl), "exit_reason": str(r.exit_reason)} for r in done.sort_values("entry_date").itertuples()], "top_episode_contribution": float(pnl.max()/total) if total else None, "exact_entry_date_list": [str(x.date()) for x in done.entry_date]}
 
+def load_reference_dates(key):
+    train_file = ART / "controlled_reset_independent_episode_ledger.csv" if key == "controlled_reset" else None
+    if train_file is None or not train_file.exists():
+        return None
+    return set(pd.to_datetime(pd.read_csv(train_file).trade_date).dt.strftime("%Y-%m-%d"))
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True); allm = {}; signal_diff = []; life_diff = []; ref_diff = []; d = feature_frame()
     for key, (label, dirname) in MAP.items():
         m = build_metrics(key, label, dirname); allm[key] = m; (OUT/f"qqq_{key}_current_metrics.json").write_text(json.dumps(m, indent=2, default=str), encoding="utf-8")
-        current = set(m["qualifying_signal_dates"]); reference = set()
-        train_file = ART/"controlled_reset_independent_episode_ledger.csv" if key == "controlled_reset" else None
-        if train_file and train_file.exists(): reference |= set(pd.to_datetime(pd.read_csv(train_file).trade_date).dt.strftime("%Y-%m-%d"))
-        for value in sorted(current-reference): signal_diff.append({"strategy":label,"layer":"signal population","date":value,"diff":"CURRENT_ONLY","classification":"canonical data correction / PIT population change"})
-        for value in sorted(reference-current): signal_diff.append({"strategy":label,"layer":"signal population","date":value,"diff":"REFERENCE_ONLY","classification":"canonical data correction / PIT population change"})
+        current = set(m["qualifying_signal_dates"]); reference = load_reference_dates(key)
+        if reference is None:
+            signal_diff.append({"strategy":label,"layer":"signal population","date":None,"diff":"NOT_COMPARABLE","classification":"REFERENCE_NOT_LOADED","reason_code":"REFERENCE_NOT_LOADED"})
+            ref_diff.append({"strategy":label,"layer":"aggregate metrics","current_total_pnl":m["total_pnl"],"reference":None,"classification":"UNEXPLAINED_DIFFERENCE","reason_code":"REFERENCE_NOT_LOADED"})
+            continue
+        for value in sorted(current-reference): signal_diff.append({"strategy":label,"layer":"signal population","date":value,"diff":"CURRENT_ONLY","classification":"UNEXPLAINED_DIFFERENCE","reason_code":"REFERENCE_JOINED"})
+        for value in sorted(reference-current): signal_diff.append({"strategy":label,"layer":"signal population","date":value,"diff":"REFERENCE_ONLY","classification":"UNEXPLAINED_DIFFERENCE","reason_code":"REFERENCE_JOINED"})
         x = pd.read_parquet(OUT/dirname/"lifecycle_results.parquet");
         for r in x.itertuples(): life_diff.append({"strategy":label,"entry_date":str(pd.Timestamp(r.entry_date).date()),"current_pnl":float(r.realized_pnl) if pd.notna(r.realized_pnl) else None,"exit_reason":str(r.exit_reason),"layer":"lifecycle outcomes","classification":"canonical data correction / contract selection change"})
         ref_diff.append({"strategy":label,"layer":"aggregate metrics","current_total_pnl":m["total_pnl"],"reference":"latest frozen artifacts selected; see layer diffs","classification":"EXPLAINED_DIFFERENCE_PENDING_REFERENCE_JOIN"})

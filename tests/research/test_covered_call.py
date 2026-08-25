@@ -7,6 +7,7 @@ from pcs.research.covered_call import (
 from pcs.research.covered_call_research import run_covered_call_spec_file, discover_and_select_entries
 from pcs.research.covered_call_research import replay_selected_entries
 from pcs.research.covered_call_research import build_transfer_matrix, build_covered_call_manifest
+from pcs.research.covered_call_research import analyze_constraint_failures
 from pcs.research.covered_call_research import validate_covered_call_report, run_covered_call_research
 
 
@@ -104,7 +105,8 @@ def test_daily_lifecycle_buyback_and_assignment():
     p.open(100, contract("META", strike=110))
     out = replay_covered_call(p, [{"date":"2025-02-14", "underlying_close":115,
         "bid":0, "ask":.1, "expiration":"2025-02-14"}], profit_capture=1.0)
-    assert out["exit_state"] == "ASSIGNED"
+    assert out["exit_state"] == "HARD_CONSTRAINT_CONFLICT"
+    assert out["status"] == "HARD_CONSTRAINT_CONFLICT"
 
 
 def test_transfer_matrix_is_data_driven():
@@ -133,3 +135,27 @@ def test_manifest_is_fail_closed_for_missing_inputs(tmp_path):
         daily_manifest_path=str(tmp_path / "missing4"), options_manifest_path=str(tmp_path / "missing5"))
     assert result["current"] is False
     assert result["status"] == "INCOMPLETE"
+
+
+def test_roll_requires_positive_credit_and_preserves_episode():
+    p = CoveredCallPosition("NVDA")
+    p.open(100, contract("NVDA", strike=110))
+    p.episode_pnl = 100
+    p.roll(net_credit=25, new_expiration="2025-03-14", new_strike=115, new_bid=1, new_ask=1.2)
+    assert p.roll_count == 1
+    assert p.roll_credits == 25
+    assert p.contract.strike == 115
+    try:
+        p.roll(net_credit=-1, new_expiration="2025-04-14", new_strike=115, new_bid=1, new_ask=1.2)
+    except ValueError as exc:
+        assert str(exc) == "H3_DEBIT_OR_ZERO_CREDIT_ROLL_FORBIDDEN"
+    else:
+        raise AssertionError("debit roll must be rejected")
+
+
+def test_constraint_failure_analysis_is_descriptive():
+    report = {"symbol":"NVDA", "trades":[{"status":"HARD_CONSTRAINT_CONFLICT",
+        "exit_state":"HARD_CONSTRAINT_CONFLICT", "dte_at_entry":43, "strike":110}]}
+    out = analyze_constraint_failures(report)
+    assert out["constraint_failure_rate"] == 1.0
+    assert out["conflicts_by_dte"] == {43: 1}

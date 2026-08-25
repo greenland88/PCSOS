@@ -62,12 +62,12 @@ def validate_execution_cardinality(*, signal_count: int, episode_count: int,
                                    one_entry_per_episode: bool = True) -> None:
     require_kind(selected, LedgerKind.SELECTED_TRADE)
     require_kind(lifecycle, LedgerKind.LIFECYCLE)
-    if len(selected.rows) > signal_count or len(selected.rows) > episode_count:
+    if len(selected.rows) > signal_count:
         raise IntegrityError("SELECTED_TRADE_CARDINALITY_EXCEEDED")
-    if len(lifecycle.rows) > len(selected.rows):
-        raise IntegrityError("LIFECYCLE_CARDINALITY_EXCEEDED")
     if one_entry_per_episode and len(selected.rows) > episode_count:
         raise IntegrityError("ONE_ENTRY_PER_EPISODE_VIOLATION")
+    if len(lifecycle.rows) > len(selected.rows):
+        raise IntegrityError("LIFECYCLE_CARDINALITY_EXCEEDED")
 
 
 REPRODUCIBILITY_REQUIRED = (

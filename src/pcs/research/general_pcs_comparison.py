@@ -61,7 +61,8 @@ def compare_general_pcs_replays(ticker: str, *, output_dir: str = "research_outp
                                "final_oos_read": payload.get("final_oos_read", True),
                                "production_change": payload.get("production_change", True)}
     report.update({"ticker": ticker.upper(), "replay_modes": modes,
-                   "controls": {"final_oos_read": False, "production_change": False,
+                   "controls": {"final_oos_read": any(m["final_oos_read"] for m in modes.values()),
+                                "production_change": any(m["production_change"] for m in modes.values()),
                                 "execution_constants_changed": False}})
     out = root / ticker.lower() / "fixed_vs_adaptive_replay_comparison.json"
     out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
@@ -73,15 +74,19 @@ def write_overall_general_pcs_report(tickers: tuple[str, ...] = ("META", "NVDA")
     root = Path(output_dir)
     ticker_reports = {ticker: json.loads((root / ticker.lower() / "fixed_vs_adaptive_replay_comparison.json").read_text(encoding="utf-8")) for ticker in tickers}
     signal_changes = {ticker: report.get("signal_diff", {}) for ticker, report in ticker_reports.items()}
+    any_final_oos = any(r.get("controls", {}).get("final_oos_read", False) for r in ticker_reports.values())
+    any_production_change = any(r.get("controls", {}).get("production_change", False) for r in ticker_reports.values())
+    changed = [t for t, d in signal_changes.items() if d.get("fixed_only") or d.get("adaptive_only")]
+    classification = "CONTROL_VIOLATION" if any_final_oos or any_production_change else ("ADAPTIVE_SIGNAL_DIFFERENCE" if changed else "NO_ADAPTIVE_SIGNAL_DIFFERENCE")
     report = {"module": "pcs.research.general_pcs_comparison", "version": "1.0",
               "tickers": ticker_reports, "signal_changes": signal_changes,
-              "classification": "ADAPTIVE_OVERFIT_RISK",
-              "classification_basis": ["adaptive changes signal dates on both tickers", "lifecycle outcomes are not consistently improved across tickers or archetypes", "no P&L was used to resolve parameters", "QQQ was excluded because canonical options readiness is blocked"],
+              "classification": classification,
+              "classification_basis": ["derived from current child reports", "no P&L was used to resolve parameters", *([f"signal dates differ for {', '.join(changed)}"] if changed else [])],
               "implementation_notes": {"active_fields": ["momentum_window_days", "recovery_window_days", "pullback_depth", "volume_ratio_floor"],
                                        "descriptive_only_fields": ["realized_volatility", "trend_persistence", "option_quote_coverage"],
                                        "frozen_execution_fields": ["dte_min", "dte_max", "safe_strike_atr", "min_credit_width"],
                                        "pit_resolution": "20-session checkpoint cadence with forward carry of already-known configs", "parameter_selection_input": "ticker behavior only; no P&L/outcomes"},
-              "controls": {"final_oos_read": False, "production_change": False, "strategy_thresholds_changed": False}}
+              "controls": {"final_oos_read": any_final_oos, "production_change": any_production_change, "strategy_thresholds_changed": False}}
     (root / "overall_comparison.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report
 

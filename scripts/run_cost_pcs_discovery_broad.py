@@ -15,6 +15,9 @@ def main():
     OUT.mkdir(parents=True,exist_ok=True)
     year = int(sys.argv[1]) if len(sys.argv)>1 else None
     spec=ResearchRunner.from_path(SPEC, output_dir=OUT.parent).spec
+    # Runner contract requires the benchmark identity; this is metadata only.
+    if not spec.signal_definition.get("benchmark_symbol"):
+        spec=replace(spec, signal_definition={**spec.signal_definition, "benchmark_symbol":"QQQ"})
     if year:
         clean=pd.read_parquet(ROOT/'research_outputs/cost_canonical_test_dataset/cost_clean_testable_days.parquet')
         dates=pd.to_datetime(clean.loc[pd.to_datetime(clean.date).dt.year.eq(year),'date']).dt.strftime('%Y-%m-%d').tolist()

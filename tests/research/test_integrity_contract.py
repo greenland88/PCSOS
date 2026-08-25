@@ -19,9 +19,19 @@ def test_one_entry_per_episode_rejects_candidate_explosion():
                                     [{"id": str(i)} for i in range(2)], symbol="NVDA", run_id="r1")
     lifecycle = LedgerContract.build(LedgerKind.LIFECYCLE,
                                      [{"id": str(i)} for i in range(2)], symbol="NVDA", run_id="r1")
-    with pytest.raises(IntegrityError, match="CARDINALITY_EXCEEDED"):
+    with pytest.raises(IntegrityError, match="(CARDINALITY_EXCEEDED|ONE_ENTRY_PER_EPISODE_VIOLATION)"):
         validate_execution_cardinality(signal_count=35, episode_count=1,
-                                       selected=selected, lifecycle=lifecycle)
+            selected=selected, lifecycle=lifecycle)
+
+
+def test_cardinality_allows_multiple_trades_when_episode_constraint_disabled():
+    selected = LedgerContract.build(LedgerKind.SELECTED_TRADE,
+                                    [{"id": str(i)} for i in range(2)], symbol="NVDA", run_id="r1")
+    lifecycle = LedgerContract.build(LedgerKind.LIFECYCLE,
+                                     [{"id": str(i)} for i in range(2)], symbol="NVDA", run_id="r1")
+    validate_execution_cardinality(signal_count=2, episode_count=1,
+                                   selected=selected, lifecycle=lifecycle,
+                                   one_entry_per_episode=False)
 
 
 def test_incomplete_legacy_manifest_is_not_reproducible():
