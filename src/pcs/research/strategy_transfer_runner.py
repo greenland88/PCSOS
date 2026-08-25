@@ -27,13 +27,28 @@ def _features(d: pd.DataFrame) -> pd.DataFrame:
     x["prior_close_sma50_atr"] = x.close_sma50_atr.shift(1)
     return x
 
+def _validate_transfer_daily(access: PCSDataAccess, daily: pd.DataFrame, ticker: str,
+                             train_start: Any, train_end: Any) -> None:
+    """Validate warmup and execution windows separately.
+
+    Warmup rows are required for PIT indicators and are therefore expected to
+    precede ``train_start``. Passing the full frame to the requested-window
+    coverage validator incorrectly rejected valid warmup data.
+    """
+    access.validate_schema(daily, "daily")
+    dates = pd.to_datetime(daily["date"]).dt.normalize()
+    execution = daily.loc[dates.between(pd.Timestamp(train_start).normalize(), pd.Timestamp(train_end).normalize())]
+    access.validate_coverage(execution, ticker, train_start, train_end, "date")
+    if execution.empty:
+        raise DataQualityError("daily execution window empty")
+
 def run_transfer(request: TransferRequest, *, data_access: PCSDataAccess | None = None, output_dir: str | Path | None = None) -> dict[str, Any]:
     spec = get_strategy(request.strategy_id); ticker = request.ticker.upper(); access = data_access or PCSDataAccess()
     try:
         requested_start = pd.Timestamp(request.train_start)
         warmup_start = requested_start - pd.Timedelta(days=320)
         daily = access.read_prices(ticker, warmup_start, request.train_end)
-        access.validate_schema(daily, "daily"); access.validate_coverage(daily, ticker, request.train_start, request.train_end, "date")
+        _validate_transfer_daily(access, daily, ticker, request.train_start, request.train_end)
         if daily.empty or daily.date.duplicated().any(): raise DataQualityError("daily duplicate keys or empty coverage")
         # Options validation is intentionally a readiness gate; execution engines
         # remain delegated to the canonical selector/lifecycle in full replays.
