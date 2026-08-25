@@ -84,3 +84,11 @@ def test_market_state_artifact_rejects_pydantic_defaults_and_future_asof(tmp_pat
         assert False, "incomplete state must not use MarketState defaults"
     except ValueError as exc:
         assert "FIELDS_MISSING" in str(exc)
+
+
+def test_stage4a_receipt_boolean_parser_is_fail_closed():
+    from scripts.run_stage4a_production_decision_incremental import _strict_bool
+    assert _strict_bool(True) is True
+    assert _strict_bool("true") is True
+    assert _strict_bool("false") is False
+    assert _strict_bool("0") is False

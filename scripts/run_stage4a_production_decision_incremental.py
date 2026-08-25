@@ -71,6 +71,21 @@ def _blocked(row: dict, status: DecisionRowStatus, *codes: str) -> dict:
             "reason_codes": list(codes), "primary_reason": codes[0] if codes else status.value}
 
 
+def _strict_bool(value: object) -> bool:
+    """Parse receipt booleans without treating the string ``"false"`` as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
+
 def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_calendar: pd.DataFrame):
     """Build a cached exact-input evaluator.  It owns no raw-file access."""
     contexts: dict[str, HistoricalTrendContextProvider] = {}
@@ -183,7 +198,7 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
         """Restore accepted reservations from a previously completed partition."""
         if frame.empty:
             return
-        accepted = frame["accepted"].map(bool) if "accepted" in frame else pd.Series(False, index=frame.index)
+        accepted = frame["accepted"].map(_strict_bool) if "accepted" in frame else pd.Series(False, index=frame.index)
         for row in frame[accepted].to_dict("records"):
             amount = float(row.get("planned_loss", 0.0) or 0.0)
             if amount <= 0:
