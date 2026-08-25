@@ -112,8 +112,20 @@ def run_symbol(symbol):
         t0 = time.perf_counter()
         result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")
         frame = flatten(result["trades"], symbol)
-        frame.to_parquet(target, index=False)
-        target.with_suffix(".identity.json").write_text(json.dumps({"inputs": shard_identity(symbol, lo, hi), "output_sha256": output_sha(target)}, indent=2), encoding="utf-8")
+        temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        try:
+            frame.to_parquet(temp, index=False)
+            pd.read_parquet(temp)
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
+        identity_path = target.with_suffix(".identity.json")
+        identity_temp = identity_path.with_name(f".{identity_path.name}.{os.getpid()}.tmp")
+        try:
+            identity_temp.write_text(json.dumps({"inputs": shard_identity(symbol, lo, hi), "output_sha256": output_sha(target)}, indent=2), encoding="utf-8")
+            os.replace(identity_temp, identity_path)
+        finally:
+            identity_temp.unlink(missing_ok=True)
         record = {"ticker": symbol, "chunk_start": str(lo.date()), "chunk_end": str(hi.date()), "status": "COMPLETE", "qualified_trades": len(frame), "elapsed_seconds": round(time.perf_counter() - t0, 3), "source_option_files_touched": result["quality"].get("quarter_files_opened"), "rows_scanned": result["quality"].get("option_rows_loaded")}
         with checkpoint.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
