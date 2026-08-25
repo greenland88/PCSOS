@@ -7,6 +7,8 @@ import json
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 from pcs.research.runner import ResearchRunner
 from pcs.research.research_framework import ResearchMode, validate_population_routing, validate_rule_set
 
@@ -18,7 +20,7 @@ def features(daily: pd.DataFrame) -> pd.DataFrame:
     x = daily.sort_values("date").copy()
     c = x["close"].astype(float)
     x["sma50"] = c.rolling(50, min_periods=50).mean()
-    x["atr"] = (x["high"].astype(float) - x["low"].astype(float)).rolling(14, min_periods=14).mean()
+    x["atr"] = calculate_base_indicators(x, TrendIndicatorConfig())["atr14"]
     x["drawdown60"] = c / c.rolling(60, min_periods=60).max() - 1
     x["ret5"] = c.pct_change(5)
     x["ret10"] = c.pct_change(10)
@@ -27,25 +29,29 @@ def features(daily: pd.DataFrame) -> pd.DataFrame:
     return x
 
 
-def first_per_episode(frame: pd.DataFrame) -> list[str]:
+def first_per_episode(frame: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[str]:
     if frame.empty:
         return []
     x = frame.sort_values("date").copy()
-    x["episode"] = (x["date"].diff().dt.days.fillna(999) > 4).cumsum()
+    session_positions = {day: i for i, day in enumerate(pd.DatetimeIndex(sessions).normalize())}
+    positions = x["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
+    x["episode"] = positions.diff().fillna(999).ne(1).cumsum()
     return [d.date().isoformat() for d in x.groupby("episode", as_index=False).first()["date"]]
 
 
-def signal_dates(kind: str, frame: pd.DataFrame) -> list[str]:
+def signal_dates(kind: str, frame: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[str]:
     reset = frame[(frame.drawdown60 <= -0.02) & (frame.ret10 > 0)]
     if kind == "controlled_reset":
-        return first_per_episode(reset)
+        return first_per_episode(reset, sessions)
     if kind == "recovery_stabilization":
         # Preserve the frozen precursor episode boundary, then select its first
         # date satisfying the frozen confirmation predicate.
         if reset.empty:
             return []
         reset = reset.sort_values("date").copy()
-        reset["episode"] = (reset.date.diff().dt.days.fillna(999) > 4).cumsum()
+        session_positions = {day: i for i, day in enumerate(pd.DatetimeIndex(sessions).normalize())}
+        positions = reset["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
+        reset["episode"] = positions.diff().fillna(999).ne(1).cumsum()
         out = []
         for _, group in reset.groupby("episode"):
             hit = group[group.ret5 > 0]
@@ -55,7 +61,7 @@ def signal_dates(kind: str, frame: pd.DataFrame) -> list[str]:
     if kind == "sma50_reclaim":
         return first_per_episode(frame[(frame.drawdown60 <= -0.02) &
                                        (frame.prior_close_sma50_atr <= 0) &
-                                       (frame.close_sma50_atr > 0)])
+                                       (frame.close_sma50_atr > 0)], sessions)
     raise ValueError(kind)
 
 
@@ -64,8 +70,9 @@ def run_one(kind: str, config_name: str, research_id: str) -> dict:
     daily = access.read_prices("SPY", "2019-01-01", "2025-12-31")
     daily.date = pd.to_datetime(daily.date).dt.normalize()
     f = features(daily)
+    sessions = pd.DatetimeIndex(daily.loc[daily.date.between("2020-01-01", "2025-12-31"), "date"]).normalize()
     f = f[f.date.between("2020-01-01", "2025-12-31")]
-    dates = signal_dates(kind, f)
+    dates = signal_dates(kind, f, sessions)
     base = ResearchRunner.from_path(CONFIG / config_name)
     spec = replace(
         base.spec,
