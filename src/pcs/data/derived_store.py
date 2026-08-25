@@ -1,6 +1,8 @@
 """Versioned persistence for reusable derived features and research results."""
 from datetime import datetime, timezone
 from pathlib import Path
+import os
+import uuid
 import json
 import pandas as pd
 from .access import PCSDataAccess
@@ -47,9 +49,32 @@ def cache_matches(dataset, filters, versions, root="data/parquet/derived"):
     return True
 
 def write_research_run(record, path="data/manifests/research_runs.csv"):
-    fields=list(record); target=Path(path); target.parent.mkdir(parents=True,exist_ok=True)
-    frame=pd.DataFrame([record]); frame.to_csv(target,mode="a",header=not target.exists(),index=False)
-    json_dir=target.parent/"research_runs"; json_dir.mkdir(parents=True,exist_ok=True); (json_dir/f"{record['run_id']}.json").write_text(json.dumps(record,default=str,sort_keys=True),encoding="utf-8"); return record["run_id"]
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run_id = str(record["run_id"])
+    with PCSDataAccess._file_lock(target):
+        current = pd.read_csv(target) if target.exists() else pd.DataFrame()
+        incoming = pd.DataFrame([record])
+        if "run_id" in current.columns:
+            current = current[current.run_id.astype(str) != run_id]
+        columns = list(dict.fromkeys([*current.columns.tolist(), *incoming.columns.tolist()]))
+        updated = pd.concat([current.reindex(columns=columns), incoming.reindex(columns=columns)], ignore_index=True)
+        csv_tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            updated.to_csv(csv_tmp, index=False)
+            os.replace(csv_tmp, target)
+        finally:
+            csv_tmp.unlink(missing_ok=True)
+        json_dir = target.parent / "research_runs"
+        json_dir.mkdir(parents=True, exist_ok=True)
+        json_target = json_dir / f"{run_id}.json"
+        json_tmp = json_target.with_name(f".{json_target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            json_tmp.write_text(json.dumps(record, default=str, sort_keys=True), encoding="utf-8")
+            os.replace(json_tmp, json_target)
+        finally:
+            json_tmp.unlink(missing_ok=True)
+    return run_id
 
 def write_backtest_trades(trades, run_id, root="data/parquet/research"):
     rows=[]
