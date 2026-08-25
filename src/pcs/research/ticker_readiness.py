@@ -11,6 +11,8 @@ from pcs.data.access import PCSDataAccess
 from pcs.data.readiness import canonical_route_evidence, discover_lifecycle_smoke_case, execute_lifecycle_smoke
 from pcs.research.underlying_state import evaluate_as_of
 from pcs.data.universe import load_market_universe
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 
 TICKERS = tuple(load_market_universe(["benchmarks", "pcs_universe"]))
 FEATURES = ("sma20", "sma50", "sma200", "atr", "returns", "drawdown", "support", "predictability", "regime", "state")
@@ -67,7 +69,7 @@ def _daily_checks(r, daily, expected_dates=None):
 
 def _pit_checks(r, daily):
     x=daily.copy().sort_values("date"); c=pd.to_numeric(x.close,errors="coerce"); h=pd.to_numeric(x.high,errors="coerce"); l=pd.to_numeric(x.low,errors="coerce"); prev=c.shift(1)
-    x["sma20"]=c.rolling(20,min_periods=20).mean(); x["sma50"]=c.rolling(50,min_periods=50).mean(); x["sma200"]=c.rolling(200,min_periods=200).mean(); tr=pd.concat([h-l,(h-prev).abs(),(l-prev).abs()],axis=1).max(axis=1); x["atr"]=tr.rolling(14,min_periods=14).mean(); x["returns"]=c.pct_change(); x["drawdown"]=c/c.cummax()-1; x["support"]=l.rolling(20,min_periods=20).min(); x["predictability"]=c.pct_change().rolling(20,min_periods=20).mean(); x["regime"]=np.where(c>=x.sma200,"ABOVE_SMA200","BELOW_SMA200")
+    x["sma20"]=c.rolling(20,min_periods=20).mean(); x["sma50"]=c.rolling(50,min_periods=50).mean(); x["sma200"]=c.rolling(200,min_periods=200).mean(); x["atr"]=calculate_base_indicators(x, TrendIndicatorConfig())["atr14"]; x["returns"]=c.pct_change(); x["drawdown"]=c/c.cummax()-1; x["support"]=l.rolling(20,min_periods=20).min(); x["predictability"]=c.pct_change().rolling(20,min_periods=20).mean(); x["regime"]=np.where(c>=x.sma200,"ABOVE_SMA200","BELOW_SMA200")
     # The full state adapter is intentionally O(window) per date.  Admission
     # must remain bounded, so validate the canonical adapter on a legal recent
     # fixture and use its PIT availability boundary for the row-level audit.
