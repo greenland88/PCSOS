@@ -462,18 +462,24 @@ class PCSDataAccess:
             return pd.DataFrame(columns=columns or [])
         normalized = [(pd.Timestamp(a).date(), pd.Timestamp(b).date()) for a, b in windows]
         spec = self.resolve_source("options", symbol, min(a for a, _ in normalized), max(b for _, b in normalized))
-        selected = columns or list(OPTION_FIELDS)
+        requested_columns = list(columns) if columns is not None else None
+        if requested_columns and not set(requested_columns).issubset(set(OPTION_FIELDS)):
+            raise DataQualityError("OPTIONS_COLUMN_PROJECTION_INVALID")
         predicates = " OR ".join(["(trade_date BETWEEN ? AND ?)"] * len(normalized))
         params: list[Any] = [spec.path.split(";") if ";" in spec.path else spec.path, spec.symbol]
         for a, b in normalized: params.extend([a, b])
         con = duckdb.connect()
         try:
-            out = con.execute(f"SELECT {', '.join(selected)} FROM read_parquet(?, hive_partitioning=true) WHERE symbol=? AND ({predicates})", params).fetchdf()
+            parquet_input = spec.path.split(";") if ";" in spec.path else [spec.path]
+            relations = " UNION ALL ".join(["SELECT * FROM read_parquet(?)"] * len(parquet_input))
+            query_params = parquet_input + [spec.symbol]
+            query_params.extend([v for pair in normalized for v in pair])
+            out = con.execute(f"SELECT * FROM ({relations}) AS canonical_rows WHERE symbol=? AND ({predicates})", query_params).fetchdf()
         finally:
             con.close()
         self.validate_coverage(out, spec.symbol, min(a for a, _ in normalized), max(b for _, b in normalized), "trade_date")
         out = self.validate_schema(out, spec.dataset)
-        return out
+        return out[requested_columns] if requested_columns is not None else out
 
     def read_partition(self, dataset: str, symbol: str, partition: str, filename: str | None = None) -> pd.DataFrame:
         """Read one physical partition through the data-access boundary."""
