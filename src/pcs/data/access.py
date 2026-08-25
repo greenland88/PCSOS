@@ -336,9 +336,14 @@ class PCSDataAccess:
         files = spec.path.split(";") if ";" in spec.path else [spec.path]
         physical = []
         for raw in files:
-            raw_path = Path(raw)
+            # SourceSpec paths may be relative (the default store deliberately
+            # uses repository-relative ``data/...`` paths).  Resolve them
+            # through the same active data-root mapping used by route
+            # resolution; Path().glob(raw) would make identity depend on the
+            # caller's current working directory.
+            raw_path = self._storage_path(raw)
             if any(ch in raw for ch in "*?["):
-                matches = list(raw_path.parent.glob(raw_path.name)) if raw_path.is_absolute() else list(Path().glob(raw))
+                matches = list(raw_path.parent.glob(raw_path.name))
             else:
                 matches = [raw_path]
             for path in sorted(matches):
