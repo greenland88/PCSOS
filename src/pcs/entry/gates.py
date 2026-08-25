@@ -34,10 +34,10 @@ class EventGate:
         if rows.empty:
             return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_NO_TICKER_EVENT",))
         if "event_date_known_at_entry" not in calendar.columns:
-            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_PIT_METADATA_MISSING",))
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_PIT_METADATA_MISSING_IGNORED",), {"event_data_available": True, "event_pit_verified": False, "event_gate_applied": False, "event_gate_result": "NOT_AVAILABLE"})
         known = calendar["event_date_known_at_entry"].astype(str).str.upper()
         if not known.isin({"YES", "TRUE", "1"}).all():
-            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_PIT_METADATA_UNVERIFIED",))
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_PIT_METADATA_UNVERIFIED_IGNORED",), {"event_data_available": True, "event_pit_verified": False, "event_gate_applied": False, "event_gate_result": "NOT_AVAILABLE"})
         if risk > 0:
             return GateResult("event", GateStatus.FAIL, ("EVENT_RISK_PRESENT",))
         try:

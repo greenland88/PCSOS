@@ -250,7 +250,8 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                         if "MARKET_STATE_PIT_UNAVAILABLE" not in str(exc): raise
                         market_state_missing += 1
                         if rules["regime_gate"]: raise
-                    if rules["event_gate"]:
+                    event_gate_available = bool(calendar.attrs.get("event_data_available") and calendar.attrs.get("event_pit_verified"))
+                    if rules["event_gate"] and event_gate_available:
                         event_key = (pd.Timestamp(day).normalize(), pd.Timestamp(exp).normalize())
                         if event_key not in event_cache:
                             event_cache[event_key] = EventGate().evaluate(tc, calendar)
@@ -339,6 +340,9 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     final_oos_start = spec.split_policy.get("final_oos_start") or spec.split_policy.get("final_oos", {}).get("start")
     max_read_date = pd.to_datetime(opts.trade_date).max() if len(opts) else None
     final_oos_read = bool(final_oos_start and max_read_date is not pd.NaT and pd.notna(max_read_date) and max_read_date >= pd.Timestamp(final_oos_start))
-    report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":len(decision_days),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "max_options_read_date":str(max_read_date.date()) if pd.notna(max_read_date) else None,"final_oos_read":final_oos_read,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
+    event_available = bool(calendar.attrs.get("event_data_available"))
+    event_pit_verified = bool(calendar.attrs.get("event_pit_verified"))
+    event_gate_applied = bool(rules["event_gate"] and event_available and event_pit_verified)
+    report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "event_data_available":event_available, "event_pit_verified":event_pit_verified, "event_gate_applied":event_gate_applied, "event_gate_result":"APPLIED" if event_gate_applied else "NOT_AVAILABLE", "event_reason":calendar.attrs.get("event_reason", "NO_TICKER_EVENT_ROWS"), "funnel":{"TRADING_DAYS":len(decision_days),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "max_options_read_date":str(max_read_date.date()) if pd.notna(max_read_date) else None,"final_oos_read":final_oos_read,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
     (out / "replay_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report

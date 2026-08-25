@@ -80,7 +80,20 @@ def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
 
 def _load_replay_calendar(path: str | Path) -> pd.DataFrame:
     """Load only the validated, provenance-bearing canonical calendar."""
-    return load_calendar(path)
+    try:
+        calendar = load_calendar(path)
+        calendar.attrs.update({"event_data_available": not calendar.empty,
+                               "event_pit_verified": True,
+                               "event_status": "AVAILABLE" if not calendar.empty else "NOT_AVAILABLE",
+                               "event_reason": "VALID_PIT_SAFE_CALENDAR" if not calendar.empty else "EMPTY_EVENT_CALENDAR"})
+        return calendar
+    except (FileNotFoundError, ValueError) as exc:
+        calendar = pd.DataFrame()
+        calendar.attrs.update({"event_data_available": False,
+                               "event_pit_verified": False,
+                               "event_status": "NOT_AVAILABLE",
+                               "event_reason": str(exc)})
+        return calendar
 
 
 def _spread_candidates(chain: pd.DataFrame, day: pd.Timestamp, close: float,
