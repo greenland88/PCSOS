@@ -62,6 +62,7 @@ def test_artifact_read_fails_closed_on_missing_or_tampered_sidecar(tmp_path):
     with pytest.raises(DataQualityError, match="sidecar missing"):
         a.read_artifact("test", "result.parquet", root=tmp_path)
     a.write_artifact(pd.DataFrame({"value": [1]}), "test", "result", root=tmp_path)
+    assert a.read_artifact("test", "result.parquet", root=tmp_path).equals(pd.DataFrame({"value": [1]}))
     sidecar.write_text('{"semantic_hash":"wrong","row_count":1}', encoding="utf-8")
     with pytest.raises(DataQualityError, match="sidecar mismatch"):
         a.read_artifact("test", "result.parquet", root=tmp_path)
