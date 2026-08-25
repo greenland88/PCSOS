@@ -37,7 +37,7 @@ from pcs.research.stage4a_production_evaluation import (
 OUT = Path("research_outputs/stage4a_production_rebase_20260820")
 PARTS = OUT / "production_universe_partitions"
 DEC = OUT / "production_decision_partitions"
-EVENT = Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+EVENT = Path(__file__).resolve().parents[1] / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
 DEFAULT_MARKET_STATES = Path("data/derived/canonical_pit_market_states.parquet")
 
 
