@@ -15,6 +15,7 @@ from pcs.research.underlying_state import evaluate_as_of, UnderlyingState
 from pcs.research.current_strategy_replay import build_lifecycle_quote_rows, validate_lifecycle_corporate_action, _identity
 from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, LifecycleAdapterError
 from pcs.research.variant_b_replay import ReplayPolicy
+from pcs.research.entry_candidate_universe import _atr14
 
 V2_VERSION = "nvda-entry-discovery-v2-broad-outcome-map-v1"
 
@@ -32,9 +33,9 @@ def build_broad_outcome_map(output_dir: str | Path = "research_outputs/nvda_entr
     access = PCSDataAccess(); ticker = "NVDA"
     daily = access.read_prices(ticker, start, end).copy()
     daily.date = pd.to_datetime(daily.date).dt.normalize()
-    prev = daily.close.shift(1)
-    tr = pd.concat([(daily.high-daily.low), (daily.high-prev).abs(), (daily.low-prev).abs()], axis=1).max(axis=1)
-    daily["atr_14"] = tr.rolling(14, min_periods=14).mean()
+    # Safe-strike distance must use the same Wilder ATR implementation as the
+    # canonical replay/production trend indicators.
+    daily["atr_14"] = _atr14(daily)
     states = [evaluate_as_of(daily, ticker, day) for day in daily.date]
     state_df = pd.DataFrame(states)
     ready = state_df[(state_df.available_data.astype(bool)) &
