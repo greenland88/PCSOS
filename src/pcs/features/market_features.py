@@ -30,7 +30,10 @@ def calculate_market_features(rows: list[dict], predictability_weights: dict | N
         g["atr5"] = tr.rolling(5, min_periods=5).mean()
         g["atr14"] = tr.rolling(14, min_periods=14).mean()
         returns = close.pct_change()
-        g["realized_vol_20d"] = returns.rolling(20, min_periods=2).std() * math.sqrt(252)
+        # A volatility feature is not available until its full lookback is
+        # present. Partial windows make early rows appear feature-ready and
+        # allow a ticker with a short history to pass a readiness gate.
+        g["realized_vol_20d"] = returns.rolling(20, min_periods=20).std() * math.sqrt(252)
         rolling_high = close.cummax()
         g["drawdown"] = (close / rolling_high - 1) * 100
         crossings = ((close > g["dma20"]) != (close.shift(1) > g["dma20"].shift(1))).rolling(20, min_periods=1).sum()

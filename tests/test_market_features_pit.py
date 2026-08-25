@@ -19,3 +19,9 @@ def test_future_rows_do_not_change_historical_market_features():
                 assert pd.isna(after[field])
             else:
                 assert before[field] == after[field]
+
+
+def test_realized_vol_requires_full_lookback():
+    rows = calculate_market_features(_rows(1, 25))
+    assert all(pd.isna(row["realized_vol_20d"]) for row in rows[:20])
+    assert pd.notna(rows[20]["realized_vol_20d"])
