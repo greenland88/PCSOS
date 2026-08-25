@@ -7,6 +7,14 @@ import json
 import pandas as pd
 from .access import PCSDataAccess
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _root_path(root):
+    path = Path(root)
+    if str(root).replace("\\", "/") in {"data/parquet/derived", "data/parquet/research"}:
+        return _REPO_ROOT / path
+    return path
+
 DERIVED_SCHEMAS = {
     "daily_indicators": {"key": ["symbol", "date"], "version_fields": ["calculation_version", "source_data_version", "created_at"]},
     "trend_history": {"key": ["symbol", "date", "benchmark_symbol"], "version_fields": ["trend_engine_version", "config_version", "source_data_version", "created_at"]},
@@ -15,7 +23,7 @@ DERIVED_SCHEMAS = {
 }
 
 def _access(root):
-    root=Path(root)
+    root=_root_path(root)
     return PCSDataAccess(manifest_path=root / ".storage_manifest.csv", parquet_root=root.parent)
 
 def _stamp(df, metadata):
@@ -27,10 +35,12 @@ def _stamp(df, metadata):
 def write_derived(df, dataset, root="data/parquet/derived", metadata=None):
     if dataset not in DERIVED_SCHEMAS: raise ValueError(f"unknown derived dataset: {dataset}")
     metadata=metadata or {}; out=_stamp(df,metadata); name=f"{dataset}_{metadata.get('symbol','multi')}_{metadata.get('calculation_version',metadata.get('trend_engine_version','v1'))}.parquet"
-    return _access(root).write_artifact(out, dataset, name, root=Path(root))
+    resolved = _root_path(root)
+    return _access(root).write_artifact(out, dataset, name, root=resolved)
 
 def read_derived(dataset, root="data/parquet/derived", filters=None):
-    paths=sorted((Path(root)/dataset).glob("*.parquet"));
+    root = _root_path(root)
+    paths=sorted((root/dataset).glob("*.parquet"));
     if not paths:return pd.DataFrame()
     access=_access(root)
     out=pd.concat([access.read_artifact(dataset,p.name,root=Path(root)) for p in paths],ignore_index=True)
@@ -60,7 +70,7 @@ def cache_matches(dataset, filters, versions, root="data/parquet/derived"):
     return True
 
 def write_research_run(record, path="data/manifests/research_runs.csv"):
-    target = Path(path)
+    target = (_REPO_ROOT / path if str(path).replace("\\", "/") == "data/manifests/research_runs.csv" else Path(path))
     target.parent.mkdir(parents=True, exist_ok=True)
     run_id = str(record["run_id"])
     with PCSDataAccess._file_lock(target):
@@ -92,9 +102,11 @@ def write_backtest_trades(trades, run_id, root="data/parquet/research"):
     for trade in trades:
         row={k:v for k,v in trade.items() if k!="events"}; row["run_id"]=run_id
         events=trade.get("events",{}); row.update({f"{k}_date":v for k,v in events.items()}); rows.append(row)
-    return _access(root).write_artifact(pd.DataFrame(rows), "pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=Path(root))
+    resolved = _root_path(root)
+    return _access(root).write_artifact(pd.DataFrame(rows), "pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=resolved)
 
 def read_backtest_trades(run_id, root="data/parquet/research"):
-    path=Path(root)/"pcs_backtest_trades"/f"run_id={run_id}"/"trades.parquet"
+    root = _root_path(root)
+    path=root/"pcs_backtest_trades"/f"run_id={run_id}"/"trades.parquet"
     if not path.exists(): return pd.DataFrame()
-    return _access(root).read_artifact("pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=Path(root))
+    return _access(root).read_artifact("pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=root)

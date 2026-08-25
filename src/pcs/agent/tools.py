@@ -7,6 +7,8 @@ from pcs.data.duckdb_store import connect, refresh_views, query_daily, query_opt
 from pcs.data.access import PCSDataAccess, DataAccessError
 from pcs.data.derived_store import read_derived, read_backtest_trades
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
 def _con(symbols=None):
     con=connect(":memory:"); refresh_views(con, symbols=symbols); return con
 
@@ -26,9 +28,9 @@ def get_option_quotes(symbol, trade_date, expiration_date, strikes):
     return result
 
 def get_research_run(run_id):
-    json_path=Path("data/manifests/research_runs")/f"{run_id}.json"
+    json_path=_REPO_ROOT / "data/manifests/research_runs" / f"{run_id}.json"
     if json_path.exists(): return response("AVAILABLE","DATA_AVAILABLE",[json.loads(json_path.read_text(encoding="utf-8"))])
-    path=Path("data/manifests/research_runs.csv")
+    path=_REPO_ROOT / "data/manifests/research_runs.csv"
     if not path.exists(): return response("UNAVAILABLE","DATA_NOT_FOUND")
     df=pd.read_csv(path,engine="python",on_bad_lines="skip"); rows=df[df.run_id.astype(str)==str(run_id)].to_dict("records")
     return response("AVAILABLE" if rows else "UNAVAILABLE", "DATA_AVAILABLE" if rows else "DATA_NOT_FOUND", rows)
