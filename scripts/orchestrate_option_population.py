@@ -55,7 +55,7 @@ def main():
     if code==0 and p.exists():
      p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
      if valid(p,s,lo,hi): status='COMPLETE'; break
-  if status=='COMPLETE': p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
+   if status=='COMPLETE': p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
    rec={'ticker':s,'year_month':f'{lo:%Y-%m}','status':status,'row_count':len(pd.read_parquet(p)) if status=='COMPLETE' else 0,'output_path':str(p),'child_exit_code':code,'stdout':stdout[-2000:],'stderr':stderr[-2000:],'runtime_seconds':time.time()-start}
    with lock:
     with CK.open('a',encoding='utf-8') as f:f.write(json.dumps(rec,default=str)+'\n')
