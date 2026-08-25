@@ -15,7 +15,7 @@ class MissingOptionsAccess:
 
 
 def test_gate_emits_exact_readiness_flags_and_all_blockers(monkeypatch):
-    monkeypatch.setattr(gate, "evaluate_as_of", lambda *args, **kwargs: {"available": True, "final_underlying_state": "NORMAL"})
+    monkeypatch.setattr(gate, "evaluate_as_of", lambda *args, **kwargs: {"available_data": True, "final_underlying_state": "NORMAL"})
     result = gate.preflight_ticker("TEST", access=MissingOptionsAccess())
     assert {name: getattr(result, name) for name in (
         "DATA_READY", "PIT_READY", "OPTIONS_READY", "CONTRACT_SELECTION_READY",
@@ -31,12 +31,12 @@ def test_gate_emits_exact_readiness_flags_and_all_blockers(monkeypatch):
 
 
 def test_admission_guard_fails_closed(monkeypatch):
-    monkeypatch.setattr(gate, "evaluate_as_of", lambda *args, **kwargs: {"available": True, "final_underlying_state": "NORMAL"})
+    monkeypatch.setattr(gate, "evaluate_as_of", lambda *args, **kwargs: {"available_data": True, "final_underlying_state": "NORMAL"})
     with pytest.raises(RuntimeError, match="PCS_RESEARCH_NOT_READY:TEST"):
         gate.assert_research_ready("TEST", access=MissingOptionsAccess())
 
 
 def test_nonempty_unavailable_state_result_does_not_pass_pit(monkeypatch):
-    monkeypatch.setattr(gate, "evaluate_as_of", lambda *args, **kwargs: {"available": False, "final_underlying_state": "UNKNOWN"})
+    monkeypatch.setattr(gate, "evaluate_as_of", lambda *args, **kwargs: {"available_data": False, "final_underlying_state": "UNKNOWN"})
     result = gate.preflight_ticker("TEST", access=MissingOptionsAccess())
     assert result.PIT_READY == "NO"
