@@ -4,30 +4,21 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import json
-import duckdb
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 from pcs.entry.contract_v2 import ENTRY_CONTRACT_V2, later_expirations, nearby_strikes, normalize_price_confirmation
 from pcs.features.expected_move import calculate_expected_move
 from pcs.research.stage4a_replay import audit_inputs
 from pcs.research.entry_confirmation import analyze_entry_confirmation
 
-ROOT = Path("research_outputs/safe_strike_stage4a/candidate_inputs")
-OPTION_ROOT = Path("data/parquet/options_v2/rebuild_20260820")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPO_ROOT / "research_outputs/safe_strike_stage4a/candidate_inputs"
 TICKERS = tuple(os.getenv("PCS_STAGE4A_TICKERS", "NVDA AMD TSLA AMZN").split())
 
 
 def load_chain(ticker: str, frame: pd.DataFrame) -> pd.DataFrame:
-    roots = [OPTION_ROOT / f"symbol={ticker}", Path("data/parquet/options_v2") / f"symbol={ticker}", Path("data/parquet/options_v2/safe_rebuild_20260820") / f"symbol={ticker}"]
-    root = next((p for p in roots if p.exists()), None)
-    if root is None:
-        return pd.DataFrame(columns=["trade_date", "expiration", "strike", "option_type"])
-    glob = str((root / "**" / "*.parquet").as_posix())
-    con = duckdb.connect()
-    out = con.execute("""SELECT trade_date, expiration_date, strike, call_put, bid, ask, volume, open_interest
-        FROM read_parquet(?) WHERE trade_date BETWEEN ? AND ?""", [
-            glob, pd.to_datetime(frame.date).min().date(), pd.to_datetime(frame.date).max().date()]).fetchdf()
-    con.close()
+    out = PCSDataAccess().read_quotes(ticker, pd.to_datetime(frame.date).min(), pd.to_datetime(frame.date).max())
     return out.rename(columns={"trade_date": "trade_date", "expiration_date": "expiration", "call_put": "option_type"})
 
 
@@ -35,7 +26,7 @@ def backfill(ticker: str) -> dict:
     path = ROOT / f"{ticker}.parquet"
     frame = pd.read_parquet(path).copy()
     prior = frame[[c for c in ("option_volume", "open_interest", "bid_ask_pct") if c in frame]].copy()
-    variant = Path("data/parquet/research/variant_b_full") / f"{ticker}_full_post2020_2d.parquet"
+    variant = REPO_ROOT / "data/parquet/research/variant_b_full" / f"{ticker}_full_post2020_2d.parquet"
     if variant.exists():
         v = pd.read_parquet(variant)
         if len(v) == len(frame):
@@ -43,8 +34,7 @@ def backfill(ticker: str) -> dict:
     chain = load_chain(ticker, frame)
     chain["trade_date"] = pd.to_datetime(chain["trade_date"]).dt.normalize()
     chain["expiration"] = pd.to_datetime(chain["expiration"]).dt.normalize()
-    daily_path = Path("data/raw/daily_forward_adjusted") / f"{ticker}_daily_qfq.csv"
-    daily = pd.read_csv(daily_path).rename(columns={"日期": "date", "开盘价": "open", "最高价": "high", "最低价": "low", "收盘价": "close", "成交量": "volume"})
+    daily = PCSDataAccess().read_prices(ticker)
     daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
     confirmations = {}
     for day in frame["date"].drop_duplicates():
