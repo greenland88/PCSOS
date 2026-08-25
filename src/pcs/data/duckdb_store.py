@@ -3,13 +3,20 @@ from pathlib import Path
 import duckdb
 from .storage_schema import DAILY_FIELDS, OPTION_FIELDS
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _default_path(value, default):
+    return _REPO_ROOT / default if str(value).replace("\\", "/") == default else Path(value)
 
 def connect(path="data/duckdb/pcs.duckdb"):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    return duckdb.connect(path)
+    if path != ":memory:":
+        path = _default_path(path, "data/duckdb/pcs.duckdb")
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return duckdb.connect(str(path))
 
 
 def refresh_views(con, parquet_root="data/parquet", symbols=None):
+    parquet_root = _default_path(parquet_root, "data/parquet")
     if symbols:
         symbols=[s.upper() for s in symbols]
         option_paths=[str(p).replace("\\", "/") for s in symbols for p in (Path(parquet_root)/"options"/f"symbol={s}").glob("**/*.parquet")]
