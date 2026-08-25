@@ -133,6 +133,8 @@ class CreditEfficiencyGate:
     def evaluate(self, candidate) -> GateResult:
         width = candidate.short_strike - candidate.long_strike
         ratio = candidate.credit / width if width > 0 else 0.0
+        if candidate.credit <= 0:
+            return GateResult("credit_efficiency", GateStatus.FAIL, ("CREDIT_NOT_POSITIVE",), {"ratio": ratio})
         minimum = self.rules.get("min_credit_width_ratio")
         if minimum is None: return GateResult("credit_efficiency", GateStatus.PASS, ("CREDIT_FLOOR_NOT_ACTIVATED",), {"ratio": ratio})
         return GateResult("credit_efficiency", GateStatus.PASS if ratio >= minimum else GateStatus.FAIL,

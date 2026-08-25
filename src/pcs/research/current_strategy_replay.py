@@ -173,6 +173,8 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
     context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
     for day in train.date:
+        if pd.Timestamp(day).normalize() < requested_start.normalize():
+            continue
         if execution_dates and pd.Timestamp(day).normalize() not in execution_date_set:
             continue
         ctx = context_table[pd.Timestamp(day).normalize()]

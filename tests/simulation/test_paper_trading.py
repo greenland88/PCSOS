@@ -30,8 +30,7 @@ def test_daily_paper_trading_returns_agent_ready_envelope():
     assert result.position_count == 2
     assert set(result.action_counts) == {action.value for action in Action}
     assert result.action_counts["OPEN"] == 0
-    assert result.action_counts["NO_TRADE"] == 4
-    assert result.action_counts["WAIT"] == 0
+    assert result.action_counts["WAIT"] == 4
     assert result.action_counts["HOLD"] == 1
     assert result.action_counts["ROLL"] == 1
     assert result.planned_risk_open == 0

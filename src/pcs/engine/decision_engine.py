@@ -47,7 +47,7 @@ class DecisionEngine:
         if gate_codes:
             return Decision(ticker=c.ticker, expiration=c.expiration, short_strike=c.short_strike, long_strike=c.long_strike,
                 underlying_price=c.underlying_price, market_regime=regime.value, scores=ScoreBreakdown(market_regime=regime_score, underlying_quality=0, trend=0, support=0, liquidity=0, rollability=0, strike_buffer=0, iv_premium=0, portfolio_capacity=0, news_risk=0),
-                total_score=0, classification=SizeClass.HALF, action=Action.NO_TRADE, reason="hard eligibility gate failed",
+                total_score=0, classification=SizeClass.HALF, action=Action.WAIT, reason="hard eligibility gate failed",
                 reason_codes=gate_codes, delta_diagnostics={"short_delta": c.short_delta, "is_hard_gate": False})
         liq, rollability, liq_flags = self.liquidity.score(c)
         strike, strike_flags = self.strike.score(c)

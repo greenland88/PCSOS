@@ -264,8 +264,8 @@ def _reason_codes(decision: Decision) -> list[str]:
         codes.append("PORTFOLIO_CAPACITY_REJECTED")
     if decision.action == Action.OPEN:
         codes.append("OPEN_RULES_PASSED")
-    if decision.action == Action.NO_TRADE and not codes:
-        codes.append("NO_TRADE")
+    if decision.action == Action.WAIT and not codes:
+        codes.append("WAIT")
     if decision.action == Action.HOLD:
         codes.append("POSITION_HELD")
     if decision.action == Action.CLOSE:

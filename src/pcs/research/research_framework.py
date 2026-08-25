@@ -75,6 +75,13 @@ class ResearchSpecError(ValueError):
         self.reason = reason
 
 
+def _strict_bool(raw: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ResearchSpecError(f"INVALID_SPEC:{key}_MUST_BE_BOOL")
+    return value
+
+
 @dataclass(frozen=True)
 class ResearchSpec:
     research_id: str
@@ -137,8 +144,8 @@ def from_mapping(raw: Mapping[str, Any]) -> ResearchSpec:
         lifecycle_policy=_mapping(raw["lifecycle_policy"], "lifecycle_policy"),
         frozen_parameters=_mapping(raw["frozen_parameters"], "frozen_parameters"),
         allowed_parameters=_mapping(raw["allowed_parameters"], "allowed_parameters"),
-        final_oos_access=bool(raw.get("final_oos_access", False)),
-        production_changes_allowed=bool(raw.get("production_changes_allowed", False)),
+        final_oos_access=_strict_bool(raw, "final_oos_access", False),
+        production_changes_allowed=_strict_bool(raw, "production_changes_allowed", False),
         rules=_mapping(raw.get("rules", {}), "rules"),
     )
 
@@ -254,8 +261,13 @@ def onboarding_report(stage_status: Mapping[str, str]) -> dict[str, Any]:
 
 
 def assert_research_output(path: str | Path) -> None:
-    text = str(Path(path)).replace("\\", "/").lower()
-    if "/production/" in text or "frozen_artifact" in text or "/frozen/" in text:
+    target = Path(path).resolve()
+    root = Path("research_outputs").resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise PermissionError("RESEARCH_OUTPUT_OUTSIDE_RESEARCH_OUTPUTS") from exc
+    if {part.lower() for part in relative.parts} & {"production", "frozen"} or "frozen_artifact" in target.name.lower():
         raise PermissionError("RESEARCH_RUNNER_CANNOT_WRITE_PRODUCTION_OR_FROZEN_ARTIFACT")
 
 
