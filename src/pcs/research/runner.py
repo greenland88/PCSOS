@@ -306,7 +306,7 @@ class ResearchRunner:
             records.append({"path": relative.replace("\\", "/"), "sha256": self._sha256(path)})
         input_identities = {"daily": data_version}
         access = PCSDataAccess()
-        dependencies = set(self.spec.data_dependencies)
+        dependencies = set(getattr(self.spec, "data_dependencies", ()))
         for dataset in sorted(dependencies & {"options", "options_v2", "options_v3"}):
             try:
                 input_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
@@ -353,7 +353,7 @@ class ResearchRunner:
         try:
             access = PCSDataAccess()
             current_identities = {"daily": access.source_data_identity("daily", self.spec.ticker)}
-            dependencies = set(self.spec.data_dependencies)
+            dependencies = set(getattr(self.spec, "data_dependencies", ()))
             for dataset in sorted(dependencies & {"options", "options_v2", "options_v3"}):
                 current_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
             benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
