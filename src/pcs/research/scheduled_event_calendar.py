@@ -180,25 +180,32 @@ def tag_entry_dates(trades: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFram
     out = trades.copy()
     out["entry_date"] = pd.to_datetime(out.entry_date).dt.normalize()
     out["expiration"] = pd.to_datetime(out.expiration).dt.normalize()
+    if "symbol" in out:
+        out["symbol"] = out.symbol.astype(str).str.upper()
+    knowledge_column = next((c for c in ("event_date_known_at_entry", "known_at_entry") if c in calendar.columns), None)
+    knowledge_proven = knowledge_column is not None
     for et in EVENT_TYPES:
-        dates = pd.DatetimeIndex(calendar.loc[calendar.event_type.eq(et), "event_date"])
-        nexts=[]
+        nexts=[]; dte_flags=[]
         for _, row in out.iterrows():
+            event_rows = calendar[calendar.event_type.eq(et)]
+            if et == "EARNINGS" and "symbol" in out and "symbol" in event_rows:
+                event_rows = event_rows[(event_rows.symbol.isna()) | (event_rows.symbol.astype(str).str.upper() == row.symbol)]
+            if knowledge_column is not None:
+                event_rows = event_rows[event_rows[knowledge_column].astype(bool)]
+            dates = pd.DatetimeIndex(event_rows.event_date)
             future = dates[dates >= row.entry_date]
             nexts.append((future[0] - row.entry_date).days if len(future) else pd.NA)
+            dte_flags.append(bool(((dates >= row.entry_date) & (dates <= row.expiration)).any()))
         key = "ER" if et == "EARNINGS" else ("NFP" if et == "NFP_EMPLOYMENT" else et)
         out[f"days_to_next_{key}"] = nexts
         for h in (3, 5, 10):
             out[f"{key}_inside_{h}d"] = out[f"days_to_next_{key}"].le(h-1)
-        out[f"{key}_inside_DTE"] = [
-            bool((dates[(dates >= r.entry_date) & (dates <= r.expiration)]).size)
-            for _, r in out.iterrows()
-        ]
+        out[f"{key}_inside_DTE"] = dte_flags
     flags = [c for c in out.columns if c.endswith("_inside_5d") or c.endswith("_inside_10d") or c.endswith("_inside_DTE")]
     out["scheduled_event_count_5d"] = out[[c for c in flags if c.endswith("_inside_5d")]].sum(axis=1)
     out["scheduled_event_count_10d"] = out[[c for c in flags if c.endswith("_inside_10d")]].sum(axis=1)
     out["scheduled_event_count_DTE"] = out[[c for c in flags if c.endswith("_inside_DTE")]].sum(axis=1)
-    out["event_feature_class"] = "PRE_ENTRY_KNOWN"
+    out["event_feature_class"] = "PRE_ENTRY_KNOWN" if knowledge_proven else "PIT_KNOWLEDGE_UNPROVEN"
     return out
 
 
