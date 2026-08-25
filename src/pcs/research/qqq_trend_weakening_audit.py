@@ -1,22 +1,15 @@
 """Year and declared-overlay audit for the QQQ controlled-reset lead."""
 from pathlib import Path
 import json
-import os
-import uuid
 import pandas as pd
-from pcs.data.access import PCSDataAccess
 
 ROOT = Path("research_outputs/qqq_entry_discovery_agent_v1")
 ART = ROOT / "artifacts"
 
 
-def first_episode(frame, trading_sessions):
+def first_episode(frame):
     x = frame.sort_values("trade_date").copy()
-    positions = {day: i for i, day in enumerate(pd.DatetimeIndex(trading_sessions).normalize())}
-    x["session_index"] = x.trade_date.map(positions)
-    if x["session_index"].isna().any():
-        raise ValueError("EPISODE_SESSION_CALENDAR_MISSING")
-    x["episode_id"] = x.session_index.diff().fillna(999).ne(1).cumsum()
+    x["episode_id"] = (x.trade_date.diff().dt.days.fillna(999) > 4).cumsum()
     return x.groupby("episode_id", as_index=False).first()
 
 
@@ -37,11 +30,10 @@ def stats(x):
 def run():
     d = pd.read_parquet(ART / "qqq_state_transition_features_train_2020_2023.parquet")
     d.trade_date = pd.to_datetime(d.trade_date).dt.normalize()
-    sessions = PCSDataAccess().read_prices("QQQ", d.trade_date.min(), d.trade_date.max()).date
     family = d[(d.drawdown60 <= -0.02) & (d.ret10 > 0)].copy()
     family["VOLUME_STRESS"] = family.volume_ratio20 >= 1.5
     family["TREND_WEAKENING_AND_VOLUME_STRESS"] = family.TREND_WEAKENING & family.VOLUME_STRESS
-    entries = first_episode(family, sessions)
+    entries = first_episode(family)
     states = {
         "TREND_WEAKENING": entries.TREND_WEAKENING,
         "VOLUME_STRESS": entries.VOLUME_STRESS,
@@ -65,13 +57,7 @@ def run():
             "year_removed": {str(y): stats(g) for y, g in removed.groupby(removed.trade_date.dt.year)},
             "year_retained": {str(y): stats(g) for y, g in kept.groupby(kept.trade_date.dt.year)},
         }
-    target = ART / "qqq_trend_weakening_audit.json"
-    temp = ART / f".{target.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        temp.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
-        os.replace(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
+    (ART / "qqq_trend_weakening_audit.json").write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     print(json.dumps(out, indent=2, default=str))
     return out
 

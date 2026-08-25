@@ -1,7 +1,6 @@
 from pathlib import Path
 import json
 import pandas as pd
-from pcs.data.access import PCSDataAccess
 from pcs.research.credit_stop import run_backtest
 
 WINDOWS = {
@@ -12,7 +11,8 @@ WINDOWS = {
 }
 
 def daily(symbol, end):
-    x = PCSDataAccess().read_prices(symbol, None, end).sort_values("date").drop_duplicates("date")
+    frames = [pd.read_parquet(p) for p in sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))]
+    x = pd.concat(frames, ignore_index=True).sort_values("date").drop_duplicates("date")
     x["date"] = pd.to_datetime(x["date"]).dt.normalize()
     return x[x.date <= pd.Timestamp(end)].copy()
 
@@ -22,12 +22,7 @@ def main():
     for symbol, (start, end) in WINDOWS.items():
         stock = daily(symbol, end)
         benchmark = daily("QQQ", end)
-        # The DuckDB/legacy backend is intentionally disabled in
-        # credit_stop.  Keep this runner on the same canonical PCSDataAccess
-        # route as the replay engine; otherwise the script either fails after
-        # doing preflight work or, if a legacy backend is reintroduced, can
-        # diverge from the authoritative option source.
-        result = run_backtest(stock, benchmark, option_root=f"data/raw/options/{symbol}", start=start, end=end, backend="canonical")
+        result = run_backtest(stock, benchmark, option_root=f"data/raw/options/{symbol}", start=start, end=end, backend="duckdb")
         trades = pd.DataFrame([{**{k: v for k, v in row.items() if k != "events"}, "ticker": symbol, "entry_date": row["date"], "spot": row["close"], "ATR": row["atr14"], "Trend Gate": row.get("trend_gate"), "DTE": (pd.Timestamp(row["expiration"]) - pd.Timestamp(row["date"])).days, "width": row["short_strike"] - row["long_strike"], "credit": row["initial_credit"], "short_delta": None} for row in result["trades"]])
         all_trades.append(trades)
         trend = stock[(stock.date >= pd.Timestamp(start)) & (stock.date <= pd.Timestamp(end))]

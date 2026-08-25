@@ -1,7 +1,7 @@
 research_id: jpm_current_strategy_replay_from_2018_20260825
 ticker: JPM
 research_mode: CURRENT_STRATEGY_REPLAY
-hypothesis: Plumbing validation of the existing strategy rule set using the active canonical options_v2 route from the declared executable data boundary.
+hypothesis: Plumbing validation of the existing strategy rule set using the active canonical logical options route from the declared executable data boundary.
 population_source: {type: ticker_daily_calendar, frozen: false}
 signal_definition: {creates_new_entry_dates: true, purpose: current_strategy_replay, benchmark_symbol: QQQ}
 entry_date_rule: {rule: current_strategy_entry_date}

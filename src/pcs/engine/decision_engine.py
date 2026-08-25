@@ -16,17 +16,14 @@ from pcs.scoring.support_score import score_support
 from pcs.scoring.trend_score import score_trend
 from pcs.scoring.underlying_quality import score_underlying_quality
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def load_rules(path: str | Path = "config/pcs_rules.yaml") -> dict:
-    if str(path).replace("\\", "/") == "config/pcs_rules.yaml":
-        path = _REPO_ROOT / path
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 class DecisionEngine:
-    def __init__(self, rules: dict, *, trading_sessions=None):
+    def __init__(self, rules: dict):
         self.rules = rules
         self.regime = MarketRegimeEngine(rules)
         self.liquidity = LiquidityScorer(rules)
@@ -34,7 +31,7 @@ class DecisionEngine:
         self.capacity = PortfolioCapacityScorer(rules)
         self.opportunity = OpportunityScorer(rules)
         self.sizer = PositionSizer(rules)
-        self.gates = HardGatePipeline(rules, trading_sessions=trading_sessions)
+        self.gates = HardGatePipeline(rules)
         self.risk = PortfolioRiskAggregator()
         self.rolls = RollEngine(rules)
         self.profits = ProfitEngine(rules)
@@ -42,15 +39,13 @@ class DecisionEngine:
     def evaluate_candidate(self, c, market_state, portfolio, event_calendar=None, entry_context=None) -> Decision:
         regime, regime_score, regime_flags = self.regime.classify(market_state)
         risk_snapshot = portfolio if isinstance(portfolio, PortfolioRiskSnapshot) else self.risk.from_portfolio(portfolio)
-        built_context = entry_context if entry_context is not None else build_production_entry_context(c)
-        if built_context is not None and not hasattr(built_context, "entry_context_state"):
-            raise ValueError("INVALID_ENTRY_CONTEXT")
+        built_context = build_production_entry_context(c)
         gate_results = self.gates.evaluate(c, risk_snapshot, regime=regime, event_calendar=event_calendar, entry_context=built_context)
         gate_codes = [code for result in gate_results if result.status == GateStatus.FAIL for code in result.reason_codes]
         if gate_codes:
             return Decision(ticker=c.ticker, expiration=c.expiration, short_strike=c.short_strike, long_strike=c.long_strike,
                 underlying_price=c.underlying_price, market_regime=regime.value, scores=ScoreBreakdown(market_regime=regime_score, underlying_quality=0, trend=0, support=0, liquidity=0, rollability=0, strike_buffer=0, iv_premium=0, portfolio_capacity=0, news_risk=0),
-                total_score=0, classification=SizeClass.HALF, action=Action.WAIT, reason="hard eligibility gate failed",
+                total_score=0, classification=SizeClass.HALF, action=Action.NO_TRADE, reason="hard eligibility gate failed",
                 reason_codes=gate_codes, delta_diagnostics={"short_delta": c.short_delta, "is_hard_gate": False})
         liq, rollability, liq_flags = self.liquidity.score(c)
         strike, strike_flags = self.strike.score(c)

@@ -48,25 +48,21 @@ def load_quotes(root="data/raw/options/NVDA", start=START, end=END):
 
 def canonical_option_glob(symbol: str, root: str | Path | None = None) -> str:
     """Resolve one ticker to the canonical partitioned Parquet source."""
-    access = (PCSDataAccess() if root is None else
-              PCSDataAccess(manifest_path="data/manifests/storage_manifest_options_v2.csv",
-                            parquet_root=Path(root).parent))
+    access = PCSDataAccess(parquet_root="data/parquet" if root is None else Path(root).parent)
     return access.resolve_source("options", symbol, START, END).path
 
 def load_quotes_canonical(symbol: str, start, end, root: str | Path | None = None):
     """Bounded research read from ticker-partitioned canonical Parquet."""
-    # Candidate generation must read the active options_v2 route through the
+    # Candidate generation must read the active logical options route through the
     # canonical Parquet boundary.  The legacy UnifiedDataAccess compatibility
     # facade called ``read_quotes(..., dataset='options')`` and could resolve a
     # legacy CSV manifest for a newly onboarded ticker, causing a binary
     # Parquet file to be opened by a text reader downstream.
-    access = (PCSDataAccess() if root is None else
-              PCSDataAccess(manifest_path="data/manifests/storage_manifest_options_v2.csv",
-                            parquet_root=Path(root).parent))
+    access = PCSDataAccess(parquet_root="data/parquet" if root is None else Path(root).parent)
     try:
         # Resolve the ticker's configured authoritative dataset first.  This
         # preserves legacy canonical routes for existing symbols while using
-        # options_v2 for CAT and future onboarded symbols.
+        # the active logical options route for CAT and future onboarded symbols.
         resolved = access.resolve_source("options", symbol, start, end)
         raw = access.read(resolved.dataset, symbol, start, end)
     except Exception as exc:
@@ -84,10 +80,7 @@ def load_quotes_canonical(symbol: str, start, end, root: str | Path | None = Non
     glob = canonical_option_glob(symbol, root)
     clean = _clean_option_frame_fast(_canonical_to_option_frame(raw))
     meta = {"source": "canonical_partitioned_parquet", "symbol": symbol.upper(), "path": glob,
-            "reader": "PCSDataAccess.read_parquet_duckdb", "rows_returned": len(clean),
-            # Preserve the historical research metadata name while exposing
-            # the clearer canonical name used by newer callers.
-            "option_rows_loaded": len(clean)}
+            "reader": "PCSDataAccess.read_parquet_duckdb", "rows_returned": len(clean)}
     return clean, meta
 
 def load_quotes_canonical_index(symbol: str, start, end, root: str | Path | None = None):
@@ -163,9 +156,7 @@ def load_entry_chain(root, entry_date):
     return load_quotes(root, pd.Timestamp(entry_date), pd.Timestamp(entry_date))
 
 def load_entry_chain_duckdb_view(db_path, symbol, entry_date, con=None):
-    """Disabled legacy view loader; use :func:`load_quotes_canonical`."""
-    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_quotes_canonical")
-    # Kept below only as historical source context; unreachable by contract.
+    """Research-only entry-chain loader for the canonical DuckDB options view."""
     own = con is None
     if con is None:
         con = duckdb.connect(db_path, read_only=True)
@@ -187,9 +178,7 @@ def load_entry_chain_duckdb_view(db_path, symbol, entry_date, con=None):
 
 def load_spread_quotes_duckdb_view(db_path, symbol, entry_date, tracking_end,
                                    expiration, strikes, con=None):
-    """Disabled legacy view loader; use :func:`load_spread_quotes_canonical`."""
-    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_spread_quotes_canonical")
-    # Kept below only as historical source context; unreachable by contract.
+    """Research-only lifecycle quote loader for the canonical DuckDB view."""
     own = con is None
     if con is None:
         con = duckdb.connect(db_path, read_only=True)
@@ -251,10 +240,7 @@ def precompute_trend_lookup(stock, benchmark, config=None, start=START, end=END)
 def build_option_indexes(quotes):
     t=time.perf_counter(); result={
         "by_date": {day:g for day,g in quotes.groupby("Trade Date")},
-        # Contract identity must retain option type.  Expiry+strike alone
-        # aliases a call and a put in the same lifecycle index.
-        "by_contract": {(key[0],key[1],str(key[2]).lower()):g
-                        for key,g in quotes.groupby(["Expiry Date","Strike","Call/Put"])},
+        "by_contract": {(key[0],key[1]):g for key,g in quotes.groupby(["Expiry Date","Strike"])},
     }
     result["index_build_seconds"]=time.perf_counter()-t; return result
 
@@ -279,10 +265,8 @@ def buffer_bucket(distance): return "1.5-2.0 ATR" if distance<=2 else "2.0-2.5 A
 def track_trade(entry, quotes, short, long, initial, max_days=20, quote_index=None):
     if quote_index is None:
         q=quotes[(quotes["Expiry Date"]==entry["expiration"])&quotes["Trade Date"].ge(entry["date"])&quotes.Strike.isin([entry["short_strike"],entry["long_strike"]])]
-        if "Call/Put" in q.columns:
-            q = q[q["Call/Put"].astype(str).str.lower().eq("p")]
     else:
-        q=pd.concat([quote_index.get((entry["expiration"],entry["short_strike"],"p"),pd.DataFrame()),quote_index.get((entry["expiration"],entry["long_strike"],"p"),pd.DataFrame())],ignore_index=True)
+        q=pd.concat([quote_index.get((entry["expiration"],entry["short_strike"]),pd.DataFrame()),quote_index.get((entry["expiration"],entry["long_strike"]),pd.DataFrame())],ignore_index=True)
         q=q[q["Trade Date"]>=entry["date"]]
     q=q.pivot_table(index="Trade Date",columns="Strike",values=["Bid Price","Ask Price"],aggfunc="first").sort_index().head(max_days)
     events={"profit50":None,"profit70":None,"stop":None}; valid_days=[]; invalid=0
@@ -300,7 +284,7 @@ def track_trade(entry, quotes, short, long, initial, max_days=20, quote_index=No
     exit_day=events["profit50"] if reason=="PROFIT50" else events["stop"] if reason=="STOP" else valid_days[-1][0]; exit_cost=next(x[2] for x in valid_days if x[0]==exit_day)
     return {"events":events,"exit_reason":reason,"days_held":len([x for x in valid_days if x[0]<=exit_day]),"exit_cost":exit_cost,"realized_pnl":(initial-exit_cost)*100,"invalid_days":invalid}
 
-def run_backtest(stock, benchmark, config=None, option_root="NVDA", start=START, end=END, progress_callback=None, backend="canonical", duckdb_path="data/duckdb/pcs.duckdb", safe_strike_atr=DEFAULT_SAFE_STRIKE_ATR):
+def run_backtest(stock, benchmark, config=None, option_root="data/raw/options/NVDA", start=START, end=END, progress_callback=None, backend="canonical", duckdb_path="data/duckdb/pcs.duckdb", safe_strike_atr=DEFAULT_SAFE_STRIKE_ATR):
     if backend != "canonical":
         raise DataAccessError("LEGACY_OPTION_BACKEND_DISABLED: use PCSDataAccess canonical route")
     from .ticker_readiness import assert_research_ready

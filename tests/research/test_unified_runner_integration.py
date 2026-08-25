@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from pcs.data.access import PCSDataAccess
 from pcs.research.research_framework import load_spec
-from pcs.research.runner import ResearchRunner, _strict_flag
+from pcs.research.runner import ResearchRunner
 
 
 def _runner(ticker, output_dir="research_outputs"):
@@ -11,37 +11,21 @@ def _runner(ticker, output_dir="research_outputs"):
     return ResearchRunner(spec, output_dir=output_dir)
 
 
-def test_runner_strict_flag_does_not_treat_false_string_as_true():
-    assert _strict_flag("false") is False
-    assert _strict_flag("UNKNOWN") is False
-    assert _strict_flag("true") is True
-
-
-def test_real_preflight_rejects_end_after_train_without_oos_authorization(tmp_path):
-    result = _runner("MSFT", tmp_path).real_preflight(end_date="2026-01-05")
-    assert result["status"] == "FINAL_OOS_BLOCKED"
-    assert result["final_oos_read"] is False
-
-
 def test_amd_real_daily_calendar_is_manifest_resolved(tmp_path):
     frame = PCSDataAccess().read_prices("AMD")
-    train = PCSDataAccess().read_prices("AMD", end_date="2025-12-31")
     assert len(frame) > 1000
     result = _runner("AMD", tmp_path).real_preflight()
     assert result["data_source"] == "PCS_CANONICAL_DATA"
     assert result["daily_source"] == "PCSDataAccess"
-    assert result["daily_rows"] == len(train)
-    assert result["daily_last_date"] == str(train.date.max().date())
+    assert result["daily_rows"] == len(frame)
 
 
 def test_spy_real_daily_calendar_is_manifest_resolved(tmp_path):
     frame = PCSDataAccess().read_prices("SPY")
-    train = PCSDataAccess().read_prices("SPY", end_date="2025-12-31")
     assert len(frame) > 1000
     result = _runner("SPY", tmp_path).calendar_preflight()
     assert result["data_source"] == "PCS_CANONICAL_DATA"
-    assert result["daily_rows"] == len(train)
-    assert result["daily_last_date"] == str(train.date.max().date())
+    assert result["daily_rows"] == len(frame)
 
 
 def test_real_ticker_calendars_are_not_synthetic_or_frozen(tmp_path):

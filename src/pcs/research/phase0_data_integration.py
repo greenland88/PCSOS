@@ -137,28 +137,20 @@ def classify_candidate_events(candidates: pd.DataFrame, events: pd.DataFrame,
 def audit_ohlcv_coverage(symbol: str, required_dates: Iterable, provider=None) -> dict:
     """Check exact required trading dates through the existing daily provider."""
     dates = pd.DatetimeIndex(pd.to_datetime(list(required_dates))).normalize().unique().sort_values()
+    provider = provider or DailyDataProvider()
     try:
-        if provider is None:
-            from pcs.data.access import PCSDataAccess
-            frame = PCSDataAccess().read_prices(symbol, dates.min(), dates.max())
-            source = "PCS_CANONICAL_DATA"
-            route = "PCSDataAccess.read_prices"
-        else:
-            frame = provider.build_daily_series(symbol, start_date=dates.min(), as_of_date=dates.max())
-            source = "LEGACY_PROVIDER_INJECTED"
-            route = "injected provider"
+        frame = provider.build_daily_series(symbol, start_date=dates.min(), as_of_date=dates.max())
         present = set(pd.to_datetime(frame["date"]).dt.normalize())
         missing = [str(d.date()) for d in dates if d not in present]
         return {"ticker": symbol.upper(), "coverage_start": str(frame.date.min().date()) if len(frame) else None,
                 "coverage_end": str(frame.date.max().date()) if len(frame) else None,
-                "missing_trading_dates": missing, "source": source,
-                "route_access": route,
+                "missing_trading_dates": missing, "source": "purchased_qfq+yahoo_incremental",
+                "route_access": "DailyDataProvider.build_daily_series -> data/raw/daily_forward_adjusted + data/live/daily",
                 "available": not missing}
     except (FileNotFoundError, ValueError) as exc:
-        route = "LEGACY_PROVIDER_INJECTED" if provider is not None else "PCSDataAccess.read_prices"
         return {"ticker": symbol.upper(), "coverage_start": None, "coverage_end": None,
                 "missing_trading_dates": [str(d.date()) for d in dates], "source": None,
-                "route_access": route, "available": False,
+                "route_access": "DailyDataProvider.build_daily_series", "available": False,
                 "error": str(exc)}
 
 

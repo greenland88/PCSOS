@@ -21,6 +21,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pcs.data.access import PCSDataAccess, DataAccessError, DataQualityError
+from pcs.data.daily_provider import DailyDataProvider
 from pcs.engine.decision_engine import DecisionEngine, load_rules
 from pcs.entry.contract_v2 import normalize_price_confirmation
 from pcs.features.expected_move import calculate_expected_move
@@ -28,18 +29,16 @@ from pcs.models.market import MarketState
 from pcs.models.trade import TradeCandidate
 from pcs.research.entry_confirmation import analyze_entry_confirmation
 from pcs.research.stage4a_context import HistoricalTrendContextProvider
-from pcs.research.scheduled_event_calendar import load_calendar
 from pcs.research.stage4a_production_evaluation import (
     DecisionRowStatus, canonical_breadth, completion_is_valid,
     evaluate_partition, write_completed_partition,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-OUT = REPO_ROOT / "research_outputs/stage4a_production_rebase_20260820"
+OUT = Path("research_outputs/stage4a_production_rebase_20260820")
 PARTS = OUT / "production_universe_partitions"
 DEC = OUT / "production_decision_partitions"
-EVENT = REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
-DEFAULT_MARKET_STATES = REPO_ROOT / "data/derived/canonical_pit_market_states.parquet"
+EVENT = Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+DEFAULT_MARKET_STATES = Path("data/derived/canonical_pit_market_states.parquet")
 
 
 def _file_digest(path: Path) -> str:
@@ -72,63 +71,18 @@ def _blocked(row: dict, status: DecisionRowStatus, *codes: str) -> dict:
             "reason_codes": list(codes), "primary_reason": codes[0] if codes else status.value}
 
 
-def _strict_bool(value: object) -> bool:
-    """Parse receipt booleans without treating the string ``"false"`` as true."""
-    if isinstance(value, bool):
-        return value
-    if value is None or pd.isna(value):
-        return False
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes"}:
-            return True
-        if normalized in {"false", "0", "no", ""}:
-            return False
-    return bool(value)
-
-
 def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_calendar: pd.DataFrame):
     """Build a cached exact-input evaluator.  It owns no raw-file access."""
     contexts: dict[str, HistoricalTrendContextProvider] = {}
+    daily_provider = DailyDataProvider()
     daily: dict[str, pd.DataFrame] = {}
     confirmation: dict[tuple[str, pd.Timestamp], float] = {}
     breadth: dict[tuple[str, pd.Timestamp, pd.Timestamp, float], tuple[int, int, dict]] = {}
     engine = DecisionEngine(load_rules())
-    portfolio = {"planned_risk": 0.0, "planned_loss": 0.0,
-                 "bucket_risk": {}, "ticker_risk": {}, "_reservations": []}
-
-    def release_finished(day: pd.Timestamp) -> None:
-        """Release reservations whose authoritative lifecycle has ended."""
-        active = []
-        for reservation in portfolio["_reservations"]:
-            if reservation["end_date"] < day:
-                amount = reservation["amount"]
-                portfolio["planned_loss"] -= amount
-                portfolio["planned_risk"] = portfolio["planned_loss"]
-                bucket = reservation["bucket"]
-                ticker = reservation["ticker"]
-                portfolio["bucket_risk"][bucket] -= amount
-                portfolio["ticker_risk"][ticker] -= amount
-                if portfolio["bucket_risk"][bucket] <= 0:
-                    portfolio["bucket_risk"].pop(bucket, None)
-                if portfolio["ticker_risk"][ticker] <= 0:
-                    portfolio["ticker_risk"].pop(ticker, None)
-            else:
-                active.append(reservation)
-        portfolio["_reservations"] = active
-
-    def reserve(amount: float, bucket: str, ticker: str, end_date: pd.Timestamp) -> None:
-        portfolio["planned_loss"] += amount
-        portfolio["planned_risk"] = portfolio["planned_loss"]
-        portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + amount
-        portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + amount
-        portfolio["_reservations"].append({"amount": amount, "bucket": bucket,
-                                            "ticker": ticker, "end_date": end_date})
 
     def evaluate(row: dict) -> dict:
         ticker = str(row["ticker"]).upper()
         day, expiry = pd.Timestamp(row["date"]).normalize(), pd.Timestamp(row["expiration"]).normalize()
-        release_finished(day)
         market = market_states.get((ticker, day)) or market_states.get(("MARKET", day))
         if market is None:
             return _blocked(row, DecisionRowStatus.BLOCKED_CONTEXT_UNAVAILABLE, "CANONICAL_MARKET_STATE_UNAVAILABLE")
@@ -152,10 +106,7 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
             if support is None:
                 return _blocked(row, DecisionRowStatus.BLOCKED_SUPPORT_UNAVAILABLE, "NO_SUPPORT")
             if ticker not in daily:
-                # Load the canonical series once; slice it at each decision
-                # date so later rows never reuse an early as-of snapshot.
-                daily[ticker] = access.read_prices(ticker)
-                daily[ticker].date = pd.to_datetime(daily[ticker].date).dt.normalize()
+                daily[ticker] = daily_provider.build_daily_series(ticker, as_of_date=day)
             day_rows = daily[ticker][daily[ticker].date.eq(day)]
             if len(day_rows) != 1:
                 return _blocked(row, DecisionRowStatus.BLOCKED_SOURCE_UNAVAILABLE, "UNDERLYING_PRICE_UNAVAILABLE")
@@ -177,41 +128,15 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
             long_option_volume=int(row["long_volume"]), long_open_interest=int(row["long_oi"]), entry_date=str(day.date()),
             trend_snapshot=snapshot, trend_interpretation=context["interpretation"], trend_score_result=context["trend_score"],
         )
-        decision = engine.evaluate_candidate(candidate, market, portfolio, event_calendar=event_calendar)
+        decision = engine.evaluate_candidate(candidate, market, {"planned_risk": 0, "bucket_risk": {}}, event_calendar=event_calendar)
         accepted = decision.action.value == "OPEN"
-        if accepted:
-            reserved = float(decision.planned_loss or decision.planned_risk or 0.0)
-            bucket = str(row.get("correlation_bucket", "UNKNOWN"))
-            end_value = row.get("exit_date", row.get("expiration"))
-            end_date = pd.Timestamp(end_value).normalize() if pd.notna(end_value) else expiry
-            reserve(reserved, bucket, ticker, end_date)
         return {**row, "status": (DecisionRowStatus.EVALUATED_ACCEPTED if accepted else DecisionRowStatus.EVALUATED_REJECTED).value,
                 "accepted": accepted, "reason_codes": list(decision.reason_codes),
                 "primary_reason": decision.reason_codes[0] if decision.reason_codes else decision.reason,
                 "dte": dte, "atr": atr, "close": close, "credit": credit,
                 "credit_width_ratio": credit / float(row["spread_width"]) if float(row["spread_width"]) else 0.0,
                 "nearby_strikes": n, "later_expirations": later, "support_state": "SUPPORT_FOUND",
-                "breadth_provenance": breadth_provenance,
-                "expected_move": expected_move, "planned_loss": float(decision.planned_loss or decision.planned_risk or 0.0),
-                "event_pit_status": "VERIFIED" if event_calendar.attrs.get("historical_pit_required") else "UNVERIFIED"}
-
-    def restore_completed(frame: pd.DataFrame) -> None:
-        """Restore accepted reservations from a previously completed partition."""
-        if frame.empty:
-            return
-        accepted = frame["accepted"].map(_strict_bool) if "accepted" in frame else pd.Series(False, index=frame.index)
-        for row in frame[accepted].to_dict("records"):
-            amount = float(row.get("planned_loss", 0.0) or 0.0)
-            if amount <= 0:
-                continue
-            ticker = str(row["ticker"]).upper()
-            bucket = str(row.get("correlation_bucket", "UNKNOWN"))
-            end_value = row.get("exit_date", row.get("expiration"))
-            if pd.isna(end_value):
-                continue
-            reserve(amount, bucket, ticker, pd.Timestamp(end_value).normalize())
-
-    evaluate.restore_completed = restore_completed
+                "breadth_provenance": breadth_provenance}
     return evaluate
 
 
@@ -221,35 +146,19 @@ def main() -> None:
     parser.add_argument("--limit-partitions", type=int)
     args = parser.parse_args()
     run_id = f"stage4a-production-{uuid.uuid4().hex}"
-    access, calendar = PCSDataAccess(), load_calendar(EVENT)
-    calendar.attrs["historical_pit_required"] = True
-    if "event_date_known_at_entry" not in calendar.columns and "known_at_entry" not in calendar.columns:
-        raise RuntimeError("EVENT_CALENDAR_PIT_METADATA_MISSING")
+    access, calendar = PCSDataAccess(), pd.read_csv(EVENT)
+    calculation_version = "|".join(("stage4a-production-evaluation-v2", f"rules={_file_digest(Path('config/pcs_rules.yaml'))}",
+                                    f"events={_file_digest(EVENT)}", f"market_states={_file_digest(args.market_state_artifact)}"))
     evaluator = build_row_evaluator(access=access, market_states=_load_market_states(args.market_state_artifact), event_calendar=calendar)
     DEC.mkdir(parents=True, exist_ok=True)
     parts = sorted(PARTS.glob("*.parquet"))
     if args.limit_partitions is not None:
         parts = parts[:args.limit_partitions]
-    symbols = sorted({str(symbol).upper()
-                      for partition in parts
-                      for symbol in pd.read_parquet(partition, columns=["ticker"]).ticker.dropna().unique()})
-    source_identity = []
-    for symbol in symbols:
-        source_identity.append((symbol, access.source_data_identity("daily", symbol),
-                                access.source_data_identity("options", symbol)))
-    calculation_version = "|".join(("stage4a-production-evaluation-v3",
-                                    f"rules={_file_digest(REPO_ROOT / 'config/pcs_rules.yaml')}",
-                                    f"events={_file_digest(EVENT)}",
-                                    f"market_states={_file_digest(args.market_state_artifact)}",
-                                    f"evaluator={_file_digest(Path(__file__))}",
-                                    f"sources={hashlib.sha256(json.dumps(source_identity, sort_keys=True).encode()).hexdigest()}"))
     results, receipts = [], []
     for partition in parts:
         source, target = pd.read_parquet(partition), DEC / partition.name
         if completion_is_valid(source, target, calculation_version=calculation_version):
-            completed = pd.read_parquet(target)
-            evaluator.restore_completed(completed)
-            results.append(completed); receipts.append(json.loads(target.with_suffix(".receipt.json").read_text(encoding="utf-8"))); continue
+            results.append(pd.read_parquet(target)); receipts.append(json.loads(target.with_suffix(".receipt.json").read_text(encoding="utf-8"))); continue
         result = evaluate_partition(source, evaluator)
         receipt = write_completed_partition(source, result, target, source_partition=partition.name, run_id=run_id,
                                             request_id=uuid.uuid4().hex, data_timestamp=pd.Timestamp.now(tz="UTC").isoformat(),

@@ -25,16 +25,6 @@ def annualized_performance_metrics(
     """Return reporting metrics without modifying or replaying trades."""
     data = frame.copy()
     complete = data[data.get("status", pd.Series("COMPLETE", index=data.index)).eq("COMPLETE")] if len(data) else data
-    if len(complete) and "exit_date" in complete:
-        complete = complete.assign(_realized_date=pd.to_datetime(complete.exit_date, errors="coerce"))
-        # Exit dates are often shared by several trades.  A stable identity
-        # tie-break keeps the realized curve independent of shard/worker row
-        # order, including when entries share both exit date and entry date.
-        sort_keys = ["_realized_date"]
-        for key in ("date", "candidate_id", "trade_id"):
-            if key in complete:
-                sort_keys.append(key)
-        complete = complete.sort_values(sort_keys, kind="mergesort")
     pnl = pd.to_numeric(complete.get("realized_pnl", pd.Series(dtype=float)), errors="coerce").dropna()
     if test_start_date is None:
         dates = pd.to_datetime(data.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
@@ -61,16 +51,11 @@ def annualized_performance_metrics(
     return {"total_realized_pnl": total, "starting_equity": start_eq, "ending_equity": end_eq,
             "test_start_date": start.date().isoformat() if start is not None else None,
             "test_end_date": end.date().isoformat() if end is not None else None, "test_days": days,
-            # A per-trade planned loss is not a time-series capital exposure.
-            # Do not expose it under a portfolio-capital name or use it for a
-            # capital-efficiency ratio without an exposure ledger.
-            "CAGR": cagr, "average_capital_at_risk": None,
-            "average_planned_loss_exposure": avg_risk,
+            "CAGR": cagr, "average_capital_at_risk": avg_risk,
             "average_collateral_used": float(collateral.mean()) if len(collateral) else None,
-            "annualized_return_on_average_capital": None,
+            "annualized_return_on_average_capital": total / float(collateral.mean()) * 365.25 / days if len(collateral) and days > 0 and collateral.mean() else None,
             "max_drawdown": drawdown, "profit_factor": float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() else None,
             "expectancy_per_trade": float(pnl.mean()) if len(pnl) else None, "win_rate": float((pnl > 0).mean()) if len(pnl) else None,
             "trade_count": int(len(pnl)), "average_planned_loss_exposure": avg_risk,
             "peak_planned_loss_exposure": float(risk.max()) if len(risk) else None,
-            "annualized_return_on_average_planned_loss": total / avg_risk * 365.25 / days if avg_risk and days > 0 else None,
-            "annualized_return_on_average_capital": None}
+            "annualized_return_on_average_planned_loss": total / avg_risk * 365.25 / days if avg_risk and days > 0 else None}

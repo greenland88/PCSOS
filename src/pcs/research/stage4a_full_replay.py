@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 import json
 import hashlib
-import os
-import uuid
 import pandas as pd
 
 from pcs.entry.contract_v2 import ENTRY_CONTRACT_V2
@@ -29,45 +27,8 @@ class MarketStateFactory(Protocol):
     def __call__(self, candidate: dict[str, Any]) -> Any: ...
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _strict_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and value in (0, 1):
-        return bool(value)
-    return isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}
-
-
-def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        frame.to_parquet(temp, index=False)
-        if len(pd.read_parquet(temp)) != len(frame):
-            raise RuntimeError("STAGE4A_OUTPUT_VALIDATION_FAILED")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def _atomic_text(value: str, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temp.write_text(value, encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
 def canonical_market_state_factory(path: str | Path = "data/derived/canonical_pit_market_states.parquet") -> MarketStateFactory:
     """Return a fail-closed date-keyed factory for canonical PIT states."""
-    if str(path).replace("\\", "/") == "data/derived/canonical_pit_market_states.parquet":
-        path = REPO_ROOT / path
     frame = pd.read_parquet(path)
     required = {"date", "market_state", "pit_asof", "pit_status"}
     if not required.issubset(frame.columns):
@@ -92,7 +53,7 @@ def canonical_market_state_factory(path: str | Path = "data/derived/canonical_pi
 
 @dataclass(frozen=True)
 class ReplayConfig:
-    output_dir: Path = REPO_ROOT / "research_outputs/stage4a_full_replay_20260820"
+    output_dir: Path = Path("research_outputs/stage4a_full_replay_20260820")
     event_unsupported_state: str = "FUTURE_EVENT_WINDOW_UNSUPPORTED"
 
 
@@ -138,56 +99,15 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     if population.entry_contract_version.ne(ENTRY_CONTRACT_V2).any():
         raise ValueError("CONTRACT_FAILURE: non-v2 candidate row")
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    # Do not load a lifecycle artifact before knowing that a candidate was
-    # accepted.  Rejected/event-unsupported populations must remain auditable
-    # even when no downstream lifecycle artifact exists.
-    portfolio = dict(portfolio or {})
-    portfolio.setdefault("planned_risk", portfolio.get("planned_loss", 0.0))
-    portfolio.setdefault("planned_loss", portfolio.get("planned_risk", 0.0))
-    portfolio.setdefault("bucket_risk", {})
-    portfolio.setdefault("ticker_risk", {})
-    portfolio.setdefault("_reservations", [])
-
-    def release_finished(day: pd.Timestamp) -> None:
-        """Release planned risk after each trade's authoritative exit date."""
-        active = []
-        for reservation in portfolio["_reservations"]:
-            if reservation["end_date"] < day:
-                amount = reservation["amount"]
-                portfolio["planned_loss"] -= amount
-                portfolio["planned_risk"] = portfolio["planned_loss"]
-                bucket = reservation["bucket"]
-                ticker = reservation["ticker"]
-                portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) - amount
-                portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) - amount
-                if portfolio["bucket_risk"][bucket] <= 0:
-                    portfolio["bucket_risk"].pop(bucket, None)
-                if portfolio["ticker_risk"][ticker] <= 0:
-                    portfolio["ticker_risk"].pop(ticker, None)
-            else:
-                active.append(reservation)
-        portfolio["_reservations"] = active
+    if lifecycle_replay is None:
+        from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
+        lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
+    portfolio = portfolio or {"planned_risk": 0, "bucket_risk": {}}
     market_state_factory = market_state_factory or canonical_market_state_factory()
     decisions, opened, results = [], [], []
-
-    def record_failure(row: dict[str, Any], *, status: str, reason: str) -> None:
-        """Replace the existing decision for a candidate, never append a duplicate."""
-        failure = _decision_record(row, status=status, reason=reason)
-        candidate_id = row.get("candidate_id")
-        for index in range(len(decisions) - 1, -1, -1):
-            if decisions[index].get("candidate_id") == candidate_id:
-                decisions[index] = failure
-                return
-        decisions.append(failure)
-
-    ordered = population.sort_values(
-        [c for c in ("date", "ticker", "expiration", "short_strike", "long_strike", "candidate_id") if c in population.columns],
-        kind="mergesort",
-    )
-    for row in ordered.to_dict("records"):
-        release_finished(pd.Timestamp(row["date"]).normalize())
+    for row in population.to_dict("records"):
         event_state = str(row.get("event_state", ""))
-        if event_state == config.event_unsupported_state or not _strict_bool(row.get("historical_replay_eligible", True), default=True):
+        if event_state == config.event_unsupported_state or not bool(row.get("historical_replay_eligible", True)):
             decisions.append(_decision_record(row, status="EVENT_WINDOW_UNSUPPORTED", reason=config.event_unsupported_state, historical_replay_eligible=False)); continue
         support = str(row.get("support_state", ""))
         if support == SupportState.NO_SUPPORT:
@@ -212,56 +132,35 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
             if not accepted:
                 continue
             if lifecycle_replay is None:
-                try:
-                    from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
-                    lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
-                except Exception:
-                    record_failure(row, status="DATA_FAILURE", reason="LIFECYCLE_REPLAYER_UNAVAILABLE")
-                    continue
+                decisions[-1].update({"status": "DATA_FAILURE", "reason": "LIFECYCLE_REPLAYER_UNAVAILABLE", "accepted": False})
+                continue
             opened_id = hashlib.sha256("|".join(map(str, _identity(row))).encode()).hexdigest()[:24]
             trade = {**row, "opened_trade_id": opened_id}
             lifecycle = lifecycle_replay(trade)
             if lifecycle.get("identity") not in (None, _identity(row)):
-                record_failure(row, status="IDENTITY_FAILURE", reason="STAGE4A_ACCEPTED_SPREAD_IDENTITY_MISMATCH"); continue
+                decisions[-1].update({"status": "IDENTITY_FAILURE", "reason": "STAGE4A_ACCEPTED_SPREAD_IDENTITY_MISMATCH", "accepted": False}); continue
             opened.append(trade); results.append({**trade, **lifecycle})
-            reserved = float(getattr(decision, "planned_loss", 0.0) or getattr(decision, "planned_risk", 0.0) or 0.0)
-            portfolio["planned_loss"] += reserved
-            portfolio["planned_risk"] = portfolio["planned_loss"]
-            bucket = str(row.get("correlation_bucket", "UNKNOWN"))
-            portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
-            ticker = str(row.get("ticker", "UNKNOWN")).upper()
-            portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
-            lifecycle_end = lifecycle.get("exit_date") or lifecycle.get("authoritative_exit_date") or row.get("expiration")
-            portfolio["_reservations"].append({"amount": reserved, "bucket": bucket,
-                                                "ticker": ticker,
-                                                "end_date": pd.Timestamp(lifecycle_end).normalize()})
         except Exception as exc:
             from pcs.research.stage4a_lifecycle import LifecycleAdapterError
             status = "DATA_FAILURE" if isinstance(exc, LifecycleAdapterError) else "CONTRACT_FAILURE"
-            record_failure(row, status=status, reason=str(exc))
+            decisions.append(_decision_record(row, status=status, reason=str(exc)))
     decisions_df, opened_df, results_df = map(pd.DataFrame, (decisions, opened, results))
-    _atomic_parquet(decisions_df, config.output_dir / "stage4a_candidate_decisions.parquet")
-    _atomic_parquet(opened_df, config.output_dir / "stage4a_opened_trades.parquet")
-    _atomic_parquet(results_df, config.output_dir / "stage4a_trade_results.parquet")
+    decisions_df.to_parquet(config.output_dir / "stage4a_candidate_decisions.parquet", index=False)
+    opened_df.to_parquet(config.output_dir / "stage4a_opened_trades.parquet", index=False)
+    results_df.to_parquet(config.output_dir / "stage4a_trade_results.parquet", index=False)
     summary = {"rows": len(population), "decisions": len(decisions_df), "opened": len(opened_df), "results": len(results_df), "decision_engine_evaluated": int((decisions_df.status == "REPLAYED").sum()) if len(decisions_df) else 0, "annualized": annualized_performance_metrics(results_df)}
-    _atomic_text(json.dumps(summary, indent=2, default=str), config.output_dir / "stage4a_entry_funnel.json")
+    (config.output_dir / "stage4a_entry_funnel.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     if len(decisions_df):
         ticker_summary = decisions_df.groupby("ticker", as_index=False).agg(
             frozen=("candidate_id", "size"), decision_engine_evaluated=("status", lambda s: int((s == "REPLAYED").sum())),
             accepted=("accepted", "sum"), rejected=("accepted", lambda s: int((~s.fillna(False)).sum())))
     else:
         ticker_summary = pd.DataFrame(columns=["ticker", "frozen", "decision_engine_evaluated", "accepted", "rejected"])
-    csv_temp = config.output_dir / f".stage4a_ticker_summary.{uuid.uuid4().hex}.tmp"
-    try:
-        ticker_summary.to_csv(csv_temp, index=False)
-        os.replace(csv_temp, config.output_dir / "stage4a_ticker_summary.csv")
-    finally:
-        csv_temp.unlink(missing_ok=True)
-    _atomic_text(
+    ticker_summary.to_csv(config.output_dir / "stage4a_ticker_summary.csv", index=False)
+    (config.output_dir / "stage4a_full_replay_report.md").write_text(
         "# Stage 4A Full Replay\n\n" + json.dumps(summary, indent=2, default=str) +
-        "\n\nThis report is produced by the canonical orchestration boundary.\n",
-        config.output_dir / "stage4a_full_replay_report.md")
-    _atomic_text(json.dumps({"candidate_ids_unique": bool(decisions_df.candidate_id.is_unique) if len(decisions_df) else True, "opened_trade_ids_unique": bool(opened_df.opened_trade_id.is_unique) if len(opened_df) else True, "entry_contract_version": ENTRY_CONTRACT_V2}, indent=2), config.output_dir / "stage4a_validation.json")
+        "\n\nThis report is produced by the canonical orchestration boundary.\n", encoding="utf-8")
+    (config.output_dir / "stage4a_validation.json").write_text(json.dumps({"candidate_ids_unique": bool(decisions_df.candidate_id.is_unique) if len(decisions_df) else True, "opened_trade_ids_unique": bool(opened_df.opened_trade_id.is_unique) if len(opened_df) else True, "entry_contract_version": ENTRY_CONTRACT_V2}, indent=2), encoding="utf-8")
     return summary
 
 

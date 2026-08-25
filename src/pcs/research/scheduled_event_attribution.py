@@ -3,7 +3,6 @@ from pathlib import Path
 import numpy as np, pandas as pd
 from .path_risk_validation import OUT
 from .scheduled_event_calendar import load_calendar, EVENT_TYPE_ALIASES
-from pcs.data.access import PCSDataAccess
 
 ROOT=Path(__file__).resolve().parents[3]
 CAL=ROOT/"research_outputs"/"scheduled_events_v1"/"scheduled_event_calendar_v1.csv"
@@ -14,7 +13,7 @@ def _trades():
     d["stop"]=d.exit_reason.eq("STOP"); d["profit50"]=d.exit_reason.eq("PROFIT50"); d["profit70"]=np.nan
     return d
 
-def _tag(d,cal, sessions_by_symbol):
+def _tag(d,cal):
     d=d.copy(); cal=cal.copy(); cal.event_type=cal.event_type.replace(EVENT_TYPE_ALIASES); cal.event_date=pd.to_datetime(cal.event_date)
     for et,key in [("EARNINGS","ER"),("FOMC","FOMC"),("CPI","CPI"),("NFP_EMPLOYMENT","NFP")]:
         vals=[]; known=[]
@@ -23,33 +22,14 @@ def _tag(d,cal, sessions_by_symbol):
             if et=="EARNINGS": ev=ev[ev.symbol.eq(r.symbol)]
             dates=pd.DatetimeIndex(ev.event_date)
             vals.append(dates); known.append(ev)
-        def inside_horizon(events, row, horizon):
-            sessions = sessions_by_symbol.get(str(row.symbol).upper())
-            if sessions is None:
-                return False
-            entry = pd.Timestamp(row.date).normalize()
-            positions = sessions.searchsorted(entry)
-            if positions >= len(sessions) or sessions[positions] != entry:
-                return False
-            cutoff_index = min(positions + horizon - 1, len(sessions) - 1)
-            return bool(events.size and events[0] <= sessions[cutoff_index])
-        for h in (3,5,10): d[f"{key}_inside_{h}d"]=[inside_horizon(x,r,h) for x,r in zip(vals,d.itertuples())]
+        for h in (3,5,10): d[f"{key}_inside_{h}d"]=[bool(x.size and x[0] <= r.date+pd.offsets.BDay(h-1)) for x,r in zip(vals,d.itertuples())]
         d[f"{key}_inside_DTE"]=[bool(x.size and x[0] <= r.expiration) for x,r in zip(vals,d.itertuples())]
         d[f"days_to_next_{key}"]=[(x[0]-r.date).days if x.size else np.nan for x,r in zip(vals,d.itertuples())]
     for h in (3,5,10):
         cols=[f"{k}_inside_{h}d" for k in ("ER","FOMC","CPI","NFP")]; d[f"scheduled_event_count_{h}d"]=d[cols].sum(axis=1); d[f"ANY_SCHEDULED_EVENT_inside_{h}d"]=d[f"scheduled_event_count_{h}d"].gt(0)
     cols=[f"{k}_inside_DTE" for k in ("ER","FOMC","CPI","NFP")]; d["scheduled_event_count_DTE"]=d[cols].sum(axis=1); d["ANY_SCHEDULED_EVENT_inside_DTE"]=d["scheduled_event_count_DTE"].gt(0)
     shocks=pd.read_csv(SHOCK,parse_dates=["event_date"]).event_date if SHOCK.exists() else pd.Series(dtype="datetime64[ns]")
-    def shock_inside(row):
-        sessions = sessions_by_symbol.get(str(row.symbol).upper())
-        if sessions is None:
-            return False
-        entry = pd.Timestamp(row.date).normalize(); pos = sessions.searchsorted(entry)
-        if pos >= len(sessions) or sessions[pos] != entry:
-            return False
-        cutoff = sessions[min(pos + 9, len(sessions) - 1)]
-        return bool(((shocks >= entry) & (shocks <= cutoff)).any())
-    d["realized_shock_inside_10d"]=[shock_inside(r) for r in d.itertuples()]
+    d["realized_shock_inside_10d"]=[bool(((shocks>=r.date)&(shocks<=r.date+pd.offsets.BDay(9))).any()) for r in d.itertuples()]
     return d
 
 def _stats(g):
@@ -63,14 +43,7 @@ def _groups(d, col):
     return pd.DataFrame(rows)
 
 def run(output_dir=OUT):
-    output_dir=Path(output_dir)
-    # Keep attribution on the same validated, source-versioned calendar as
-    # replay.  A raw read here used to bypass the calendar contract and could
-    # silently accept an unversioned or malformed event file.
-    calendar = load_calendar(CAL)
-    trades = _trades(); access = PCSDataAccess()
-    sessions_by_symbol = {symbol: pd.DatetimeIndex(pd.to_datetime(access.read_prices(symbol)["date"]).dt.normalize().drop_duplicates().sort_values()) for symbol in trades.symbol.dropna().astype(str).str.upper().unique()}
-    d=_tag(trades, calendar, sessions_by_symbol)
+    output_dir=Path(output_dir); d=_tag(_trades(),pd.read_csv(CAL,parse_dates=["event_date"]))
     r1=d[d.risk_state.eq("R1_NORMAL")]
     tables={"tagged_trades":d}
     rows=[{"group":"R1 ALL",**_stats(r1)}]

@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import yaml
 
-DEFAULT_UNIVERSE_PATH = Path(__file__).resolve().parents[3] / "config/market_universe.yaml"
+DEFAULT_UNIVERSE_PATH = Path("config/market_universe.yaml")
 
 def _symbols(value, group):
     if not isinstance(value, list) or any(not isinstance(x, str) or not x.strip() for x in value):

@@ -14,8 +14,6 @@ import pandas as pd
 CALENDAR_VERSION = "scheduled_events_v0.1"
 EVENT_TYPES = ("EARNINGS", "FOMC", "CPI", "NFP_EMPLOYMENT")
 EVENT_TYPE_ALIASES = {"FOMC_POLICY_DECISION":"FOMC", "CPI_RELEASE":"CPI", "EMPLOYMENT_SITUATION":"NFP_EMPLOYMENT"}
-def _known_at_entry(value) -> bool:
-    return value is True or value == 1 or (isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"})
 RAW_EVENT_DIRS = {"FOMC":"fomc", "CPI":"cpi", "NFP_EMPLOYMENT":"employment", "EARNINGS":"earnings"}
 
 CALENDAR_COLUMNS = [
@@ -70,12 +68,7 @@ def validate_events(events: pd.DataFrame) -> pd.DataFrame:
         try: pd.Timestamp(r.event_date)
         except Exception: issues.append("INVALID_DATE")
         if r.event_type not in valid_types: issues.append("INVALID_EVENT_TYPE")
-        # Earnings are ticker-scoped; do not maintain a closed list of three
-        # issuers.  Known broad ETFs are not issuers, while any otherwise
-        # well-formed ticker (including newly onboarded MSFT) is admissible.
-        non_issuer_symbols = {"SPY", "QQQ", "SOXX"}
-        if r.event_type == "EARNINGS" and (pd.isna(r.symbol) or not str(r.symbol).strip() or str(r.symbol).upper() in non_issuer_symbols):
-            issues.append("INVALID_EARNINGS_SYMBOL")
+        if r.event_type == "EARNINGS" and r.symbol not in {"NVDA","AMZN","TSLA"}: issues.append("INVALID_EARNINGS_SYMBOL")
         if r.get("session") not in valid_sessions and pd.notna(r.get("session")): issues.append("INVALID_SESSION")
         findings.append({"row":i,"validation_status":"PASS" if not issues else "FAIL","issues":";".join(issues)})
     out=pd.DataFrame(findings)
@@ -187,38 +180,25 @@ def tag_entry_dates(trades: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFram
     out = trades.copy()
     out["entry_date"] = pd.to_datetime(out.entry_date).dt.normalize()
     out["expiration"] = pd.to_datetime(out.expiration).dt.normalize()
-    if "symbol" in out:
-        out["symbol"] = out.symbol.astype(str).str.upper()
-    knowledge_column = next((c for c in ("event_date_known_at_entry", "known_at_entry") if c in calendar.columns), None)
-    knowledge_proven = (knowledge_column is not None
-                        and calendar[knowledge_column].map(_known_at_entry).all())
     for et in EVENT_TYPES:
-        nexts=[]; dte_flags=[]
+        dates = pd.DatetimeIndex(calendar.loc[calendar.event_type.eq(et), "event_date"])
+        nexts=[]
         for _, row in out.iterrows():
-            event_rows = calendar[calendar.event_type.eq(et)]
-            if et == "EARNINGS" and "symbol" in out and "symbol" in event_rows:
-                event_rows = event_rows[(event_rows.symbol.isna()) | (event_rows.symbol.astype(str).str.upper() == row.symbol)]
-            if knowledge_column is not None:
-                event_rows = event_rows[event_rows[knowledge_column].map(_known_at_entry)]
-            elif bool(calendar.attrs.get("historical_pit_required", False)):
-                # A PIT calendar without explicit knowledge evidence cannot
-                # contribute historical event features.
-                event_rows = event_rows.iloc[0:0]
-            dates = (pd.DatetimeIndex(event_rows.event_date)
-                     if not event_rows.empty else pd.DatetimeIndex([]))
             future = dates[dates >= row.entry_date]
             nexts.append((future[0] - row.entry_date).days if len(future) else pd.NA)
-            dte_flags.append(bool(((dates >= row.entry_date) & (dates <= row.expiration)).any()))
         key = "ER" if et == "EARNINGS" else ("NFP" if et == "NFP_EMPLOYMENT" else et)
         out[f"days_to_next_{key}"] = nexts
         for h in (3, 5, 10):
             out[f"{key}_inside_{h}d"] = out[f"days_to_next_{key}"].le(h-1)
-        out[f"{key}_inside_DTE"] = dte_flags
+        out[f"{key}_inside_DTE"] = [
+            bool((dates[(dates >= r.entry_date) & (dates <= r.expiration)]).size)
+            for _, r in out.iterrows()
+        ]
     flags = [c for c in out.columns if c.endswith("_inside_5d") or c.endswith("_inside_10d") or c.endswith("_inside_DTE")]
     out["scheduled_event_count_5d"] = out[[c for c in flags if c.endswith("_inside_5d")]].sum(axis=1)
     out["scheduled_event_count_10d"] = out[[c for c in flags if c.endswith("_inside_10d")]].sum(axis=1)
     out["scheduled_event_count_DTE"] = out[[c for c in flags if c.endswith("_inside_DTE")]].sum(axis=1)
-    out["event_feature_class"] = "PRE_ENTRY_KNOWN" if knowledge_proven else "PIT_KNOWLEDGE_UNPROVEN"
+    out["event_feature_class"] = "PRE_ENTRY_KNOWN"
     return out
 
 

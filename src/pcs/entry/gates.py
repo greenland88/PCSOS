@@ -20,20 +20,17 @@ class GateResult:
 
 
 class EventGate:
-    def __init__(self, trading_sessions=None):
-        self.trading_sessions = trading_sessions
-
     def evaluate(self, candidate, calendar=None) -> GateResult:
         risk = int(getattr(candidate, "event_risk", 0))
         if calendar is None:
             return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_UNAVAILABLE",))
-        pit_required = bool(getattr(calendar, "attrs", {}).get("historical_pit_required", False))
-        if pit_required:
-            known_column = next((c for c in ("event_date_known_at_entry", "known_at_entry") if c in calendar.columns), None)
-            if known_column is None:
-                return GateResult("event", GateStatus.FAIL, ("EVENT_PIT_METADATA_UNAVAILABLE",))
-            if self.trading_sessions is None:
-                return GateResult("event", GateStatus.FAIL, ("EVENT_TRADING_CALENDAR_UNAVAILABLE",))
+        if calendar.empty:
+            return GateResult("event", GateStatus.PASS)
+        if "event_date_known_at_entry" not in calendar.columns:
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_PIT_METADATA_MISSING",))
+        known = calendar["event_date_known_at_entry"].astype(str).str.upper()
+        if not known.isin({"YES", "TRUE", "1"}).all():
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_PIT_METADATA_UNVERIFIED",))
         if risk > 0:
             return GateResult("event", GateStatus.FAIL, ("EVENT_RISK_PRESENT",))
         try:
@@ -41,13 +38,6 @@ class EventGate:
             entry = pd.Timestamp(getattr(candidate, "entry_date", None))
             expiry = pd.Timestamp(candidate.expiration)
             rows = calendar[(calendar.event_type == "EARNINGS") & ((calendar.symbol == candidate.ticker) | calendar.symbol.isna())]
-            if pit_required:
-                known = rows[known_column].map(
-                    lambda value: value is True or value == 1
-                    or (isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"})
-                )
-                if not known.all():
-                    return GateResult("event", GateStatus.FAIL, ("EVENT_PIT_KNOWLEDGE_UNPROVEN",))
             for date in pd.to_datetime(rows.event_date).dt.normalize():
                 # Historical events strictly before entry cannot create either
                 # expiration exposure or a new-entry blackout.
@@ -55,11 +45,15 @@ class EventGate:
                     continue
                 if entry <= date <= expiry:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_EARNINGS_CROSSING",))
-                sessions = self.trading_sessions
+                if date > expiry:
+                    continue
+                sessions = getattr(candidate, "trading_sessions", None)
                 if sessions is None:
-                    return GateResult("event", GateStatus.FAIL, ("EVENT_TRADING_CALENDAR_UNAVAILABLE",))
-                session_index = pd.DatetimeIndex(sessions).normalize()
-                distance = int(((session_index > entry) & (session_index <= date)).sum())
+                    return GateResult("event", GateStatus.FAIL, ("TRADING_SESSION_CALENDAR_UNAVAILABLE",))
+                session_index = pd.DatetimeIndex(pd.to_datetime(sessions)).normalize()
+                if entry not in session_index or date not in session_index:
+                    return GateResult("event", GateStatus.FAIL, ("TRADING_SESSION_CALENDAR_INVALID",))
+                distance = int(session_index.get_loc(date)) - int(session_index.get_loc(entry))
                 if 0 <= distance <= 3:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_PRE_EARNINGS_BLACKOUT",))
         except Exception:
@@ -138,8 +132,6 @@ class CreditEfficiencyGate:
     def evaluate(self, candidate) -> GateResult:
         width = candidate.short_strike - candidate.long_strike
         ratio = candidate.credit / width if width > 0 else 0.0
-        if candidate.credit <= 0:
-            return GateResult("credit_efficiency", GateStatus.FAIL, ("CREDIT_NOT_POSITIVE",), {"ratio": ratio})
         minimum = self.rules.get("min_credit_width_ratio")
         if minimum is None: return GateResult("credit_efficiency", GateStatus.PASS, ("CREDIT_FLOOR_NOT_ACTIVATED",), {"ratio": ratio})
         return GateResult("credit_efficiency", GateStatus.PASS if ratio >= minimum else GateStatus.FAIL,
@@ -154,8 +146,8 @@ class PortfolioRiskGate:
 
 
 class HardGatePipeline:
-    def __init__(self, rules, trading_sessions=None):
-        self.regime = RegimeGate(rules); self.event = EventGate(trading_sessions=trading_sessions); self.dte = DTEGate(rules); self.liquidity = LiquidityGate(rules)
+    def __init__(self, rules):
+        self.regime = RegimeGate(rules); self.event = EventGate(); self.dte = DTEGate(rules); self.liquidity = LiquidityGate(rules)
         self.safe_strike = SafeStrikeGate(rules); self.credit = CreditEfficiencyGate(rules); self.portfolio = PortfolioRiskGate(rules)
     def evaluate(self, candidate, portfolio_snapshot, regime=None, event_calendar=None, entry_context=None) -> tuple[GateResult, ...]:
         results = ([] if regime is None else [self.regime.evaluate(regime, entry_context)]) + [self.event.evaluate(candidate, event_calendar), self.safe_strike.evaluate(candidate), self.dte.evaluate(candidate), self.liquidity.evaluate(candidate), self.credit.evaluate(candidate), self.portfolio.evaluate(portfolio_snapshot)]

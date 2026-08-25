@@ -1,0 +1,3 @@
+scenario_id: RESEARCH_CURRENT_RULES_EVENT_DISABLED
+base_scenario: RESEARCH_CURRENT_RULES_AVAILABLE_CONTEXT
+disabled_rules: [event_gate]

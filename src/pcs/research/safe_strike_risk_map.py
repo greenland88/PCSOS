@@ -19,16 +19,15 @@ from .batch_trend_history_fast import build_fast_batch_trend_history
 DEVELOPMENT_13 = "NVDA QQQ AMZN TSLA AAPL MSFT META GOOGL AVGO AMD INTC MU AMAT".split()
 BATCH_A = "SPY SMH XLK XLF XLE IWM GLD TLT JPM BAC GS XOM CAT BA GE COST HD DIS NFLX CRM ORCL CSCO TSM MRVL LLY UNH COIN HOOD F GM".split()
 SYMBOLS = list(dict.fromkeys(DEVELOPMENT_13 + BATCH_A))
-REPO_ROOT = Path(__file__).resolve().parents[3]
 ETF_GROUP = set("SPY QQQ SMH XLK XLF XLE IWM".split())
 HIGH_VOL_GROUP = set("NVDA AMD TSLA COIN HOOD MU".split())
 
 BUFFERS = (1.5, 2.0, 2.5, 3.0)
 HORIZONS = (5, 10, 20)
 
-OUT = REPO_ROOT / "research_outputs/safe_strike_risk_map_v0_1"
+OUT = Path("research_outputs/safe_strike_risk_map_v0_1")
 TREND_OUT = OUT / "trend_histories"
-DAILY_DIR = REPO_ROOT / "data/parquet/daily"
+DAILY_DIR = Path("data/parquet/daily")
 
 
 def _daily(symbol: str) -> pd.DataFrame:

@@ -39,7 +39,7 @@ def run(symbol: str, year: int, quarter: int, *, archive_root: str, root: str, m
             return pq.ParquetFile(path).read().to_pandas()[OPTION_FIELDS]
 
     access = PCSDataAccess(manifest_path=manifest, parquet_root=root)
-    return onboard_ticker(symbol, [(year, quarter)], loader, adapter=adapter, access=access, dataset="options_v2")
+    return onboard_ticker(symbol, [(year, quarter)], loader, adapter=adapter, access=access, dataset="options")
 
 
 def main():

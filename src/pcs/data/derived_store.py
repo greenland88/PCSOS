@@ -1,19 +1,9 @@
 """Versioned persistence for reusable derived features and research results."""
 from datetime import datetime, timezone
 from pathlib import Path
-import os
-import uuid
 import json
 import pandas as pd
 from .access import PCSDataAccess
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
-def _root_path(root):
-    path = Path(root)
-    if str(root).replace("\\", "/") in {"data/parquet/derived", "data/parquet/research"}:
-        return _REPO_ROOT / path
-    return path
 
 DERIVED_SCHEMAS = {
     "daily_indicators": {"key": ["symbol", "date"], "version_fields": ["calculation_version", "source_data_version", "created_at"]},
@@ -23,7 +13,7 @@ DERIVED_SCHEMAS = {
 }
 
 def _access(root):
-    root=_root_path(root)
+    root=Path(root)
     return PCSDataAccess(manifest_path=root / ".storage_manifest.csv", parquet_root=root.parent)
 
 def _stamp(df, metadata):
@@ -35,12 +25,10 @@ def _stamp(df, metadata):
 def write_derived(df, dataset, root="data/parquet/derived", metadata=None):
     if dataset not in DERIVED_SCHEMAS: raise ValueError(f"unknown derived dataset: {dataset}")
     metadata=metadata or {}; out=_stamp(df,metadata); name=f"{dataset}_{metadata.get('symbol','multi')}_{metadata.get('calculation_version',metadata.get('trend_engine_version','v1'))}.parquet"
-    resolved = _root_path(root)
-    return _access(root).write_artifact(out, dataset, name, root=resolved)
+    return _access(root).write_artifact(out, dataset, name, root=Path(root))
 
 def read_derived(dataset, root="data/parquet/derived", filters=None):
-    root = _root_path(root)
-    paths=sorted((root/dataset).glob("*.parquet"));
+    paths=sorted((Path(root)/dataset).glob("*.parquet"));
     if not paths:return pd.DataFrame()
     access=_access(root)
     out=pd.concat([access.read_artifact(dataset,p.name,root=Path(root)) for p in paths],ignore_index=True)
@@ -48,65 +36,22 @@ def read_derived(dataset, root="data/parquet/derived", filters=None):
     return out.reset_index(drop=True)
 
 def cache_matches(dataset, filters, versions, root="data/parquet/derived"):
-    schema = DERIVED_SCHEMAS.get(dataset)
-    if schema is None:
-        return False
-    required_versions = [field for field in schema["version_fields"] if field != "created_at"]
-    # Cache callers must declare every identity component.  A partial query
-    # is not evidence that the source/configuration used to build the artifact
-    # is still current.
-    if any(field not in versions for field in required_versions):
-        return False
     out=read_derived(dataset,root,filters)
-    if out.empty:
-        return False
-    if any(field not in out.columns for field in required_versions + ["created_at"]):
-        return False
-    for key, value in versions.items():
-        if key not in out.columns:
-            return False
-        if not out[key].eq(value).all():
-            return False
-    return True
+    return not out.empty and all(k in out.columns and out[k].eq(v).all() for k,v in versions.items())
 
 def write_research_run(record, path="data/manifests/research_runs.csv"):
-    target = (_REPO_ROOT / path if str(path).replace("\\", "/") == "data/manifests/research_runs.csv" else Path(path))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    run_id = str(record["run_id"])
-    with PCSDataAccess._file_lock(target):
-        current = pd.read_csv(target) if target.exists() else pd.DataFrame()
-        incoming = pd.DataFrame([record])
-        if "run_id" in current.columns:
-            current = current[current.run_id.astype(str) != run_id]
-        columns = list(dict.fromkeys([*current.columns.tolist(), *incoming.columns.tolist()]))
-        updated = pd.concat([current.reindex(columns=columns), incoming.reindex(columns=columns)], ignore_index=True)
-        csv_tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            updated.to_csv(csv_tmp, index=False)
-            os.replace(csv_tmp, target)
-        finally:
-            csv_tmp.unlink(missing_ok=True)
-        json_dir = target.parent / "research_runs"
-        json_dir.mkdir(parents=True, exist_ok=True)
-        json_target = json_dir / f"{run_id}.json"
-        json_tmp = json_target.with_name(f".{json_target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            json_tmp.write_text(json.dumps(record, default=str, sort_keys=True), encoding="utf-8")
-            os.replace(json_tmp, json_target)
-        finally:
-            json_tmp.unlink(missing_ok=True)
-    return run_id
+    fields=list(record); target=Path(path); target.parent.mkdir(parents=True,exist_ok=True)
+    frame=pd.DataFrame([record]); frame.to_csv(target,mode="a",header=not target.exists(),index=False)
+    json_dir=target.parent/"research_runs"; json_dir.mkdir(parents=True,exist_ok=True); (json_dir/f"{record['run_id']}.json").write_text(json.dumps(record,default=str,sort_keys=True),encoding="utf-8"); return record["run_id"]
 
 def write_backtest_trades(trades, run_id, root="data/parquet/research"):
     rows=[]
     for trade in trades:
         row={k:v for k,v in trade.items() if k!="events"}; row["run_id"]=run_id
         events=trade.get("events",{}); row.update({f"{k}_date":v for k,v in events.items()}); rows.append(row)
-    resolved = _root_path(root)
-    return _access(root).write_artifact(pd.DataFrame(rows), "pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=resolved)
+    return _access(root).write_artifact(pd.DataFrame(rows), "pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=Path(root))
 
 def read_backtest_trades(run_id, root="data/parquet/research"):
-    root = _root_path(root)
-    path=root/"pcs_backtest_trades"/f"run_id={run_id}"/"trades.parquet"
+    path=Path(root)/"pcs_backtest_trades"/f"run_id={run_id}"/"trades.parquet"
     if not path.exists(): return pd.DataFrame()
-    return _access(root).read_artifact("pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=root)
+    return _access(root).read_artifact("pcs_backtest_trades", f"run_id={run_id}/trades.parquet", root=Path(root))

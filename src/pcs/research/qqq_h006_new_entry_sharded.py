@@ -9,13 +9,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import json, os
-import hashlib
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
 from pcs.data.price_basis import load_corporate_actions, PriceBasis
-from pcs.trend.config import TrendIndicatorConfig
-from pcs.trend.indicators import calculate_base_indicators
 from pcs.research.current_strategy_replay import build_lifecycle_quote_rows, validate_lifecycle_corporate_action, _identity
 from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, LifecycleAdapterError
 from pcs.research.variant_b_replay import ReplayPolicy
@@ -23,71 +20,10 @@ from pcs.research.variant_b_replay import ReplayPolicy
 YEARS = (2020, 2021, 2022, 2023)
 MODULE = "pcs.research.qqq_h006_new_entry_sharded"
 
-_SHARD_COLUMNS = {
-    "trade_date", "ticker", "pit_feature_ready", "signal_date",
-    "option_chain_available", "contract_selected", "lifecycle_completed",
-    "reason_code",
-}
-
-
-def _atomic_json(path: Path, value: dict) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
-    os.replace(temp, path)
-
-def _file_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-def _valid_shard_output(path: Path, summary: dict) -> bool:
-    if not path.is_file() or not isinstance(summary.get("rows"), int):
-        return False
-    if summary.get("output_sha256") != _file_digest(path):
-        return False
-    try:
-        frame = pd.read_parquet(path)
-    except Exception:
-        return False
-    if len(frame) != summary["rows"] or not _SHARD_COLUMNS.issubset(frame.columns):
-        return False
-    dates = pd.to_datetime(frame["trade_date"], errors="coerce")
-    return (
-        frame["ticker"].astype(str).eq("QQQ").all()
-        and dates.notna().all()
-        and dates.dt.year.eq(int(summary.get("year", -1))).all()
-        and not frame.duplicated(["trade_date", "ticker"]).any()
-    )
-
-def _shard_identity(year: int) -> dict:
-    access = PCSDataAccess()
-    daily = access.resolve_source("daily", "QQQ", "2010-01-01", f"{year}-12-31")
-    options = access.resolve_source("options", "QQQ", f"{year}-01-01", f"{year}-12-31")
-    repo = Path(__file__).resolve().parents[3]
-    code = Path(__file__).resolve()
-    dependencies = {
-        "shard_runner": code,
-        "current_strategy_replay": repo / "src/pcs/research/current_strategy_replay.py",
-        "lifecycle_adapter": repo / "src/pcs/research/stage4a_lifecycle.py",
-        "price_basis": repo / "src/pcs/data/price_basis.py",
-    }
-    payload = {"module": MODULE, "version": "v1", "year": int(year),
-               "daily_source_version": daily.source_version,
-               "options_source_version": options.source_version,
-               "implementation_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest()
-                                         for name, path in dependencies.items()},
-               "corporate_actions_sha256": hashlib.sha256(
-                   (repo / "config/data/corporate_actions.csv").read_bytes()).hexdigest()
-               if (repo / "config/data/corporate_actions.csv").is_file() else "MISSING"}
-    payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-    return payload
-
 def _atr14(d):
-    # Match the canonical production trend ATR (Wilder smoothing).  A plain
-    # rolling TR mean changes the same 2.3-ATR safe-strike rule.
-    return calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
+    prev = d.close.shift(1)
+    tr = pd.concat([(d.high-d.low), (d.high-prev).abs(), (d.low-prev).abs()], axis=1).max(axis=1)
+    return tr.rolling(14, min_periods=14).mean()
 
 def _features(d):
     d=d.sort_values("date").copy(); d["atr14"]=_atr14(d)
@@ -97,15 +33,7 @@ def _features(d):
 
 def _one_year(year: int, root: Path) -> dict:
     target=root/f"shard_{year}.parquet"; summary=target.with_suffix(".json")
-    if target.exists() and summary.exists():
-        try:
-            prior = json.loads(summary.read_text())
-            if (prior.get("shard_identity") == _shard_identity(year)
-                    and prior.get("status") == "COMPLETED"
-                    and _valid_shard_output(target, prior)):
-                return prior
-        except Exception:
-            pass
+    if target.exists() and summary.exists(): return json.loads(summary.read_text())
     access=PCSDataAccess(); daily=access.read_prices("QQQ",f"{year}-01-01",f"{year}-12-31").copy()
     daily.date=pd.to_datetime(daily.date).dt.normalize(); all_daily=access.read_prices("QQQ","2010-01-01",f"{year}-12-31").copy(); all_daily.date=pd.to_datetime(all_daily.date).dt.normalize()
     f=_features(all_daily); f=f[f.date.dt.year.eq(year)].copy(); rows=[]; lifecycle_rows=[]; registry=load_corporate_actions()
@@ -156,21 +84,12 @@ def _one_year(year: int, root: Path) -> dict:
         if results:
             rr=pd.DataFrame(results); out=out[~out.trade_date.isin(rr.trade_date)].copy(); out=pd.concat([out,rr],ignore_index=True)
     out=out.sort_values("trade_date"); tmp=target.with_suffix(".tmp.parquet"); out.to_parquet(tmp,index=False); os.replace(tmp,target)
-    option_failures = int(out.reason_code.eq("OPTION_READ_FAIL").sum())
-    lifecycle_failures = int(out.reason_code.eq("LIFECYCLE_FAIL").sum())
-    shard_status = "COMPLETED" if option_failures == 0 and lifecycle_failures == 0 else "BLOCKED_INCOMPLETE_CANONICAL_REPLAY"
-    counts={"year":year,"rows":len(out),"signal_dates":int(out.signal_date.sum()),"option_data_available":int(out.option_chain_available.sum()),"contract_selected":int(out.contract_selected.sum()),"lifecycle_completed":int(out.lifecycle_completed.sum()),"option_read_failures":option_failures,"lifecycle_failures":lifecycle_failures,"status":shard_status,"shard_identity":_shard_identity(year)}
+    counts={"year":year,"rows":len(out),"signal_dates":int(out.signal_date.sum()),"option_data_available":int(out.option_chain_available.sum()),"contract_selected":int(out.contract_selected.sum()),"lifecycle_completed":int(out.lifecycle_completed.sum())}
     for code in ["NO_OPTION_DATA","NO_DTE","NO_SAFE_STRIKE","LIQUIDITY_FAIL","CREDIT_FAIL","CONTRACT_FAIL","LIFECYCLE_FAIL"]: counts[code]=int(out.reason_code.eq(code).sum())
-    counts["output_sha256"] = _file_digest(target)
-    _atomic_json(summary, counts); return counts
+    summary.write_text(json.dumps(counts,indent=2,default=str),encoding="utf-8"); return counts
 
 def run(output_dir="research_outputs/qqq_entry_discovery_agent_v1_h006_timing_train/shards", workers=4):
-    root=Path(output_dir)
-    if not root.is_absolute(): root=Path(__file__).resolve().parents[3]/root
-    root.mkdir(parents=True,exist_ok=True); workers=min(8,max(1,int(workers)))
+    root=Path(output_dir); root.mkdir(parents=True,exist_ok=True); workers=min(8,max(1,int(workers)))
     with ThreadPoolExecutor(max_workers=workers) as pool: parts=list(pool.map(lambda y:_one_year(y,root),YEARS))
-    if any(part.get("status") != "COMPLETED" for part in parts):
-        return {"module":MODULE,"version":"v1","status":"BLOCKED_INCOMPLETE_CANONICAL_REPLAY","data_source":"PCS_CANONICAL_DATA","workers":workers,"shards":parts,"rows":0,"final_oos_read":False,"validation_read":False,"production_changes":False}
-    frames=[pd.read_parquet(root/f"shard_{y}.parquet") for y in YEARS]; merged=pd.concat(frames,ignore_index=True).sort_values(["trade_date","ticker"])
-    merged_tmp=root/".merged.parquet.tmp"; merged.to_parquet(merged_tmp,index=False); os.replace(merged_tmp,root/"merged.parquet")
+    frames=[pd.read_parquet(root/f"shard_{y}.parquet") for y in YEARS]; merged=pd.concat(frames,ignore_index=True).sort_values(["trade_date","ticker"]); merged.to_parquet(root/"merged.parquet",index=False)
     return {"module":MODULE,"version":"v1","status":"COMPLETED","data_source":"PCS_CANONICAL_DATA","workers":workers,"shards":parts,"rows":len(merged),"final_oos_read":False,"validation_read":False,"production_changes":False}

@@ -11,7 +11,7 @@ class OpportunityScorer:
         total = sum(getattr(breakdown, k) * w for k, w in self.weights.items())
         if regime == Regime.RED:
             return total, SizeClass.HALF
-        if total >= self.rules["scoring"].get("top_quality_threshold", 92) and regime == Regime.GREEN:
+        if total >= 92 and regime == Regime.GREEN:
             return total, SizeClass.TWO
         if total >= self.rules["scoring"]["highest_quality_threshold"]:
             return total, SizeClass.ONE_HALF

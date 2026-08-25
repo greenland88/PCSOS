@@ -1,9 +1,6 @@
 import argparse
-import argparse
 import json
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from pcs.collectors.option_chain_snapshot import OptionChainSnapshotCollector
 from pcs.data.storage import ParquetStore
@@ -95,23 +92,23 @@ def main():
 
     collect = sub.add_parser("collect-options", help="write read-only option-chain snapshots to Parquet")
     collect.add_argument("--hood-json", help="local exported Hood payload JSON; omit to use MockProvider")
-    collect.add_argument("--data-root", default=str(REPO_ROOT / "data"))
+    collect.add_argument("--data-root", default="data")
     collect.add_argument("symbols", nargs="+")
     collect.set_defaults(func=collect_options)
 
     analyze = sub.add_parser("analyze-mock", help="run local PCS rule engine on mock data")
-    analyze.add_argument("--rules", default=str(REPO_ROOT / "config/pcs_rules.yaml"))
+    analyze.add_argument("--rules", default="config/pcs_rules.yaml")
     analyze.set_defaults(func=analyze_mock)
 
     simulate = sub.add_parser(
         "simulate-daily",
         help="run deterministic PCS paper trading and persist a daily snapshot",
     )
-    simulate.add_argument("--rules", default=str(REPO_ROOT / "config/pcs_rules.yaml"))
+    simulate.add_argument("--rules", default="config/pcs_rules.yaml")
     simulate.add_argument("--hood-json", help="local exported Hood payload JSON; omit to use MockProvider")
     simulate.add_argument("--as-of", help="business date for the paper-trading snapshot, YYYY-MM-DD")
-    simulate.add_argument("--output-dir", default=str(REPO_ROOT / "research_outputs/paper_trading"))
-    simulate.add_argument("--sqlite-path", default=str(REPO_ROOT / "data/pcs.db"))
+    simulate.add_argument("--output-dir", default="research_outputs/paper_trading")
+    simulate.add_argument("--sqlite-path", default="data/pcs.db")
     simulate.set_defaults(func=simulate_daily)
 
     stress_cmd = sub.add_parser("stress", help="run simple synthetic stress scenarios from local JSON portfolio")
@@ -127,13 +124,13 @@ def main():
     subtitles.add_argument("--languages", default="en,en-orig")
     subtitles.set_defaults(func=download_subtitles)
 
-    update = sub.add_parser("update-data", help="incrementally update current daily/options_v2 data")
+    update = sub.add_parser("update-data", help="incrementally update current daily/options data")
     update.add_argument("symbols", nargs="*", help="tickers; omit to discover daily CSVs")
-    update.add_argument("--daily-root", default=str(REPO_ROOT / "data/live/daily"))
-    update.add_argument("--options-root", default=str(REPO_ROOT / "data/incoming/options"))
-    update.add_argument("--parquet-root", default=str(REPO_ROOT / "data/parquet"))
-    update.add_argument("--manifest-path", default=str(REPO_ROOT / "data/manifests/storage_manifest.csv"))
-    update.add_argument("--options-manifest-path", default=str(REPO_ROOT / "data/manifests/storage_manifest_options_v2.csv"))
+    update.add_argument("--daily-root", default="data/live/daily")
+    update.add_argument("--options-root", default="data/incoming/options")
+    update.add_argument("--parquet-root", default="data/parquet")
+    update.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    update.add_argument("--options-manifest-path", default="data/manifests/storage_manifest.csv")
     update.add_argument("--source-version", default="incremental")
     update.set_defaults(func=update_data)
 

@@ -1,7 +1,7 @@
 """Idempotent incremental updates for current PCS market-data state.
 
 Frozen research artifacts are intentionally outside this module's write scope.
-Only current daily and options_v2 partitions are changed.
+Only current daily and logical options partitions are changed.
 """
 from __future__ import annotations
 
@@ -18,11 +18,6 @@ import pandas as pd
 
 from .access import PCSDataAccess, DataQualityError
 from .daily_provider import normalize_daily_frame
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
-def _resolve_default(value: str | Path, default: str) -> Path:
-    return _REPO_ROOT / default if str(value).replace("\\", "/") == default else Path(value)
 
 
 @dataclass
@@ -80,33 +75,31 @@ def invalidate_current_derived(symbol: str, affected_partitions: list[str], *, m
     whose source partition overlaps one of these markers and rebuild it.
     """
     symbol = str(symbol).upper()
-    target = _resolve_default(manifest_path, "data/manifests/derived_invalidations.jsonl"); target.parent.mkdir(parents=True, exist_ok=True)
+    target = Path(manifest_path); target.parent.mkdir(parents=True, exist_ok=True)
     marker = {"symbol": symbol, "affected_partitions": sorted(set(affected_partitions)), "created_at": datetime.now(timezone.utc).isoformat()}
-    with PCSDataAccess._file_lock(target):
-        existing = []
-        if target.exists():
-            for line in target.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    try: existing.append(json.loads(line))
-                    except json.JSONDecodeError: continue
-        semantic = {(x.get("symbol"), tuple(x.get("affected_partitions", []))) for x in existing}
-        key = (symbol, tuple(marker["affected_partitions"]))
-        if key not in semantic:
-            with target.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(marker, sort_keys=True) + "\n")
+    existing = []
+    if target.exists():
+        for line in target.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try: existing.append(json.loads(line))
+                except json.JSONDecodeError: continue
+    semantic = {(x.get("symbol"), tuple(x.get("affected_partitions", []))) for x in existing}
+    key = (symbol, tuple(marker["affected_partitions"]))
+    if key not in semantic:
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(marker, sort_keys=True) + "\n")
     return [f"{symbol}:{part}" for part in marker["affected_partitions"]]
 
 
 def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", source_version="incremental") -> tuple[str, list[str], str | None]:
     symbol = symbol.upper()
-    parquet_root = _resolve_default(parquet_root, "data/parquet")
-    manifest_path = _resolve_default(manifest_path, "data/manifests/storage_manifest.csv")
     incoming = incoming.copy()
-    if "symbol" not in incoming:
+    if "symbol" in incoming:
+        incoming_symbols = incoming["symbol"].astype(str).str.strip().str.upper()
+        if set(incoming_symbols) - {symbol}:
+            raise DataQualityError(f"ticker isolation failure for {symbol}")
+    else:
         incoming["symbol"] = symbol
-    incoming["symbol"] = incoming["symbol"].astype(str).str.upper()
-    if set(incoming.symbol) - {symbol}:
-        raise DataQualityError(f"ticker isolation failure for {symbol}")
     incoming = normalize_daily_frame(incoming)
     incoming["symbol"] = symbol
     access = PCSDataAccess(manifest_path=manifest_path, parquet_root=parquet_root)
@@ -124,40 +117,37 @@ def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="dat
     return ("UPDATED" if changed else "NO_OP", changed, latest)
 
 
-def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest_options_v2.csv", source_version="incremental") -> tuple[str, list[str], str | None]:
+def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", source_version="incremental") -> tuple[str, list[str], str | None]:
     symbol = symbol.upper()
-    parquet_root = _resolve_default(parquet_root, "data/parquet")
-    manifest_path = _resolve_default(manifest_path, "data/manifests/storage_manifest_options_v2.csv")
     incoming = incoming.copy()
     if "symbol" not in incoming:
         incoming["symbol"] = symbol
     incoming["symbol"] = incoming["symbol"].astype(str).str.upper()
     access = PCSDataAccess(manifest_path=manifest_path, parquet_root=parquet_root)
-    incoming = access.validate_schema(incoming, "options_v2")
+    resolved = access.resolve_source("options", symbol)
+    physical_dataset = resolved.dataset
+    incoming = access.validate_schema(incoming, "options")
     if set(incoming.symbol) - {symbol}:
         raise DataQualityError(f"ticker isolation failure for {symbol}")
     changed: list[str] = []
     periods = pd.to_datetime(incoming.trade_date).dt.to_period("Q")
     for period, new_rows in incoming.groupby(periods):
         partition = f"year={period.year}/quarter={period.quarter}"
-        target_dir = Path(parquet_root) / "options_v2" / f"symbol={symbol}" / partition
+        target_dir = Path(parquet_root) / physical_dataset / f"symbol={symbol}" / partition
         target = next(iter(target_dir.glob("*.parquet")), target_dir / f"{symbol}_{period.year}_q{period.quarter}.parquet")
         old = pd.read_parquet(target) if target.exists() else pd.DataFrame(columns=incoming.columns)
         merged = (new_rows.copy() if old.empty else pd.concat([old, new_rows], ignore_index=True).drop_duplicates(keep="last"))
-        merged = access.validate_schema(merged, "options_v2").sort_values(["trade_date", "expiration_date", "call_put", "strike"], kind="mergesort").reset_index(drop=True)
+        merged = access.validate_schema(merged, "options").sort_values(["trade_date", "expiration_date", "call_put", "strike"], kind="mergesort").reset_index(drop=True)
         if target.exists() and _sha256(old) == _sha256(merged):
             continue
         _atomic_write(merged, target)
-        access.update_manifest("options_v2", symbol, merged, target, source_version, partition, replace_existing=True)
-        changed.append(f"options_v2/symbol={symbol}/{partition}")
+        access.update_manifest(physical_dataset, symbol, merged, target, source_version, partition, replace_existing=True)
+        changed.append(f"options/symbol={symbol}/{partition}")
     latest = str(pd.to_datetime(incoming.trade_date).max().date()) if len(incoming) else None
     return ("UPDATED" if changed else "NO_OP", changed, latest)
 
 
-def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest_options_v2.csv", source_version="incremental") -> dict[str, Any]:
-    parquet_root = _resolve_default(parquet_root, "data/parquet")
-    manifest_path = _resolve_default(manifest_path, "data/manifests/storage_manifest.csv")
-    options_manifest_path = _resolve_default(options_manifest_path, "data/manifests/storage_manifest_options_v2.csv")
+def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest.csv", source_version="incremental") -> dict[str, Any]:
     result = UpdateResult(symbol=symbol.upper(), as_of=datetime.now(timezone.utc).isoformat(), data_timestamp=datetime.now(timezone.utc).isoformat())
     try:
         if daily_frame is not None:
@@ -167,12 +157,12 @@ def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, optio
             result.options_update, parts, result.latest_options_date = update_options_frame(symbol, options_frame, parquet_root=parquet_root, manifest_path=options_manifest_path, source_version=source_version)
             result.affected_partitions.extend(parts)
         result.current_data_asof = max([x for x in (result.latest_daily_date, result.latest_options_date) if x], default=None)
-        result.current_route = "options_v2" if options_frame is not None else "daily"
+        result.current_route = "options" if options_frame is not None else "daily"
         if result.affected_partitions:
             result.current_derived_artifacts_invalidated = invalidate_current_derived(symbol, result.affected_partitions)
             result.reason_codes.append("DERIVED_INVALIDATION_MARKED")
             try:
-                if Path(parquet_root).resolve() != (_REPO_ROOT / "data/parquet").resolve():
+                if Path(parquet_root) != Path("data/parquet"):
                     result.readiness_refresh_status = "SKIPPED_ISOLATED_STORE"
                     raise StopIteration
                 from pcs.research.ticker_readiness import preflight_ticker, persist_ticker_readiness

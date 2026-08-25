@@ -36,6 +36,7 @@ class TradeCandidate(BaseModel):
     long_bid: float | None = None
     long_ask: float | None = None
     entry_date: str | None = None
+    trading_sessions: Any = None
     trend_snapshot: Any = None
     trend_interpretation: Any = None
     trend_score_result: Any = None

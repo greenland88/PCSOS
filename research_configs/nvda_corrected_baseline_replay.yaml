@@ -1,0 +1,29 @@
+research_id: nvda_corrected_baseline_replay_20260824
+ticker: NVDA
+research_mode: CURRENT_STRATEGY_REPLAY
+hypothesis: Corrected PriceBasis baseline replay on the fresh NVDA population.
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true, baseline: research_outputs/nvda_price_basis_corrected_authoritative_baseline_20260824}
+signal_definition: {creates_new_entry_dates: true, purpose: corrected_baseline_replay}
+entry_date_rule: {rule: frozen_current_pcs_entry_context}
+date_range: {start: '2020-01-02', end: '2025-12-31'}
+split_policy: {name: FRESH_CHRONOLOGICAL, train_end: '2023-12-31', validation_start: '2024-01-01', validation_end: '2025-12-31'}
+contract_selection_policy: {mode: RULE_SET, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: canonical_lifecycle_adapter, no_future_selection: true}
+frozen_parameters: {price_basis_version: price_basis_v1, corporate_action_version: authoritative_corporate_action_registry_v1}
+allowed_parameters: {research_only_setup_eligibility: true}
+final_oos_access: false
+production_changes_allowed: false
+rules:
+  dte_min: 30
+  dte_max: 45
+  safe_strike_atr: 2.3
+  allowed_widths: [5, 10, 2]
+  width_mode: ALL
+  min_credit_width_ratio: 0.10
+  trend_gate: true
+  pullback_gate: true
+  support_gate: true
+  regime_gate: false
+  event_gate: true
+  liquidity_gate: true
+  predictability_gate: true

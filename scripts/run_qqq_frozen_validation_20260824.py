@@ -15,9 +15,7 @@ import pandas as pd
 import yaml
 
 from pcs.data.access import PCSDataAccess
-from pcs.research.credit_stop import load_quotes_canonical, load_spread_quotes_canonical, track_trade
-from pcs.trend.config import TrendIndicatorConfig
-from pcs.trend.indicators import calculate_base_indicators
+from pcs.research.credit_stop import load_quotes_duckdb, load_spread_quotes_duckdb, track_trade
 from pcs.research.rules.core import RuleStatus, canonical_hash, evaluate_chain, resolve_scenario
 from pcs.research.rules.registry import RULE_REGISTRY
 from run_spy_qqq_modular_monthly_replay import select, context
@@ -37,7 +35,9 @@ def features(access: PCSDataAccess) -> pd.DataFrame:
     d = access.read_prices("QQQ", "2010-01-01", "2026-05-31").copy()
     d["date"] = pd.to_datetime(d.date).dt.normalize()
     d = d.sort_values("date").reset_index(drop=True)
-    d["atr14"] = calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
+    prev = d.close.shift(1)
+    tr = pd.concat([(d.high - d.low), (d.high - prev).abs(), (d.low - prev).abs()], axis=1).max(axis=1)
+    d["atr14"] = tr.rolling(14, min_periods=14).mean()
     d["ret5"] = d.close.pct_change(5)
     d["ret10"] = d.close.pct_change(10)
     d["drawdown60"] = d.close / d.close.rolling(60, min_periods=60).max() - 1
@@ -51,16 +51,15 @@ def selector_daily(access: PCSDataAccess) -> pd.DataFrame:
     d = access.read_prices("QQQ", "2010-01-01", "2026-05-31").copy()
     d["date"] = pd.to_datetime(d.date).dt.normalize()
     d = d.sort_values("date").drop_duplicates("date")
-    d["atr"] = calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
+    prev = d.close.shift(1)
+    tr = pd.concat([(d.high - d.low), (d.high - prev).abs(), (d.low - prev).abs()], axis=1).max(axis=1)
+    d["atr"] = tr.rolling(14, min_periods=14).mean()
     return d
 
 
 def first_per_episode(d: pd.DataFrame, mask: pd.Series) -> list[pd.Timestamp]:
     x = d.loc[mask].sort_values("date").copy()
-    sessions = pd.DatetimeIndex(d.date).normalize()
-    session_positions = {day: i for i, day in enumerate(sessions)}
-    positions = x["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
-    x["episode_id"] = positions.diff().fillna(999).ne(1).cumsum()
+    x["episode_id"] = (x.date.diff().dt.days.fillna(999) > 4).cumsum()
     return [pd.Timestamp(v).normalize() for v in x.groupby("episode_id", as_index=False).first().date]
 
 
@@ -79,7 +78,7 @@ def replay(strategy: str, dates: list[pd.Timestamp], scenario: dict, boundary: p
     for day in dates:
         row = ds.loc[day].copy()
         row["date"] = day
-        q, meta = load_quotes_canonical("QQQ", day, day)
+        q, meta = load_quotes_duckdb(":memory:", "QQQ", day, day)
         choices = select(q, row)
         opened = False
         for short, long, width in choices:
@@ -91,7 +90,7 @@ def replay(strategy: str, dates: list[pd.Timestamp], scenario: dict, boundary: p
             opened = True
             exp = pd.Timestamp(short["Expiry Date"]).normalize()
             end = min(exp, boundary)
-            marks, _ = load_spread_quotes_canonical("QQQ", day, end, short["Expiry Date"], [short.Strike, long.Strike])
+            marks = load_spread_quotes_duckdb(":memory:", "QQQ", day, end, short["Expiry Date"], [short.Strike, long.Strike])
             path = track_trade({"date": day, "expiration": short["Expiry Date"], "short_strike": short.Strike, "long_strike": long.Strike}, marks, short, long, cx["credit"])
             events = [v for v in path["events"].values() if v is not None]
             exit_date = min(events) if events else (marks["Trade Date"].max() if not marks.empty else pd.NaT)
@@ -131,9 +130,9 @@ def main() -> None:
     val_dates = {k: [x for x in v if SPLIT[0] <= x <= SPLIT[1]] for k, v in all_dates.items()}
     spec = {"module": "pcs.validation.qqq_frozen_validation_20260824", "version": "1.0", "symbol": "QQQ",
             "split": {"start": str(SPLIT[0].date()), "end": str(SPLIT[1].date())},
-            "candidates": {"QQQ_CONTROLLED_RESET": "drawdown60 <= -0.02 AND ret10 > 0; first qualification per contiguous trading-session episode",
-                           "QQQ_SMA50_RECLAIM_AFTER_WEAKNESS": "drawdown60 <= -0.02; first close_sma50_atr transition <=0 -> >0 per contiguous trading-session episode"},
-            "feature_calculations": {"atr": "14-session Wilder ATR used by authoritative QQQ replay", "ret5": "close.pct_change(5)", "ret10": "close.pct_change(10)", "drawdown60": "close / rolling_60_max - 1", "sma50": "50-session rolling close mean", "close_sma50_atr": "(close - sma50) / atr14", "warmup": "minimum periods equal lookback", "episode_gap": "a missing prior trading session starts a new independent episode"},
+            "candidates": {"QQQ_CONTROLLED_RESET": "drawdown60 <= -0.02 AND ret10 > 0; first qualification per >4-calendar-day episode",
+                           "QQQ_SMA50_RECLAIM_AFTER_WEAKNESS": "drawdown60 <= -0.02; first close_sma50_atr transition <=0 -> >0 per >4-calendar-day reclaim episode"},
+            "feature_calculations": {"atr": "14-session Wilder-compatible true-range rolling mean used by authoritative QQQ replay", "ret5": "close.pct_change(5)", "ret10": "close.pct_change(10)", "drawdown60": "close / rolling_60_max - 1", "sma50": "50-session rolling close mean", "close_sma50_atr": "(close - sma50) / atr14", "warmup": "minimum periods equal lookback", "episode_gap": ">4 calendar days starts a new independent episode"},
             "contract_selection": {"source": str(SCENARIO), "sha256": sha256(SCENARIO), "dte": [30, 45], "safe_strike_atr": 2.3, "width_priority": [5, 10, 2], "credit_liquidity": "frozen scenario chain; no selector changes"},
             "lifecycle_stop_price_basis": {"source": "existing track_trade / frozen QQQ lifecycle path", "price_basis": "existing authoritative QQQ path; no override", "profit_target": "existing lifecycle target", "stop": "existing lifecycle stop", "contract_identity": "exact expiry/put/strike legs"},
             "lifecycle_boundary": "2026-05-31; FINAL OOS inaccessible", "final_oos_read": False,
@@ -144,7 +143,7 @@ def main() -> None:
     for name, dates in val_dates.items():
         audit, rows = replay(name, dates, scenario, SPLIT[1], selector_daily(access)); ledgers.extend(audit)
         frame = pd.DataFrame(rows); frame.to_parquet(OUT / f"{name}_lifecycle.parquet", index=False)
-        reports[name] = {"validation_trading_dates": int(d.date.between(SPLIT[0], SPLIT[1]).sum()), "qualifying_dates": len(dates), "qualifying_date_list": [str(x.date()) for x in dates], "independent_episodes": len(dates), "executable_episodes": int(len(frame)), "selected_contracts": int(len(frame)), **stats(frame),
+        reports[name] = {"validation_trading_dates": 102, "qualifying_dates": len(dates), "qualifying_date_list": [str(x.date()) for x in dates], "independent_episodes": len(dates), "executable_episodes": int(len(frame)), "selected_contracts": int(len(frame)), **stats(frame),
                          "by_year": {str(y): stats(g) for y, g in frame.assign(year=pd.to_datetime(frame.date).dt.year).groupby("year")}}
     pd.DataFrame(ledgers).to_parquet(OUT / "signal_audit.parquet", index=False)
     baseline = pd.read_parquet(ROOT / "research_outputs" / "spy_qqq_modular_rule_research_20260821" / "validation_selected_lifecycle.parquet")

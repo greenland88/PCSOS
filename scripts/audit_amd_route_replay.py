@@ -2,11 +2,10 @@ from pathlib import Path
 import duckdb, json, pandas as pd
 from pcs.research.variant_b_replay import ReplayPolicy, _replay_lifecycle_batch, summarize_replay
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ART = REPO_ROOT / "data/parquet/research/variant_b_full"
+ART = Path("data/parquet/research/variant_b_full")
 ROUTES = {
-    "onboarding": REPO_ROOT / "data/parquet/options_v2_onboarding_amd_20260820",
-    "standard": REPO_ROOT / "data/parquet/options_v2",
+    "onboarding": Path("data/parquet/options_v2_onboarding_amd_20260820"),
+    "standard": Path("data/parquet/options_v2"),
 }
 POLICY = ReplayPolicy()
 FIELDS = ["date", "ticker", "expiration", "short_strike", "long_strike", "dte", "atr", "atr_distance", "credit", "spread_width", "credit_width_ratio", "planned_loss", "theoretical_max_loss", "short_delta", "trend_state", "pullback_state", "support_state", "population", "subgroup", "baseline_pullback", "variant_pullback", "earnings_date", "days_to_earnings", "expected_management_window"]
@@ -50,5 +49,5 @@ c=candidates(); results={}; replays={}
 for name,root in ROUTES.items():
     idx,rows=quote_index(c,root); r=replay(c,idx); replays[name]=r; results[name]={"candidate_count":len(c),"quote_rows":rows,"summary":summarize_replay(r).to_dict("records")}
 results["parity"]=compare(replays["onboarding"],replays["standard"])
-(REPO_ROOT / "data/manifests/amd_route_replay_acceptance_20260821.json").write_text(json.dumps(results,indent=2,default=str),encoding="utf-8")
+Path("data/manifests/amd_route_replay_acceptance_20260821.json").write_text(json.dumps(results,indent=2,default=str),encoding="utf-8")
 print(json.dumps(results,indent=2,default=str))

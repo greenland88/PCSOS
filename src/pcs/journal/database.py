@@ -1,8 +1,6 @@
 import sqlite3
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -26,8 +24,6 @@ CREATE TABLE IF NOT EXISTS ai_analysis (id INTEGER PRIMARY KEY, created_at TEXT 
 
 
 def connect(path: str = "data/pcs.db"):
-    if path.replace("\\", "/") == "data/pcs.db":
-        path = str(_REPO_ROOT / path)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)

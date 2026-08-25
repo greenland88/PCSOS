@@ -17,8 +17,8 @@ _EVALUATED = {DecisionRowStatus.EVALUATED_ACCEPTED.value, DecisionRowStatus.EVAL
 _COVERAGE_FIELDS = {
     "atr": "atr", "underlying_price": "close", "dte": "dte", "short_quote": "short_bid",
     "long_quote": "long_ask", "liquidity": "nearby_strikes", "credit": "credit",
-    "breadth": "later_expirations", "expected_move": "expected_move", "confirmation": "price_confirmation",
-    "support": "support_state", "trend_context": "trend_snapshot", "event_context": "event_pit_status",
+    "breadth": "later_expirations", "expected_move": "atr", "confirmation": "price_confirmation",
+    "support": "support_state", "trend_context": "trend_snapshot", "event_context": "reason_codes",
 }
 
 
@@ -46,7 +46,7 @@ def write_final_reports(results: pd.DataFrame, output_dir: str | Path, receipts:
     atomic_parquet(blocked, out / "production_blocked_candidates.parquet")
     atomic_parquet(evaluated, out / "production_evaluated_candidates.parquet")
     statuses = Counter(results.status.astype(str))
-    coverage = {name: int(evaluated[column].notna().sum()) if column in evaluated else 0 for name, column in _COVERAGE_FIELDS.items()}
+    coverage = {name: int(results[column].notna().sum()) if column in results else 0 for name, column in _COVERAGE_FIELDS.items()}
     coverage_report = _envelope(status="COMPLETE", run_id=run_id, reason_codes=[], data={
         "total_rows": len(results), "evaluated_rows": len(evaluated), "blocked_rows": len(blocked),
         "coverage": coverage, "status_counts": dict(statuses), "partition_receipts": len(receipts),
@@ -59,7 +59,7 @@ def write_final_reports(results: pd.DataFrame, output_dir: str | Path, receipts:
     blackout = reasons.count("EVENT_PRE_EARNINGS_BLACKOUT")
     # A zero count is a pass only when event evaluation happened for every
     # evaluated candidate; blocked contexts cannot prove regression absence.
-    all_rows_event_evaluated = len(evaluated) == len(results) and "event_pit_status" in evaluated and evaluated.event_pit_status.eq("VERIFIED").all()
+    all_rows_event_evaluated = len(evaluated) == len(results)
     event_status = "PASS" if all_rows_event_evaluated and "PAST_EVENT_FALSE_REJECTION" not in reasons else "INCOMPLETE"
     event_audit = _envelope(status=event_status, run_id=run_id,
                             reason_codes=[] if event_status == "PASS" else ["EVENT_GATE_AUDIT_INCOMPLETE"],

@@ -6,7 +6,6 @@ contract selection, lifecycle, or production configuration.
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any, Callable
-import pandas as pd
 
 @dataclass(frozen=True)
 class Evaluation:
@@ -26,12 +25,11 @@ class StrategySpec:
     features: tuple[str, ...]
     entry_rule: str
     episode_rule: str
-    data_dependencies: tuple[str, ...]
     _predicate: Callable[[dict[str, Any]], bool]
 
     def evaluate(self, ticker: str, date: Any, pit_features: dict[str, Any]) -> Evaluation:
         values = {k: pit_features.get(k) for k in self.features}
-        missing = [k for k, v in values.items() if v is None or pd.isna(v)]
+        missing = [k for k, v in values.items() if v is None]
         if missing:
             return Evaluation(self.strategy_id, str(ticker).upper(), date, "NO_QUALIFY", "missing PIT feature", ("PIT_FEATURE_MISSING",), values)
         ok = bool(self._predicate(values))
@@ -43,11 +41,11 @@ class StrategySpec:
 def _gt(a, b): return float(a) > b
 
 STRATEGIES: dict[str, StrategySpec] = {
-    "PCS_NVDA_TREND_CONTINUATION_V1": StrategySpec("PCS_NVDA_TREND_CONTINUATION_V1", "V2_H010", "close > PIT_SMA200 AND volume_relative_to_20d_mean > 1 AND ret5 > 0", ("close", "sma200", "volume_relative_to_20d_mean", "ret5"), "first qualifying date per independent episode", "contiguous qualifying dates; gap starts a new episode", ("daily",), lambda x: x["close"] > x["sma200"] and x["volume_relative_to_20d_mean"] > 1 and x["ret5"] > 0),
-    "PCS_CONSTRUCTIVE_RECOVERY_V1": StrategySpec("PCS_CONSTRUCTIVE_RECOVERY_V1", "V2_H027", "close > PIT_SMA200 AND ret20 < 0 AND ret5 > 0", ("close", "sma200", "ret20", "ret5"), "first qualifying date per independent episode", "contiguous qualifying dates; gap starts a new episode", ("daily",), lambda x: x["close"] > x["sma200"] and x["ret20"] < 0 and x["ret5"] > 0),
-    "PCS_CONTROLLED_RESET_V1": StrategySpec("PCS_CONTROLLED_RESET_V1", "QQQ CONTROLLED_RESET", "drawdown60 <= -0.02 AND ret10 > 0", ("drawdown60", "ret10"), "first qualifying date per independent episode", "contiguous qualifying dates; gap starts a new episode", ("daily",), lambda x: x["drawdown60"] <= -.02 and x["ret10"] > 0),
-    "PCS_RESET_RECOVERY_V1": StrategySpec("PCS_RESET_RECOVERY_V1", "QQQ recovery family", "drawdown60 <= -0.02 AND ret10 > 0 AND ret5 > 0", ("drawdown60", "ret10", "ret5"), "first confirmation per independent episode", "controlled-reset episode; first confirmation", ("daily",), lambda x: x["drawdown60"] <= -.02 and x["ret10"] > 0 and x["ret5"] > 0),
-    "PCS_SMA50_RECLAIM_V1": StrategySpec("PCS_SMA50_RECLAIM_V1", "QQQ H016", "drawdown60 <= -0.02 AND prior_close_sma50_atr <= 0 AND close_sma50_atr > 0", ("drawdown60", "prior_close_sma50_atr", "close_sma50_atr"), "first reclaim per independent episode", "authoritative H016 weakness/transition episode", ("daily",), lambda x: x["drawdown60"] <= -.02 and x["prior_close_sma50_atr"] <= 0 and x["close_sma50_atr"] > 0),
+    "PCS_NVDA_TREND_CONTINUATION_V1": StrategySpec("PCS_NVDA_TREND_CONTINUATION_V1", "V2_H010", "close > PIT_SMA200 AND volume_relative_to_20d_mean > 1 AND ret5 > 0", ("close", "sma200", "volume_relative_to_20d_mean", "ret5"), "first qualifying date per independent episode", "contiguous qualifying dates; gap starts a new episode", lambda x: x["close"] > x["sma200"] and x["volume_relative_to_20d_mean"] > 1 and x["ret5"] > 0),
+    "PCS_CONSTRUCTIVE_RECOVERY_V1": StrategySpec("PCS_CONSTRUCTIVE_RECOVERY_V1", "V2_H027", "close > PIT_SMA200 AND ret20 < 0 AND ret5 > 0", ("close", "sma200", "ret20", "ret5"), "first qualifying date per independent episode", "contiguous qualifying dates; gap starts a new episode", lambda x: x["close"] > x["sma200"] and x["ret20"] < 0 and x["ret5"] > 0),
+    "PCS_CONTROLLED_RESET_V1": StrategySpec("PCS_CONTROLLED_RESET_V1", "QQQ CONTROLLED_RESET", "drawdown60 <= -0.02 AND ret10 > 0", ("drawdown60", "ret10"), "first qualifying date per independent episode", "contiguous qualifying dates; gap starts a new episode", lambda x: x["drawdown60"] <= -.02 and x["ret10"] > 0),
+    "PCS_RESET_RECOVERY_V1": StrategySpec("PCS_RESET_RECOVERY_V1", "QQQ recovery family", "drawdown60 <= -0.02 AND ret10 > 0 AND ret5 > 0", ("drawdown60", "ret10", "ret5"), "first confirmation per independent episode", "controlled-reset episode; first confirmation", lambda x: x["drawdown60"] <= -.02 and x["ret10"] > 0 and x["ret5"] > 0),
+    "PCS_SMA50_RECLAIM_V1": StrategySpec("PCS_SMA50_RECLAIM_V1", "QQQ H016", "drawdown60 <= -0.02 AND prior_close_sma50_atr <= 0 AND close_sma50_atr > 0", ("drawdown60", "prior_close_sma50_atr", "close_sma50_atr"), "first reclaim per independent episode", "authoritative H016 weakness/transition episode", lambda x: x["drawdown60"] <= -.02 and x["prior_close_sma50_atr"] <= 0 and x["close_sma50_atr"] > 0),
 }
 
 def get_strategy(strategy_id: str) -> StrategySpec:

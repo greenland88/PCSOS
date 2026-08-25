@@ -13,8 +13,6 @@ import json
 import re
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 class ResearchMode(StrEnum):
     EXISTING_TRADE = "EXISTING_TRADE"
@@ -75,13 +73,6 @@ class ResearchSpecError(ValueError):
         super().__init__(reason)
         self.status = status
         self.reason = reason
-
-
-def _strict_bool(raw: Mapping[str, Any], key: str, default: bool) -> bool:
-    value = raw.get(key, default)
-    if not isinstance(value, bool):
-        raise ResearchSpecError(f"INVALID_SPEC:{key}_MUST_BE_BOOL")
-    return value
 
 
 @dataclass(frozen=True)
@@ -146,8 +137,8 @@ def from_mapping(raw: Mapping[str, Any]) -> ResearchSpec:
         lifecycle_policy=_mapping(raw["lifecycle_policy"], "lifecycle_policy"),
         frozen_parameters=_mapping(raw["frozen_parameters"], "frozen_parameters"),
         allowed_parameters=_mapping(raw["allowed_parameters"], "allowed_parameters"),
-        final_oos_access=_strict_bool(raw, "final_oos_access", False),
-        production_changes_allowed=_strict_bool(raw, "production_changes_allowed", False),
+        final_oos_access=bool(raw.get("final_oos_access", False)),
+        production_changes_allowed=bool(raw.get("production_changes_allowed", False)),
         rules=_mapping(raw.get("rules", {}), "rules"),
     )
 
@@ -157,10 +148,7 @@ CURRENT_RULE_DEFAULTS = {
     "allowed_widths": (5.0, 10.0, 2.0), "width_mode": "ALL",
     "min_credit_width_ratio": 0.10,
     "trend_gate": True, "pullback_gate": True, "support_gate": True,
-    # Current-strategy replay has historically executed without the regime
-    # gate unless a spec explicitly enables it.  Keep dry-run/plumbing and
-    # execution on the same default; explicit spec values remain authoritative.
-    "regime_gate": False, "event_gate": True, "liquidity_gate": True,
+    "regime_gate": True, "event_gate": True, "liquidity_gate": True,
     "predictability_gate": True,
 }
 
@@ -266,19 +254,8 @@ def onboarding_report(stage_status: Mapping[str, str]) -> dict[str, Any]:
 
 
 def assert_research_output(path: str | Path) -> None:
-    target = Path(path).resolve()
-    root = (REPO_ROOT / "research_outputs").resolve()
-    try:
-        relative = target.relative_to(root)
-    except ValueError as exc:
-        # Isolated temporary/test directories are valid research sandboxes;
-        # only production/frozen destinations are forbidden.  The active
-        # repository output tree remains constrained by the checks below.
-        parts = {part.lower() for part in target.parts}
-        if {"production", "frozen"} & parts or "frozen_artifact" in target.name.lower():
-            raise PermissionError("RESEARCH_RUNNER_CANNOT_WRITE_PRODUCTION_OR_FROZEN_ARTIFACT") from exc
-        return
-    if {part.lower() for part in relative.parts} & {"production", "frozen"} or "frozen_artifact" in target.name.lower():
+    text = str(Path(path)).replace("\\", "/").lower()
+    if "/production/" in text or "frozen_artifact" in text or "/frozen/" in text:
         raise PermissionError("RESEARCH_RUNNER_CANNOT_WRITE_PRODUCTION_OR_FROZEN_ARTIFACT")
 
 
@@ -288,23 +265,10 @@ def assert_final_oos_access(spec: ResearchSpec) -> None:
 
 
 def run_spec(path: str | Path, *, dry_run: bool = True) -> dict[str, Any]:
-    spec = validate_rule_set(validate_population_routing(load_spec(path)))
-    effective = effective_research_rules(spec)
+    spec = validate_population_routing(load_spec(path))
     return {"research_id": spec.research_id, "ticker": spec.ticker, "research_mode": spec.research_mode.value,
             "population_source": dict(spec.population_source), "entry_date_rule": dict(spec.entry_date_rule),
             "scenario_hash": spec_hash(spec), "final_oos_access": spec.final_oos_access,
-            "effective_research_rules": effective,
             "production_changes_allowed": spec.production_changes_allowed, "execution": "DRY_RUN_ONLY" if dry_run else "VALIDATED_RUN",
             "status": ResearchStatus.COMPUTABLE.value, "hypothesis_executed": False,
             "reason_codes": ["RESEARCH_SPEC_VALIDATED", "FINAL_OOS_NOT_READ", "PRODUCTION_WRITE_BLOCKED"]}
-
-
-def effective_research_rules(spec: ResearchSpec) -> dict[str, Any]:
-    """Return the single effective research-local rule set."""
-    if spec.research_mode != ResearchMode.CURRENT_STRATEGY_REPLAY:
-        return dict(spec.rules)
-    out = dict(CURRENT_RULE_DEFAULTS)
-    out.update(spec.rules)
-    out["allowed_widths"] = [float(x) for x in out["allowed_widths"]]
-    out["width_mode"] = str(out["width_mode"]).upper()
-    return out

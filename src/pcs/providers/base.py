@@ -2,10 +2,6 @@ from abc import ABC, abstractmethod
 
 
 class BaseBrokerProvider(ABC):
-    def get_trading_sessions(self):
-        """Return canonical exchange sessions when historical gating needs them."""
-        return None
-
     @abstractmethod
     def get_accounts(self): ...
 

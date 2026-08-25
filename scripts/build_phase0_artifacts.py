@@ -57,7 +57,19 @@ def build(ticker,u):
     for r,start,end in requests:
         x=raw[(raw.trade_date>=start)&(raw.trade_date<=end)&(raw.expiration==r.expiration)&raw.strike.isin([float(r.short_strike),float(r.long_strike)])]; dates=sorted(set(x.trade_date)); idx={(d,float(k)):z for (d,k),z in x.groupby(["trade_date","strike"],sort=False)}
         for d in dates:
-            s=idx.get((d,float(r.short_strike))); l=idx.get((d,float(r.long_strike))); s=s.iloc[0] if isinstance(s,pd.DataFrame) else s; l=l.iloc[0] if isinstance(l,pd.DataFrame) else l; ms=s is not None; ml=l is not None; match=ms and ml; valid=match and all(pd.notna(getattr(z,f)) for z in (s,l) for f in ("bid","ask")) and s.bid<=s.ask and l.bid<=l.ask
+            s=idx.get((d,float(r.short_strike)))
+            l=idx.get((d,float(r.long_strike)))
+            s=s.iloc[0] if isinstance(s,pd.DataFrame) else s
+            l=l.iloc[0] if isinstance(l,pd.DataFrame) else l
+            ms=s is not None
+            ml=l is not None
+            match=ms and ml
+            valid=(
+                match
+                and all(pd.notna(getattr(z,f)) for z in (s,l) for f in ("bid","ask"))
+                and s.bid<=s.ask
+                and l.bid<=l.ask
+            )
             reason=None if valid else "BOTH_LEGS_MISSING" if not ms and not ml else "SHORT_LEG_MISSING" if not ms else "LONG_LEG_MISSING" if not ml else "INVALID_QUOTE"
             rows.append({"ticker":ticker,"candidate_id":r.candidate_id,"mark_date":d,"expiration":r.expiration,"short_strike":r.short_strike,"long_strike":r.long_strike,"short_bid":s.bid if ms else None,"short_ask":s.ask if ms else None,"long_bid":l.bid if ml else None,"long_ask":l.ask if ml else None,"spread_mark":((s.bid+s.ask)/2-(l.bid+l.ask)/2) if valid else None,"quote_available":bool(valid),"contract_match":bool(match),"is_expiration":d==r.expiration,"missing_quote_reason":reason})
     life=pd.DataFrame(rows); expected=len(life); available=int(life.quote_available.sum()); return life,{"ticker":ticker,"resolved_dataset":route_meta["dataset"],"resolved_manifest":route_meta["manifest"],"resolved_root":str(route_meta["root"]),"expected_partitions":[f"{y}Q{q}" for y,q in groups],"partitions_read":len(paths),"ambiguous_partitions":ambiguous,"rows_physically_scanned":scanned,"rows_retained_after_pushdown":rows_retained,"required_exact_keys":sum(len(pd.date_range(s,e,freq='D'))*2 for _,s,e in requests),"predicate_pushdown":True,"expected_lifecycle_rows":expected,"rows_represented":expected,"lifecycle_row_coverage":100.0 if expected else 0.0,"quote_available":available,"quote_availability_rate":round(100*available/expected,4) if expected else 0.0,"missing_quote_candidates":int(life.loc[~life.quote_available,"candidate_id"].nunique()),"runtime_seconds":round(time.perf_counter()-t,3),"status":"FULLY_REPLAYABLE" if available==expected else "PARTIALLY_REPLAYABLE" if available else "UNREPLAYABLE"}

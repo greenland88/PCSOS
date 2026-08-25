@@ -30,4 +30,4 @@ def loader(sym: str, year: int, quarter: int):
 
 if __name__ == "__main__":
     print(onboard_ticker_to_readiness(symbol, periods, loader, adapter=adapter, access=access,
-        dataset="options_v2", workers=8, resume=True).to_dict())
+        dataset="options", workers=8, resume=True).to_dict())

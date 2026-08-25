@@ -31,13 +31,7 @@ LIFECYCLE_COLUMNS = (
 def resolve_canonical_source(ticker: str, manifest_path: str | Path = "data/manifests/storage_manifest.csv",
                              parquet_root: str | Path = "data/parquet/options") -> dict[str, Any]:
     """Resolve ticker-specific Parquet partitions and manifest provenance."""
-    # The default call must use the active per-ticker route.  Constructing an
-    # explicit access object from the legacy options path disables routing and
-    # can make Phase 0 inspect a different source than the replay engine.
-    default_call = (str(manifest_path).replace("\\", "/") == "data/manifests/storage_manifest.csv"
-                    and str(parquet_root).replace("\\", "/") == "data/parquet/options")
-    access = PCSDataAccess() if default_call else PCSDataAccess(
-        manifest_path=manifest_path, parquet_root=Path(parquet_root).parent)
+    access = PCSDataAccess(manifest_path=manifest_path, parquet_root=Path(parquet_root).parent)
     spec = access.resolve_source("options", ticker)
     provenance = access.get_provenance("options", ticker)
     resolved_manifest = str(spec.source_version).split(":", 1)[1] if ":" in str(spec.source_version) else str(manifest_path)

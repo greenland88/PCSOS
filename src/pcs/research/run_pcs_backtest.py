@@ -1,6 +1,6 @@
 """Command-line wrapper for the existing lazy-loading PCS research backtest."""
 from __future__ import annotations
-import argparse, csv, json, time, os, uuid
+import argparse, csv, json, time
 from pathlib import Path
 import pandas as pd
 from pcs.data.access import PCSDataAccess
@@ -21,37 +21,11 @@ def parse_args(argv=None):
 
 
 def _write(path, rows):
-    path = Path(path)
     rows = list(rows)
-    if not rows:
-        # A reused run label must not retain output from a prior run whose
-        # corresponding result was empty.
-        Path(path).unlink(missing_ok=True)
-        return
+    if not rows: return
     keys = sorted({k for r in rows for k in r})
-    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temp.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def _load_pit_window(access: PCSDataAccess, symbol: str, start: pd.Timestamp,
-                     end: pd.Timestamp, warmup_calendar_days: int = 320) -> pd.DataFrame:
-    """Load indicator warmup without expanding the executable date window.
-
-    Trend/ATR features are computed from the returned frame, while
-    ``run_backtest`` still limits candidate evaluation to ``start..end``.
-    Reading only the formal window makes the first part of a replay depend on
-    the arbitrary CLI start date.
-    """
-    warmup_start = pd.Timestamp(start).normalize() - pd.Timedelta(days=warmup_calendar_days)
-    frame = access.read_prices(symbol, warmup_start, pd.Timestamp(end).normalize())
-    frame = frame.copy()
-    frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
-    return frame.sort_values("date", kind="mergesort").drop_duplicates(["date"], keep="last").reset_index(drop=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
 
 
 def main(argv=None):
@@ -65,8 +39,8 @@ def main(argv=None):
     print(json.dumps({"backend_requested":args.backend,"backend_resolved":backend}),flush=True)
     run_dir = Path(args.output_dir) / args.run_label; run_dir.mkdir(parents=True, exist_ok=True)
     access = PCSDataAccess()
-    stock = _load_pit_window(access, args.symbol, start, end)
-    benchmark = _load_pit_window(access, args.benchmark, start, end)
+    stock = access.read_prices(args.symbol, start, end)
+    benchmark = access.read_prices(args.benchmark, start, end)
     started = time.perf_counter()
     def progress(day, processed, usable, files, _):
         print(json.dumps({"symbol": args.symbol, "current_date": str(day.date()), "processed_candidate_days": processed, "usable_trades": usable, "current_option_file": str(sorted(files)[-1]) if files else None, "elapsed_seconds": round(time.perf_counter()-started, 2)}), flush=True)
@@ -79,13 +53,7 @@ def main(argv=None):
         periods=[("2010-2014",2010,2014),("2015-2019",2015,2019),("2020-2022",2020,2022),("2023-2026",2023,2026)]
         _write(run_dir / "period_stability.csv", [{"period":label,"sample_count":sum(first<=pd.Timestamp(r["date"]).year<=last for r in trades), **{f"{gate}_count":sum(first<=pd.Timestamp(r["date"]).year<=last and r.get("current_state")==gate for r in trades) for gate in ("PASS","WATCH","REJECT")}} for label,first,last in periods])
         years=sorted({pd.Timestamp(r["date"]).year for r in trades}); _write(run_dir / "yearly_summary.csv", [{"year":y,"sample_count":sum(pd.Timestamp(r["date"]).year==y for r in trades)} for y in years])
-    metadata = run_dir / "run_metadata.json"
-    metadata_tmp = run_dir / f".{metadata.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        metadata_tmp.write_text(json.dumps({"symbol":args.symbol.upper(),"benchmark":args.benchmark.upper(),"start_date":str(start.date()),"end_date":str(end.date()),"backend":backend,"backend_requested":args.backend,"quality":result["quality"],"exclusions":result["exclusions"],"elapsed_seconds":time.perf_counter()-started},default=str,indent=2),encoding="utf-8")
-        os.replace(metadata_tmp, metadata)
-    finally:
-        metadata_tmp.unlink(missing_ok=True)
+    (run_dir/"run_metadata.json").write_text(json.dumps({"symbol":args.symbol.upper(),"benchmark":args.benchmark.upper(),"start_date":str(start.date()),"end_date":str(end.date()),"backend":backend,"backend_requested":args.backend,"quality":result["quality"],"exclusions":result["exclusions"],"elapsed_seconds":time.perf_counter()-started},default=str,indent=2),encoding="utf-8")
     print(json.dumps({"run_label":args.run_label,"candidate_days":result["quality"]["candidate_days"],"usable_trades":len(trades),"output_dir":str(run_dir)}))
 
 

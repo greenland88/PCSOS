@@ -91,17 +91,13 @@ class PCSDataAccess:
                 if not manifest.empty and "dataset" in manifest and manifest.dataset.astype(str).str.startswith("options_").any():
                     dataset = str(manifest.loc[manifest.dataset.astype(str).str.startswith("options_"), "dataset"].iloc[0])
             return dataset, self.manifest_path, self.parquet_root
-        # ``options`` is the compatibility logical name and resolves through
-        # the configured per-ticker route.  An explicit ``options_v2`` request
-        # is authoritative and must never be silently redirected to a legacy
-        # dataset when its route is absent.
+        # ``options`` is the logical name and resolves through the configured
+        # per-ticker route. Physical dataset names are an internal routing
+        # concern and are not part of normal caller behavior.
         route_dataset = dataset
         routes = self.source_routes.get(route_dataset, {}).get("by_symbol", {})
         if not routes and dataset.startswith("options_v2"):
-            # The repository configuration historically stores ticker routes
-            # under the logical ``options`` section.  This is route aliasing,
-            # not a data fallback: the selected route must still resolve to
-            # options_v2 and is validated below.
+            # Migration/repair compatibility for explicit physical callers.
             route_dataset = "options"
             routes = self.source_routes.get(route_dataset, {}).get("by_symbol", {})
         route = routes.get(self._symbol(symbol), {})
@@ -227,6 +223,11 @@ class PCSDataAccess:
                     f"canonical route unavailable: requested_dataset={dataset} "
                     f"symbol={symbol} legacy_fallback_used=NO"
                 )
+            if dataset == "options":
+                raise DataAccessError(
+                    f"canonical route unavailable: requested_dataset=options "
+                    f"symbol={symbol} legacy_fallback_used=NO"
+                )
             raise FileNotFoundError(f"canonical {dataset} source unavailable for {symbol}")
         dataset_match = manifest.dataset == resolved_dataset
         if resolved_dataset.startswith("options_v2"):
@@ -266,13 +267,18 @@ class PCSDataAccess:
             # A v2 manifest may predate a validated incremental append. Use
             # physical active partitions to extend coverage metadata without
             # changing the manifest or accepting arbitrary descendants.
-            v2_files = [str(p) for p in (parquet_root / "options_v2" / f"symbol={symbol}").glob("year=*/quarter=*/*.parquet")]
+            v2_files = [str(p) for p in (parquet_root / "options_v2" / f"symbol={symbol}").glob("year=*/quarter=*/*.parquet") if p.is_file()]
             if v2_files:
-                physical = duckdb.connect().execute(
-                    "select min(trade_date), max(trade_date) from read_parquet(?)", [v2_files]
-                ).fetchone()
-                if physical[0] is not None:
-                    lo, hi = min(lo, pd.Timestamp(physical[0])), max(hi, pd.Timestamp(physical[1]))
+                try:
+                    physical = duckdb.connect().execute(
+                        "select min(trade_date), max(trade_date) from read_parquet(?)", [v2_files]
+                    ).fetchone()
+                    if physical[0] is not None:
+                        lo, hi = min(lo, pd.Timestamp(physical[0])), max(hi, pd.Timestamp(physical[1]))
+                except Exception:
+                    # The manifest remains authoritative when a stale or
+                    # inaccessible legacy physical path is present.
+                    pass
         if (start_date is not None and pd.Timestamp(start_date) < lo) or (end_date is not None and pd.Timestamp(end_date) > hi):
             raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if resolved_dataset == "options":
@@ -415,7 +421,7 @@ class PCSDataAccess:
         active canonical files in DuckDB and returns only aggregate evidence;
         lifecycle selection still reads its bounded fixture window normally.
         """
-        spec = self.resolve_source("options_v2", symbol)
+        spec = self.resolve_source("options", symbol)
         files = spec.path.split(";") if ";" in spec.path else [spec.path]
         payload = ["symbol","last","bid","ask","bid_iv","ask_iv","open_interest","volume","delta","gamma","vega","theta","rho","year","quarter"]
         hash_expr = "md5(to_json(struct_pack(" + ",".join(f"{c}:={c}" for c in payload) + ")))"

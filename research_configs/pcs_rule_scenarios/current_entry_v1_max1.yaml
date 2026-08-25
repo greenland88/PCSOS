@@ -1,0 +1,3 @@
+scenario_id: current_entry_v1_max1
+base_scenario: current_entry_v1_uncapped
+position_policy: {rule_id: max1}

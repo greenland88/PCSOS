@@ -1,8 +1,5 @@
 from __future__ import annotations
 from datetime import date, timedelta
-from pathlib import Path
-import os
-import uuid
 import pandas as pd
 from .daily_provider import DailyDataError, normalize_daily_frame
 
@@ -34,6 +31,7 @@ class YahooDailyFetcher:
         return out
 
 def update_live_daily(symbol, historical_root="data/raw/daily_forward_adjusted", live_root="data/live/daily", fetcher=None, revision_days=10, adjustment_warning_pct=0.20):
+    from pathlib import Path
     provider = __import__("pcs.data.daily_provider", fromlist=["DailyDataProvider"]).DailyDataProvider(historical_root, live_root)
     hist = provider.build_daily_series(symbol) if (Path(historical_root) / f"{symbol.upper()}_daily_qfq.csv").exists() else None
     live_path = Path(live_root) / f"{symbol.upper()}.csv"
@@ -54,12 +52,7 @@ def update_live_daily(symbol, historical_root="data/raw/daily_forward_adjusted",
     merged.attrs["live_source"] = "yahoo"
     merged.attrs["mixed_adjustment_semantics"] = True
     live_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = live_path.with_name(f".{live_path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        merged.to_csv(tmp, index=False, date_format="%Y-%m-%d")
-        os.replace(tmp, live_path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    merged.to_csv(live_path, index=False, date_format="%Y-%m-%d")
     return merged
 
 def ensure_daily_data(symbol, as_of_date=None, historical_root="data/raw/daily_forward_adjusted", live_root="data/live/daily", fetcher=None):

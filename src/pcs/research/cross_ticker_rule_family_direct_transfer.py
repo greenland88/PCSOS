@@ -8,15 +8,11 @@ ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / "research_outputs" / "nvda_entry_discovery_agent_v2"
 QQQ = ROOT / "research_outputs/qqq_entry_discovery_agent_v1/artifacts/qqq_pit_feature_outcome_table_train_2020_2023.parquet"
 
-def _true_flags(series: pd.Series) -> pd.Series:
-    return series.map(lambda v: v is True or v == 1 or (isinstance(v, str) and v.strip().lower() in {"true", "1", "yes"}))
-
 def metrics(g):
     p = g.realized_pnl.astype(float); wins = p[p > 0]; losses = p[p < 0]
     loo = [float(p.sum() - x) for x in p]
     top3 = float(p.nlargest(min(3, len(p))).sum() / p.sum()) if len(p) and p.sum() else None
-    completed = _true_flags(g.lifecycle_completed)
-    return {"qualifying_dates": int(len(g)), "independent_episodes": int(len(g)), "executable_episodes": int(completed.sum()),
+    return {"qualifying_dates": int(len(g)), "independent_episodes": int(len(g)), "executable_episodes": int((g.lifecycle_completed == True).sum()),
             "total_pnl": float(p.sum()), "expectancy": float(p.mean()) if len(p) else None,
             "pf": float(wins.sum() / abs(losses.sum())) if len(losses) else None,
             "win_rate": float((p > 0).mean()) if len(p) else None, "stop_rate": float(g.stopped.mean()) if len(g) else None,
@@ -25,19 +21,14 @@ def metrics(g):
             "leave_one_episode_out": {"min_pnl": min(loo) if loo else None, "negative_count": int(sum(x < 0 for x in loo))},
             "top3_pnl_share": top3}
 
-def episodes(d, trading_sessions=None):
-    d = d[_true_flags(d.lifecycle_completed)].sort_values("trade_date").copy()
-    if trading_sessions is None:
-        raise ValueError("DIRECT_TRANSFER_REQUIRES_EXCHANGE_SESSIONS")
-    sessions = pd.DatetimeIndex(trading_sessions).normalize()
-    positions = {day: i for i, day in enumerate(sessions)}
-    d["session_index"] = d.trade_date.map(lambda value: positions.get(pd.Timestamp(value).normalize(), -1))
-    d["episode_id"] = d.session_index.diff().fillna(999).ne(1).cumsum()
+def episodes(d):
+    d = d[d.lifecycle_completed == True].sort_values("trade_date").copy()
+    d["gap"] = d.trade_date.diff().dt.days.fillna(999)
+    d["episode_id"] = (d.gap > 10).cumsum()
     return d.groupby("episode_id", as_index=False).head(1)
 
 def run(ticker="QQQ", outcome_path=QQQ):
     d = pd.read_parquet(outcome_path); d.trade_date = pd.to_datetime(d.trade_date)
-    sessions = PCSDataAccess().read_prices(ticker, d.trade_date.min(), d.trade_date.max()).date
     if "realized_pnl" not in d:
         raise ValueError("DIRECT_TRANSFER_REQUIRES_AUTHORITATIVE_LIFECYCLE_PNL")
     if "sma200" not in d or "ret5" not in d or "ret20" not in d or "volume_ratio20" not in d:
@@ -54,7 +45,7 @@ def run(ticker="QQQ", outcome_path=QQQ):
     results = {}
     for family, mask in specs.items():
         qualifying = d[mask]
-        q = episodes(qualifying, sessions)
+        q = episodes(qualifying)
         m = metrics(q)
         m["qualifying_dates"] = int(len(qualifying))
         m["family"] = family; m["ticker"] = ticker

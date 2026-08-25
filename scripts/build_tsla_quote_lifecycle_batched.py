@@ -5,10 +5,10 @@ from pathlib import Path
 import pandas as pd
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
 from pcs.data.access import PCSDataAccess
-REPO_ROOT=Path(__file__).resolve().parents[1]
-ROOT=REPO_ROOT/"research_outputs/tsla_specialized_pcs_20260820"; PARTS=ROOT/"quote_batches"; VAR=ROOT/"tsla_specialized_candidate_variants.parquet"; BATCH=1; MAX_NEW_UNITS=int(os.getenv("TSLA_QUOTE_MAX_NEW_UNITS","25"))
+from pcs.data.daily_provider import DailyDataProvider
+ROOT=Path("research_outputs/tsla_specialized_pcs_20260820"); PARTS=ROOT/"quote_batches"; VAR=ROOT/"tsla_specialized_candidate_variants.parquet"; BATCH=1; MAX_NEW_UNITS=int(os.getenv("TSLA_QUOTE_MAX_NEW_UNITS","25"))
 def build():
- PARTS.mkdir(parents=True,exist_ok=True); v=pd.read_parquet(VAR); v=v[v.status.eq("VALID")].copy(); v["month"]=pd.to_datetime(v.decision_date).dt.strftime("%Y-%m"); v["row_no"]=v.groupby("month").cumcount(); v["batch"]=v.row_no//BATCH; a=PCSDataAccess(); daily=a.read_prices("TSLA", start_date=v.decision_date.min(), end_date=v.expiration.max()); daily.date=pd.to_datetime(daily.date); manifest=[]; new_units=0
+ PARTS.mkdir(parents=True,exist_ok=True); v=pd.read_parquet(VAR); v=v[v.status.eq("VALID")].copy(); v["month"]=pd.to_datetime(v.decision_date).dt.strftime("%Y-%m"); v["row_no"]=v.groupby("month").cumcount(); v["batch"]=v.row_no//BATCH; daily=DailyDataProvider().build_daily_series("TSLA",as_of_date=v.expiration.max(),start_date=v.decision_date.min()); daily.date=pd.to_datetime(daily.date); a=PCSDataAccess(); manifest=[]; new_units=0
  for (month,bno),g in v.groupby(["month","batch"],sort=True):
   if new_units >= MAX_NEW_UNITS: break
   uid=f"{month}_{int(bno):04d}"; qp=PARTS/f"quotes_{uid}.parquet"; mp=PARTS/f"marks_{uid}.parquet"; jp=PARTS/f"manifest_{uid}.json"; expected=int(sum(((daily.date>=pd.Timestamp(r.decision_date))&(daily.date<=pd.Timestamp(r.expiration))).sum() for r in g.itertuples()))

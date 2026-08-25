@@ -13,8 +13,6 @@ tr=pd.read_parquet(BASE/"train_lifecycle_outcomes.parquet")
 tr=tr[tr.status.eq("COMPLETE")].copy(); tr["date"]=pd.to_datetime(tr.date).dt.normalize(); tr["pnl"]=tr.realized_pnl.astype(float); tr["year"]=tr.date.dt.year; tr["stop"]=tr.exit_reason.eq("STOP")
 tr=tr.drop(columns=[c for c in ["sequence_state","year_x","year_y"] if c in tr], errors="ignore")
 px=PCSDataAccess().read_prices("NVDA","2019-01-01","2023-12-31").copy(); px.date=pd.to_datetime(px.date).dt.normalize(); px=px.sort_values("date").drop_duplicates("date").reset_index(drop=True)
-nvda_sessions=pd.DatetimeIndex(px.date)
-session_pos=pd.Series(range(len(nvda_sessions)),index=nvda_sessions)
 qq=PCSDataAccess().read_prices("QQQ","2019-01-01","2023-12-31").copy(); qq.date=pd.to_datetime(qq.date).dt.normalize(); qq=qq.sort_values("date").drop_duplicates("date").set_index("date")
 px["ret1"]=px.close.pct_change(); px["ret3"]=px.close.pct_change(3); px["ret5"]=px.close.pct_change(5); px["atr14"]=(px.high-px.low).rolling(14).mean(); px["atrret3"]=px.ret3/(px.atr14/px.close).replace(0,np.nan)
 px["ma20"]=px.close.rolling(20).mean(); px["ma50"]=px.close.rolling(50).mean(); px["ma20slope"]=px.ma20.pct_change(5); px["ma50slope"]=px.ma50.pct_change(10); px["ma20dist"]=px.close/px.ma20-1; px["ma50dist"]=px.close/px.ma50-1
@@ -47,8 +45,7 @@ episode=out.groupby("episode_id").apply(m,include_groups=False).reset_index(); e
 rank=out.groupby("episode_rank",observed=True).apply(m,include_groups=False).reset_index(); rank.to_csv(OUT/"episode_rank_summary.csv",index=False)
 delay=[]
 for k in range(0,4):
-    target=tr.date.map(session_pos).add(k).map(pd.Series(nvda_sessions))
-    d=feat.reindex(target.to_numpy()); z=tr.copy(); z["ret1_after_delay"]=d.close.to_numpy()/feat.reindex(tr.date).close.to_numpy()-1; z["state_after_delay"]=d.sequence_state.to_numpy(); delay.append(m(z).rename(f"DELAY_{k}D"))
+    d=feat.reindex(tr.date+pd.offsets.BDay(k)); z=tr.copy(); z["ret1_after_delay"]=d.close.to_numpy()/feat.reindex(tr.date).close.to_numpy()-1; z["state_after_delay"]=d.sequence_state.to_numpy(); delay.append(m(z).rename(f"DELAY_{k}D"))
 pd.DataFrame(delay).to_csv(OUT/"descriptive_delay_underlying_summary.csv")
 json.dump({"research_id":"nvda_deep_entry_round16","ticker":"NVDA","research_mode":"EXISTING_TRADE","population":"corrected frozen TRAIN lifecycle ledger","features_pit_safe":True,"delayed_contract_reselection":"NOT_RUN","validation_read":False,"final_oos_read":False,"production_changes":False,"status":"DESCRIPTIVE_ONLY"},open(OUT/"study_manifest.json","w"),indent=2)
 print(pd.DataFrame(tables).to_string()); print("\nAnnual:\n",annual.to_string(index=False)); print("\nEpisodes:",len(episode),"median trades/episode:",episode.trade_count.median())

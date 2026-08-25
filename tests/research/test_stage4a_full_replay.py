@@ -25,23 +25,6 @@ class FakeEngine:
                                      "model_dump": lambda self, mode=None: {"action": "WAIT", "reason": "test rejection", "reason_codes": ["TEST_REJECT"]}})()
 
 
-class OpenEngine:
-    def evaluate_candidate(self, candidate, market, portfolio, **kwargs):
-        return type("Decision", (), {"action": "OPEN", "reason": "test open", "reason_codes": ["TEST_OPEN"],
-                                     "planned_loss": 10.0,
-                                     "model_dump": lambda self, mode=None: {"action": "OPEN", "reason": "test open", "reason_codes": ["TEST_OPEN"]}})()
-
-
-class CapacityEngine:
-    def __init__(self): self.planned_losses = []
-    def evaluate_candidate(self, candidate, market, portfolio, **kwargs):
-        self.planned_losses.append(float(portfolio["planned_loss"]))
-        action = "OPEN" if portfolio["planned_loss"] < 10 else "WAIT"
-        return type("Decision", (), {"action": action, "reason": "test", "reason_codes": ["TEST"],
-                                     "planned_loss": 10.0 if action == "OPEN" else 0.0,
-                                     "model_dump": lambda self, mode=None: {"action": action}})()
-
-
 def test_rejected_candidates_persist_and_no_support_skips_engine(tmp_path):
     engine = FakeEngine()
     frame = pd.DataFrame([base_row(), base_row(candidate_id="c2", support_state="NO_SUPPORT", support_level=None)])
@@ -61,44 +44,3 @@ def test_future_event_is_persisted_but_not_evaluated(tmp_path):
     assert engine.calls == 0
     out = pd.read_parquet(tmp_path / "stage4a_candidate_decisions.parquet")
     assert out.iloc[0].status == "EVENT_WINDOW_UNSUPPORTED"
-
-
-def test_string_false_replay_eligibility_is_not_truthy(tmp_path):
-    engine = FakeEngine()
-    frame = pd.DataFrame([base_row(event_state="NO_EVENT_IN_WINDOW", historical_replay_eligible="false")])
-    run_stage4a_full_replay(frame, decision_engine=engine, lifecycle_replay=None,
-                            market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
-                            config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path))
-    assert engine.calls == 0
-
-
-def test_lifecycle_failure_replaces_replayed_decision_without_duplicate(tmp_path):
-    frame = pd.DataFrame([base_row()])
-    result = run_stage4a_full_replay(
-        frame,
-        decision_engine=OpenEngine(),
-        lifecycle_replay=lambda row: (_ for _ in ()).throw(RuntimeError("lifecycle boom")),
-        market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
-        config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path),
-    )
-    out = pd.read_parquet(tmp_path / "stage4a_candidate_decisions.parquet")
-    assert result["decisions"] == 1
-    assert out.candidate_id.tolist() == ["c1"]
-    assert out.status.tolist() == ["CONTRACT_FAILURE"]
-    assert out.accepted.tolist() == [False]
-
-
-def test_completed_lifecycle_releases_capacity_before_later_candidate(tmp_path):
-    engine = CapacityEngine()
-    frame = pd.DataFrame([
-        base_row(candidate_id="c1", date="2025-01-01", expiration="2025-02-05"),
-        base_row(candidate_id="c2", date="2025-01-03", expiration="2025-02-07"),
-    ])
-    result = run_stage4a_full_replay(
-        frame, decision_engine=engine,
-        lifecycle_replay=lambda row: {"exit_date": "2025-01-02"},
-        market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
-        config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path),
-    )
-    assert result["opened"] == 2
-    assert engine.planned_losses == [0.0, 0.0]

@@ -27,6 +27,7 @@ from pcs.research.entry_candidate_universe import (
 )
 from pcs.research.scheduled_event_calendar import load_calendar
 from pcs.data.duckdb_store import connect as connect_duckdb
+from pcs.data.executable_boundary import resolve_executable_start_date
 
 
 @dataclass(frozen=True)
@@ -46,9 +47,13 @@ class ReplayPolicy:
 
 
 def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
-                  expiry: pd.Timestamp) -> str | None:
+                  expiry: pd.Timestamp, trading_sessions=None) -> str | None:
     if calendar is None or calendar.empty:
         return "EVENT_CALENDAR_UNAVAILABLE"
+    if "event_date_known_at_entry" not in calendar.columns:
+        return "EVENT_CALENDAR_PIT_METADATA_MISSING"
+    if not calendar["event_date_known_at_entry"].astype(str).str.upper().isin({"YES", "TRUE", "1"}).all():
+        return "EVENT_CALENDAR_PIT_METADATA_UNVERIFIED"
     rows = calendar[(calendar.event_type == "EARNINGS") &
                     ((calendar.symbol == ticker) | calendar.symbol.isna())]
     for event in pd.to_datetime(rows.event_date).dt.normalize():
@@ -59,26 +64,20 @@ def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
             continue
         if entry <= event <= expiry:
             return "EVENT_EARNINGS_CROSSING"
-        # Existing EventGate uses business-day distance rather than calendar days.
-        if 0 <= len(pd.bdate_range(entry, event, inclusive="right")) <= 3:
+        if trading_sessions is None:
+            return "TRADING_SESSION_CALENDAR_UNAVAILABLE"
+        sessions = pd.DatetimeIndex(pd.to_datetime(trading_sessions)).normalize()
+        if entry not in sessions or event not in sessions:
+            return "TRADING_SESSION_CALENDAR_INVALID"
+        distance = int(sessions.get_loc(event)) - int(sessions.get_loc(entry))
+        if 0 <= distance <= 3:
             return "EVENT_PRE_EARNINGS_BLACKOUT"
     return None
 
 
 def _load_replay_calendar(path: str | Path) -> pd.DataFrame:
-    """Load either the canonical calendar or the repository's raw export."""
-    try:
-        return load_calendar(path)
-    except ValueError:
-        d = pd.read_csv(path)
-        d = d.rename(columns={"source_name": "source", "source_url": "source_id"})
-        d["event_type"] = d["event_type"].replace({
-            "FOMC_POLICY_DECISION": "FOMC",
-            "CPI_RELEASE": "CPI",
-            "EMPLOYMENT_SITUATION": "NFP_EMPLOYMENT",
-        })
-        d["event_date"] = pd.to_datetime(d["event_date"], errors="raise").dt.normalize()
-        return d
+    """Load only the validated, provenance-bearing canonical calendar."""
+    return load_calendar(path)
 
 
 def _spread_candidates(chain: pd.DataFrame, day: pd.Timestamp, close: float,
@@ -161,7 +160,11 @@ def _replay_lifecycle(candidate: dict[str, Any], quotes: pd.DataFrame,
     elif stop:
         exit_mark, reason = stop, "STOP"
     else:
-        exit_mark, reason = marks[min(len(marks), policy.max_quote_days) - 1], "TIME_EXIT"
+        terminal = marks[min(len(marks), policy.max_quote_days) - 1]
+        if terminal[0] < pd.Timestamp(candidate["expiration"]) and len(marks) < policy.max_quote_days:
+            return {"status": "RIGHT_CENSORED", "exit_reason": "RIGHT_CENSORED",
+                    "mark_count": len(marks), "missing_mark_count": missing}
+        exit_mark, reason = terminal, "TIME_EXIT"
     costs = [x[1] for x in marks]
     pnl = (initial - exit_mark[1]) * 100
     return {"status": "COMPLETE", "exit_date": exit_mark[0], "exit_reason": reason,
@@ -259,7 +262,11 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
     elif stop:
         exit_mark, reason = stop, "STOP"
     else:
-        exit_mark, reason = marks[min(len(marks), policy.max_quote_days) - 1], "TIME_EXIT"
+        terminal = marks[min(len(marks), policy.max_quote_days) - 1]
+        if terminal[0] < pd.Timestamp(candidate["expiration"]) and len(marks) < policy.max_quote_days:
+            return {"status": "RIGHT_CENSORED", "exit_reason": "RIGHT_CENSORED",
+                    "mark_count": len(marks), "missing_mark_count": missing}
+        exit_mark, reason = terminal, "TIME_EXIT"
     costs = [x[1] for x in marks]
     return {"status": "COMPLETE", "exit_date": exit_mark[0], "exit_reason": reason,
             "realized_pnl": (initial - exit_mark[1]) * 100,
@@ -294,10 +301,14 @@ def compare_lifecycle_loaders(candidate: dict[str, Any], quotes: pd.DataFrame,
 def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
                  dates: list[str] | pd.Series, benchmark_path: str | Path,
                  calendar_path: str | Path, baseline_contexts: dict[str, dict[str, Any]] | None = None,
+                 benchmark_symbol: str | None = None,
             policy: ReplayPolicy | None = None) -> pd.DataFrame:
     """Replay all A/B candidates for explicit dates; never selects one spread."""
     policy = policy or ReplayPolicy()
-    dates = [value for value in dates if pd.Timestamp(value).year >= 2020]
+    if not benchmark_symbol:
+        raise ValueError("SPEC_INCOMPLETE: benchmark_symbol")
+    boundary = pd.Timestamp(resolve_executable_start_date(ticker, PCSDataAccess().source_routes))
+    dates = [value for value in dates if pd.Timestamp(value).normalize() >= boundary]
     stock = _daily(daily_path); benchmark = _daily(benchmark_path)
     stock["atr14"] = _atr14(stock)
     calendar = _load_replay_calendar(calendar_path)
@@ -312,7 +323,7 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
             continue
         context = (baseline_contexts or {}).get(str(day.date()))
         if context is None:
-            context = build_historical_setup_context(stock, benchmark, day, ticker, "QQQ")
+            context = build_historical_setup_context(stock, benchmark, day, ticker, benchmark_symbol)
         variant = evaluate_intended_pullback_variant(context)
         baseline = context.get("pullback_gate_result")
         a = getattr(baseline, "pullback_gate_result", None)
@@ -330,12 +341,12 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
         close = float(row.iloc[0].close); atr = float(row.iloc[0].atr14)
         setup = {**context, "ticker": ticker}
         for candidate in _spread_candidates(chain, day, close, atr, setup, policy):
-            event_reason = _event_reason(calendar, ticker, day, candidate["expiration"])
+            event_reason = _event_reason(calendar, ticker, day, candidate["expiration"], stock.date)
             event_date = next((x for x in pd.to_datetime(calendar.loc[(calendar.event_type == "EARNINGS") & ((calendar.symbol == ticker) | calendar.symbol.isna()), "event_date"]).dt.normalize() if x >= day), None)
             crosses = bool(event_date is not None and day <= event_date <= candidate["expiration"])
             if event_reason == "EVENT_PRE_EARNINGS_BLACKOUT":
                 continue
-            if event_reason == "EVENT_CALENDAR_UNAVAILABLE":
+            if event_reason in {"EVENT_CALENDAR_UNAVAILABLE", "EVENT_CALENDAR_PIT_METADATA_MISSING", "EVENT_CALENDAR_PIT_METADATA_UNVERIFIED", "TRADING_SESSION_CALENDAR_UNAVAILABLE", "TRADING_SESSION_CALENDAR_INVALID"}:
                 continue
             if policy.reject_expiration_crossing and crosses:
                 continue
@@ -347,7 +358,8 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
                 subgroup = "VARIANT_B_MODERATE_SUPPORT"
             else:
                 subgroup = group
-            days_to_event = len(pd.bdate_range(day, event_date, inclusive="right")) if event_date is not None else None
+            sessions = pd.DatetimeIndex(stock.date).normalize()
+            days_to_event = (int(sessions.get_loc(event_date)) - int(sessions.get_loc(day))) if event_date is not None and event_date in sessions and day in sessions else None
             pending.append({**candidate, "population": group, "subgroup": subgroup,
                             "baseline_pullback": a, "variant_pullback": b,
                             "event_crosses_earnings": crosses, "earnings_date": event_date,

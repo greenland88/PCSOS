@@ -3,19 +3,20 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
+import duckdb
 import pcs.research.entry_candidate_universe as m
 
-REPO_ROOT=Path(__file__).resolve().parents[1]
-ART=REPO_ROOT/'data/parquet/research/variant_b_full'
-OUT=REPO_ROOT/'data/parquet/research/option_quality'; OUT.mkdir(parents=True,exist_ok=True)
-from pcs.data.access import PCSDataAccess
+ROOT=Path('data/raw/daily_forward_adjusted')
+ART=Path('data/parquet/research/variant_b_full')
+OUT=Path('data/parquet/research/option_quality'); OUT.mkdir(parents=True,exist_ok=True)
 TICKERS=['AAPL','AMD','AMZN','AVGO','CRM','GOOGL','HOOD','META','MSFT','MU','NFLX','NVDA','QQQ','SPY','TSLA','VRT']
 
 def run(t):
     tr=pd.read_parquet(ART/f'{t}_full_post2020_2d.parquet'); tr=tr[tr.status.eq('COMPLETE')].copy()
     tr['date']=pd.to_datetime(tr.date); setup=tr.date.drop_duplicates().sort_values()
-    access=PCSDataAccess(); d=access.read_prices(t, end=setup.max()); d['atr14']=m._atr14(d); dm=d.set_index('date')
-    q=access.read_quotes(t, setup.min(), setup.max() + pd.Timedelta(days=20))
+    d=m._daily(ROOT/f'{t}_daily_qfq.csv'); d['atr14']=m._atr14(d); dm=d.set_index('date')
+    con=duckdb.connect('data/duckdb/pcs.duckdb',read_only=True)
+    q=con.execute("""select trade_date,expiration_date,strike,call_put,bid,ask,volume,open_interest,bid_iv,ask_iv from options where symbol=? and trade_date>=?""",[t,setup.min().date()]).fetchdf(); con.close()
     q['trade_date']=pd.to_datetime(q.trade_date); q['expiration_date']=pd.to_datetime(q.expiration_date); q=q[q.call_put.str.lower().eq('p')]
     breadth=[]
     for day in setup:

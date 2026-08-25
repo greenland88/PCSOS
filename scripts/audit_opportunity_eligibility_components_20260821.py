@@ -1,15 +1,10 @@
 from pathlib import Path
 import pandas as pd
-from pcs.data.access import PCSDataAccess
 
 BASE=Path('research_outputs/spy_qqq_pcs_baseline_20260821')
 OUT=Path('research_outputs/opportunity_episode_analysis_20260821')
 
 def build(ticker):
-    sessions=pd.DatetimeIndex(pd.to_datetime(PCSDataAccess().read_prices(ticker)["date"]).dt.normalize().drop_duplicates().sort_values())
-    def session_distance(start,end):
-        if pd.isna(start): return pd.NA
-        return int(((sessions >= pd.Timestamp(start)) & (sessions <= pd.Timestamp(end))).sum())-1
     c=pd.read_parquet(BASE/f'{ticker}_entry_contract_v2.parquet').copy()
     o=pd.read_parquet(BASE/f'{ticker}_train_validation_outcomes.parquet').copy()
     l=pd.read_parquet(BASE/f'{ticker}_lifecycle_marks.parquet').copy()
@@ -30,12 +25,12 @@ def build(ticker):
         for gap in (10,15,20):
             ids=[]; start=None; previous=None; eid=0
             for _,r in z.iterrows():
-                if start is None or (previous is not None and session_distance(previous,r.decision_date) >= gap): eid+=1; start=r.decision_date
+                if start is None or (previous is not None and len(pd.bdate_range(previous,r.decision_date))-1 >= gap): eid+=1; start=r.decision_date
                 ids.append(f'{ticker}_{split}_{gap}D_EP_{eid:03d}'); previous=r.decision_date
             q=z.copy(); q['split']=split; q['gap_days']=gap; q['episode_id']=ids; out.append(q)
     x=pd.concat(out,ignore_index=True)
     x['previous_eligible_date']=x.groupby(['ticker','split','gap_days']).decision_date.shift(1)
-    x['trading_days_since_previous_eligible']=x.apply(lambda r: session_distance(r.previous_eligible_date,r.decision_date),axis=1)
+    x['trading_days_since_previous_eligible']=x.apply(lambda r: len(pd.bdate_range(r.previous_eligible_date,r.decision_date))-1 if pd.notna(r.previous_eligible_date) else pd.NA,axis=1)
     x['raw_eligible']=True; x['gate_liquidity_valid']=x.liquidity_valid; x['gate_pit_status_pass']=x.pit_status.eq('PIT_SAFE'); x['gate_event_data_valid']=x.event_data_valid
     for name in ['trend','support','regime','credit','dte','safe_strike','confirmation']: x[f'gate_{name}']='UNKNOWN'
     cols=['decision_date','ticker','split','gap_days','raw_eligible','gate_liquidity_valid','gate_pit_status_pass','gate_event_data_valid','gate_trend','gate_support','gate_regime','gate_credit','gate_dte','gate_safe_strike','gate_confirmation','atr','safe_strike_atr','safe_strike','dte','credit','credit_width_ratio','status','candidate_id','actual_opened_trade_id','exit_date','exposure_cycle_id','episode_id','previous_eligible_date','trading_days_since_previous_eligible','pnl','exit_reason','stop']

@@ -11,18 +11,20 @@ from pathlib import Path
 
 import pandas as pd
 
-from pcs.data.access import PCSDataAccess
-from pcs.research.credit_stop import load_spread_quotes_canonical, run_backtest
+from pcs.research.credit_stop import (
+    load_spread_quotes_duckdb,
+    run_backtest,
+)
 
-ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "research_outputs/spy_qqq_pcs_baseline_20260821"
+OUT = Path("research_outputs/spy_qqq_pcs_baseline_20260821")
 START = pd.Timestamp("2020-01-02")
 END = pd.Timestamp("2026-08-18")
 SYMBOLS = ("SPY", "QQQ")
 
 
 def _daily(symbol: str) -> pd.DataFrame:
-    frame = PCSDataAccess().read_prices(symbol)
+    paths = sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))
+    frame = pd.concat((pd.read_parquet(p) for p in paths), ignore_index=True)
     frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
     return frame.sort_values("date").drop_duplicates("date").reset_index(drop=True)
 
@@ -36,7 +38,7 @@ def _candidate_id(symbol: str, row: dict) -> str:
 
 
 def _market_confirmation() -> pd.DataFrame:
-    path = ROOT / "data/derived/market_confirmation_daily.parquet"
+    path = Path("data/derived/market_confirmation_daily.parquet")
     frame = pd.read_parquet(path)
     frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
     return frame
@@ -88,8 +90,8 @@ def _build_lifecycle(symbol: str, contract: dict, initial_credit: float) -> list
     entry = pd.Timestamp(contract["decision_date"])
     expiry = pd.Timestamp(contract["expiration"])
     tracking_end = min(expiry, entry + pd.Timedelta(days=45))
-    quotes, _ = load_spread_quotes_canonical(
-        symbol, entry, tracking_end, expiry,
+    quotes = load_spread_quotes_duckdb(
+        ":memory:", symbol, entry, tracking_end, expiry,
         [contract["short_strike"], contract["long_strike"]],
     )
     rows = []
@@ -125,7 +127,7 @@ def main() -> None:
         stock = _daily(symbol)
         result = run_backtest(
             stock, _daily("QQQ"), option_root=f"data/parquet/options_monthly/{symbol}",
-            start=START, end=END, backend="canonical",
+            start=START, end=END, backend="duckdb", duckdb_path=":memory:",
         )
         contracts = [_entry_contract(symbol, row, confirmation) for row in result["trades"]]
         for contract, row in zip(contracts, result["trades"]):

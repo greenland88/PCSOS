@@ -2,16 +2,12 @@
 from itertools import combinations
 from pathlib import Path
 import json
-import os
-import uuid
 import pandas as pd
 
 ROOT=Path("research_outputs/qqq_entry_discovery_agent_v1"); ART=ROOT/"artifacts"
 
-def first_episode(x, calendar):
-    x=x.sort_values("trade_date").copy(); sessions=pd.DatetimeIndex(pd.to_datetime(calendar).dt.normalize().drop_duplicates().sort_values()); positions=pd.Series(range(len(sessions)),index=sessions); x["session_index"]=x.trade_date.map(positions)
-    if x["session_index"].isna().any(): raise ValueError("QQQ_CROSS_FAMILY_SESSION_INDEX_INCOMPLETE")
-    x["episode_id"]=x.session_index.diff().fillna(999).ne(1).cumsum(); return x.groupby("episode_id",as_index=False).first()
+def first_episode(x):
+    x=x.sort_values("trade_date").copy(); x["episode_id"]=(x.trade_date.diff().dt.days.fillna(999)>4).cumsum(); return x.groupby("episode_id",as_index=False).first()
 
 def metric(x):
     p=x.realized_pnl; w=p[p>0]; l=p[p<0]
@@ -27,15 +23,10 @@ def run():
       "H005_TREND_CONFIRMED_MODERATE_VOL":d.close_sma200_atr.between(.0879,8.109,inclusive="right")&d.vol_pct_rank.between(.429,.753,inclusive="right"),
       "CONTROLLED_RESET":(d.drawdown60<=-.02)&(d.ret10>0),
     }
-    entries={n:first_episode(d[m], d.trade_date) for n,m in states.items()}
+    entries={n:first_episode(d[m]) for n,m in states.items()}
     out={"module":"pcs.research.qqq_cross_family_preservation","version":"v1","status":"DESCRIPTIVE_ONLY","data_source":"PCS_CANONICAL_DATA","research_mode":"EXISTING_TRADE","families":{},"pairwise_date_overlap":{},"threshold_mining":False,"validation_read":False,"final_oos_read":False,"production_changes":False,"reason_codes":["PIT_SAFE_FEATURES","FROZEN_FAMILIES","ONE_ENTRY_PER_EPISODE","DESCRIPTIVE_ONLY"]}
     for n,e in entries.items(): out["families"][n]={"frozen_date_count":int(states[n].sum()),"one_entry_per_episode":metric(e),"year_metrics":{str(y):metric(g) for y,g in e.groupby(e.trade_date.dt.year)}}
     for a,b in combinations(entries,2):
         key=f"{a}__{b}"; sa=set(entries[a].trade_date.astype(str)); sb=set(entries[b].trade_date.astype(str)); out["pairwise_date_overlap"][key]={"overlap_dates":len(sa&sb),"a_share":float(len(sa&sb)/len(sa)) if sa else None,"b_share":float(len(sa&sb)/len(sb)) if sb else None}
-    target=ART/"cross_family_preservation.json"; temp=target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp");
-    try:
-        temp.write_text(json.dumps(out,indent=2,default=str),encoding="utf-8"); os.replace(temp,target)
-    finally:
-        temp.unlink(missing_ok=True)
-    print(json.dumps(out,indent=2,default=str)); return out
+    (ART/"cross_family_preservation.json").write_text(json.dumps(out,indent=2,default=str),encoding="utf-8"); print(json.dumps(out,indent=2,default=str)); return out
 if __name__=="__main__": run()

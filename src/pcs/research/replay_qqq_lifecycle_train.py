@@ -8,13 +8,11 @@ from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
 from pcs.research.variant_b_replay import ReplayPolicy
 
 ROOT=Path('research_outputs/qqq_entry_discovery_agent_v1'); ART=ROOT/'artifacts'
-def _true_flag(series: pd.Series) -> pd.Series:
-    return series.map(lambda v: v is True or v == 1 or (isinstance(v, str) and v.strip().lower() in {"true", "1", "yes"}))
 def main(root=ROOT, ticker='QQQ', input_name='broad_pcs_outcome_map_train_2020_2023.parquet', output_name='authoritative_lifecycle_outcomes_train_2020_2023.parquet'):
     root=Path(root); art=root/'artifacts'; art.mkdir(parents=True, exist_ok=True)
     input_path = art/input_name if (art/input_name).is_file() else root/input_name
     base=pd.read_parquet(input_path)
-    selected=base[_true_flag(base.contract_selected) & _true_flag(base.lifecycle_completed)].copy()
+    selected=base[base.contract_selected.astype(bool) & base.lifecycle_completed.astype(bool)].copy()
     access=PCSDataAccess(); registry=load_corporate_actions(); rows=[]
     for year,g in selected.assign(year=pd.to_datetime(selected.trade_date).dt.year).groupby('year',sort=True):
         option_start = pd.Timestamp(g.trade_date.min()).strftime('%Y-%m-%d')
@@ -24,10 +22,7 @@ def main(root=ROOT, ticker='QQQ', input_name='broad_pcs_outcome_map_train_2020_2
         for r in g.to_dict('records'):
             day=pd.Timestamp(r['trade_date']).normalize(); exp=pd.Timestamp(r['expiration']).normalize(); ss=float(r['short_strike']); ls=float(r['long_strike'])
             cand={'candidate_id':_identity(ticker,day,exp,ss,ls),'ticker':ticker,'date':day,'expiration':exp,'short_strike':ss,'long_strike':ls,'initial_credit':float(r['credit']),'contract_mapping_available':True}
-            q=opts[(opts.symbol.astype(str).str.upper()==ticker.upper())
-                   & opts.call_put.astype(str).str.lower().eq("p")
-                   & (opts.trade_date>=day)&(opts.trade_date<=exp)
-                   & opts.expiration_date.eq(exp)&opts.strike.isin([ss,ls])].copy()
+            q=opts[(opts.trade_date>=day)&(opts.trade_date<=exp)&opts.expiration_date.eq(exp)&opts.strike.isin([ss,ls])].copy()
             try:
                 validate_lifecycle_corporate_action(cand,registry); quote_rows.extend(build_lifecycle_quote_rows(q,cand)); candidates.append(r)
             except Exception as exc:

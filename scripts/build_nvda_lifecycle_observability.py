@@ -17,10 +17,11 @@ from pcs.data.access import PCSDataAccess
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "research_outputs" / "nvda_lifecycle_observability_20260820"
 REPLAY = ROOT / "research_outputs" / "nvda_v2_v2_replay.parquet"
+DAILY = ROOT / "data" / "raw" / "daily_forward_adjusted" / "NVDA_daily_qfq.csv"
 
 
 def _daily() -> pd.DataFrame:
-    d = PCSDataAccess().read_prices("NVDA")
+    d = pd.read_csv(DAILY).rename(columns={"日期": "date", "开盘价": "open", "最高价": "high", "最低价": "low", "收盘价": "close", "成交量": "volume"})
     d["date"] = pd.to_datetime(d.date).dt.normalize()
     return d[["date", "open", "high", "low", "close", "volume"]].drop_duplicates("date").sort_values("date")
 
@@ -44,7 +45,7 @@ def build() -> dict:
         x.insert(0, "candidate_id", r.candidate_id)
         x.insert(1, "candidate_date", r.date)
         x["days_since_entry"] = (x.date - r.date).dt.days
-        x["source_provenance"] = "PCSDataAccess:canonical_daily_source"
+        x["source_provenance"] = "data/raw/daily_forward_adjusted/NVDA_daily_qfq.csv"
         underlying_rows.append(x)
     underlying = pd.concat(underlying_rows, ignore_index=True)
     underlying.to_parquet(OUT / "nvda_daily_underlying.parquet", index=False)

@@ -23,7 +23,22 @@ def _audit_frame(frame: pd.DataFrame, path: str) -> dict:
         examples.append({'key':{k:(v.isoformat() if hasattr(v,'isoformat') else v) for k,v in zip(key,idx)},'rows':rows.drop(columns=['_payload_hash']).head(4).to_dict('records')})
     return {'path':path,'rows':len(d),'duplicate_rows':len(dup),'duplicate_keys':len(versions),'exact_duplicate_keys':int((versions==1).sum()),'conflicting_keys':int((versions>1).sum()),'examples':examples}
 
-def audit(root='data/parquet/options_v2', manifest='data/manifests/storage_manifest_v2.csv', symbol=None, year=None):
+def audit(root=None, manifest=None, symbol=None, year=None, access=None):
+    """Audit the active logical options route for a ticker.
+
+    Explicit roots/manifests remain supported for migration and repair tools;
+    normal callers should provide a symbol and use PCSDataAccess routing.
+    """
+    if root is None or manifest is None:
+        if not symbol:
+            raise ValueError("symbol is required for logical options audit")
+        from .access import PCSDataAccess
+        access = access or PCSDataAccess()
+        spec = access.resolve_source("options", symbol)
+        root = Path(spec.path.split(';')[0]).parents[3]
+        manifest = Path(spec.source_version.split(':', 1)[-1]) if ':' in spec.source_version else None
+        if manifest is None or not manifest.exists():
+            manifest = access.manifest_path
     root=Path(root); records=[]; frames={}
     for p in sorted(root.glob('symbol=*/year=*/quarter=*/*.parquet')):
         parts=p.parts; sym=next((x.split('=',1)[1] for x in parts if x.startswith('symbol=')), '')
@@ -50,7 +65,7 @@ def audit(root='data/parquet/options_v2', manifest='data/manifests/storage_manif
         source_duplicate_rows=int(msel.duplicated(['dataset','symbol','year','quarter','source_file'],False).sum())
         route_duplicate_rows=int(msel.duplicated(['symbol','year','quarter','parquet_path'],False).sum())
     else: manifest_dup=0; source_versions=0; manifest_rows=[]; overlap_examples=[]; source_duplicate_rows=0; route_duplicate_rows=0
-    result={'module':'pcs.data.duplicate_audit','status':'COMPLETED','key':KEY,'partitions':records,'partition_duplicate_rows':sum(x['duplicate_rows'] for x in records),'partition_duplicate_keys':sum(x['duplicate_keys'] for x in records),'exact_duplicate_keys':sum(x['exact_duplicate_keys'] for x in records),'conflicting_keys':sum(x['conflicting_keys'] for x in records),'manifest_duplicate_partition_rows':manifest_dup,'manifest_source_versions':source_versions,'manifest_rows':manifest_rows,'overlapping_source_partition_count':len(overlap_examples),'overlapping_source_partition_examples':overlap_examples[:3],'duplicate_source_version_rows':source_duplicate_rows,'route_merge_duplicate_rows':route_duplicate_rows,'route':'options_v2','route_merge_duplication':'INACTIVE_ROUTE_NOT_INCLUDED' if route_duplicate_rows == 0 else 'DUPLICATE_MANIFEST_TARGET'}
+    result={'module':'pcs.data.duplicate_audit','status':'COMPLETED','key':KEY,'partitions':records,'partition_duplicate_rows':sum(x['duplicate_rows'] for x in records),'partition_duplicate_keys':sum(x['duplicate_keys'] for x in records),'exact_duplicate_keys':sum(x['exact_duplicate_keys'] for x in records),'conflicting_keys':sum(x['conflicting_keys'] for x in records),'manifest_duplicate_partition_rows':manifest_dup,'manifest_source_versions':source_versions,'manifest_rows':manifest_rows,'overlapping_source_partition_count':len(overlap_examples),'overlapping_source_partition_examples':overlap_examples[:3],'duplicate_source_version_rows':source_duplicate_rows,'route_merge_duplicate_rows':route_duplicate_rows,'route':'options','resolved_dataset':str(access.resolve_source('options', symbol).dataset) if access and symbol else None,'route_merge_duplication':'INACTIVE_ROUTE_NOT_INCLUDED' if route_duplicate_rows == 0 else 'DUPLICATE_MANIFEST_TARGET'}
     return result
 
 if __name__=='__main__':

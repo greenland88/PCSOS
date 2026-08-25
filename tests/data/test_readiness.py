@@ -9,10 +9,10 @@ from pcs.data.access import DataAccessError, PCSDataAccess
 from pcs.data.readiness import discover_lifecycle_smoke_case, execute_lifecycle_smoke
 
 
-def test_explicit_options_v2_does_not_fallback_to_legacy(tmp_path):
+def test_logical_options_does_not_fallback_to_legacy(tmp_path):
     access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet", source_routes={})
     with pytest.raises(DataAccessError, match="legacy_fallback_used=NO"):
-        access.resolve_source("options_v2", "COST")
+        access.resolve_source("options", "COST")
 
 
 def test_lifecycle_smoke_discovery_is_deterministic_and_complete():

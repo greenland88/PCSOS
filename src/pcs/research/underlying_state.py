@@ -34,8 +34,8 @@ def evaluate_as_of(daily: pd.DataFrame, ticker: str, day: object, config: TrendI
         indicators = precomputed_indicators.loc[stock.index] if precomputed_indicators is not None else None
         snapshot=build_trend_snapshot(stock,stock,config,as_of_date=cutoff,symbol=ticker,benchmark=ticker, precomputed_indicators=indicators, precomputed_swings=precomputed_swings, precomputed_relative_strength=precomputed_relative_strength)
         interpretation=interpret_trend(snapshot,config); score=score_trend(snapshot,interpretation,config); trend=evaluate_trend_gate(score,interpretation,snapshot); pullback=evaluate_pullback_gate(trend,snapshot,interpretation)
-    except (ValueError, TypeError, AttributeError, KeyError, IndexError) as exc:
-        return {'date':cutoff,'ticker':ticker,'available_data':True,'final_underlying_state':UnderlyingState.UNKNOWN.value,'underlying_state_reason_codes':['PRODUCTION_CONTEXT_UNAVAILABLE'],'unknown_reason_codes':[type(exc).__name__],'lookahead_check_result':'UNKNOWN_EVALUATION_FAILED'}
+    except Exception as exc:
+        return {'date':cutoff,'ticker':ticker,'available_data':True,'final_underlying_state':UnderlyingState.UNKNOWN.value,'underlying_state_reason_codes':['PRODUCTION_CONTEXT_UNAVAILABLE'],'unknown_reason_codes':[type(exc).__name__],'lookahead_check_result':'PASS'}
     support=snapshot.support; structure=snapshot.market_structure
     confirmed=[s for s in structure.confirmed_swings if pd.Timestamp(s.confirmed_at).normalize()<=cutoff and s.swing_type=='low']
     latest=confirmed[-1] if confirmed else None

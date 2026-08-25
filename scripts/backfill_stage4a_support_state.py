@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import pandas as pd
 
@@ -29,12 +28,7 @@ def backfill(path: Path, ticker: str) -> dict:
     frame["support_provenance"] = frame["date"].map(lambda d: f"{ticker}_trend.parquet:date={d.date()}:PIT")
     frame["entry_eligible"] = frame["support_state"].eq("SUPPORT_FOUND")
     frame["entry_contract_version"] = ENTRY_CONTRACT_V2
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        frame.to_parquet(temp, index=False)
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
+    frame.to_parquet(path, index=False)
     audit = audit_inputs(frame)
     return {"ticker": ticker, "rows": len(frame),
             "support_found": int(frame.support_state.eq("SUPPORT_FOUND").sum()),
@@ -50,13 +44,7 @@ def main() -> None:
                (ROOT / "candidate_inputs" / "AMZN.parquet", "AMZN"),
                (ROOT / "authoritative_amzn_794_entry_contract_v2.parquet", "AMZN")]
     results = [backfill(path, ticker) for path, ticker in targets if path.exists()]
-    target = ROOT / "support_state_backfill.json"
-    temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(results, indent=2), encoding="utf-8")
-        os.replace(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
+    (ROOT / "support_state_backfill.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps(results, indent=2))
 
 

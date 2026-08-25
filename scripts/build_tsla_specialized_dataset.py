@@ -12,10 +12,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pcs.data.access import PCSDataAccess
+from pcs.data.daily_provider import DailyDataProvider
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ROOT = REPO_ROOT / "research_outputs/tsla_specialized_pcs_20260820"
-FROZEN = REPO_ROOT / "data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet"
+ROOT = Path("research_outputs/tsla_specialized_pcs_20260820")
+FROZEN = Path("data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet")
 TARGETS = (2.3, 2.6, 3.0, 3.3, 3.6)
 
 
@@ -46,7 +46,7 @@ def build(output_dir: Path = ROOT) -> dict:
     # row is unavailable unless the canonical chain query supplies the exact
     # requested strike and an allowed exact-width long leg.
     access = PCSDataAccess()
-    daily = access.read_prices("TSLA", start_date=frozen.date.min(), end_date=frozen.expiration.max())
+    daily = DailyDataProvider().build_daily_series("TSLA", as_of_date=frozen.expiration.max(), start_date=frozen.date.min())
     close_by_date = daily.set_index("date")["close"]
     chain_cache: dict[object, pd.DataFrame] = {}
     rows = []
@@ -106,7 +106,7 @@ def build(output_dir: Path = ROOT) -> dict:
         for b in bars.itertuples(index=False):
             paths.append({"base_candidate_id":r.base_candidate_id,"research_variant":r.research_variant,"date":b.date,
                           "open":b.open,"high":b.high,"low":b.low,"close":b.close,"volume":b.volume,
-                          "source":"PCSDataAccess","provenance":"canonical_daily_source","pit_status":"PIT"})
+                          "source":"DailyDataProvider","provenance":"purchased_qfq","pit_status":"PIT"})
             support.append({"base_candidate_id":r.base_candidate_id,"research_variant":r.research_variant,"date":b.date,
                             "entry_support":pd.NA,"daily_close":b.close,"support_intact":pd.NA,
                             "confirmed_close_below_entry_support":pd.NA,"first_support_break_date":pd.NaT,

@@ -23,23 +23,18 @@ STRATEGIES = {
 }
 
 
-def first_per_episode(frame: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[str]:
+def first_per_episode(frame: pd.DataFrame) -> list[str]:
     if frame.empty: return []
-    q = frame.sort_values("date").copy()
-    session_positions = {day: i for i, day in enumerate(pd.DatetimeIndex(sessions).normalize())}
-    positions = q["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
-    q["episode"] = positions.diff().fillna(999).ne(1).cumsum()
+    q = frame.sort_values("date").copy(); q["episode"] = (q.date.diff().dt.days.fillna(999) > 4).cumsum()
     return [x.date.date().isoformat() for _, x in q.groupby("episode", sort=True).first().iterrows()]
 
 
-def signals(kind: str, x: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[str]:
+def signals(kind: str, x: pd.DataFrame) -> list[str]:
     reset = x[x.drawdown60.le(-.02) & x.ret10.gt(0)].copy()
-    if kind == "controlled_reset": return first_per_episode(reset, sessions)
-    if kind == "sma50_reclaim": return first_per_episode(x[x.drawdown60.le(-.02) & x.prior_close_sma50_atr.le(0) & x.close_sma50_atr.gt(0)], sessions)
+    if kind == "controlled_reset": return first_per_episode(reset)
+    if kind == "sma50_reclaim": return first_per_episode(x[x.drawdown60.le(-.02) & x.prior_close_sma50_atr.le(0) & x.close_sma50_atr.gt(0)])
     if reset.empty: return []
-    session_positions = {day: i for i, day in enumerate(pd.DatetimeIndex(sessions).normalize())}
-    positions = reset["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
-    reset["episode"] = positions.diff().fillna(999).ne(1).cumsum()
+    reset["episode"] = (reset.date.diff().dt.days.fillna(999) > 4).cumsum()
     return [g.iloc[0].date.date().isoformat() for _, g in reset.groupby("episode", sort=True) if (g.ret5 > 0).any() for g in [g[g.ret5 > 0]]]
 
 
@@ -52,11 +47,9 @@ def prepare() -> tuple[pd.DataFrame, dict]:
 
 
 def run(kind: str) -> dict:
-    x, population = prepare(); meta = STRATEGIES[kind]; sessions = pd.DatetimeIndex(x.date).normalize(); dates = signals(kind, x, sessions)
+    x, population = prepare(); meta = STRATEGIES[kind]; dates = signals(kind, x)
     q = x[x.date.isin(pd.to_datetime(dates))].copy()
-    session_positions = {day: i for i, day in enumerate(pd.DatetimeIndex(sessions).normalize())}
-    positions = q["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
-    q["episode"] = positions.diff().fillna(999).ne(1).cumsum()
+    q["episode"] = (q.date.diff().dt.days.fillna(999) > 4).cumsum()
     cfg = ROOT / "config/research/spy_frozen_controlled_reset_transfer.yaml"
     base = ResearchRunner.from_path(cfg).spec
     spec = replace(base, research_id=f"cost_frozen_{kind}", ticker="COST", research_mode=ResearchMode.CURRENT_STRATEGY_REPLAY,

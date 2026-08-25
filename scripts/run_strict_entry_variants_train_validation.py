@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pcs.data.access import PCSDataAccess
 from pcs.research.entry_candidate_universe import build_historical_setup_context
 
 ROOT = Path("research_outputs/strict_entry_variants_20260821")
@@ -23,24 +22,10 @@ VARIANTS = {
     "NO_WEAK_SUPPORT_ENTRIES": lambda x: x.support_state.ne("weak"),
 }
 
-def _strict_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None or pd.isna(value):
-        return False
-    if isinstance(value, str):
-        value = value.strip().lower()
-        if value in {"true", "1", "yes"}:
-            return True
-        if value in {"false", "0", "no", ""}:
-            return False
-    return bool(value)
-
 
 def _daily(symbol: str) -> pd.DataFrame:
-    # Use routed canonical access so this cross-ticker comparison sees the
-    # same source, duplicate checks, and data identity as replay.
-    x = PCSDataAccess().read_prices(symbol)
+    paths = sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))
+    x = pd.concat((pd.read_parquet(p) for p in paths), ignore_index=True)
     x.date = pd.to_datetime(x.date).dt.normalize()
     return x.sort_values("date").drop_duplicates("date").reset_index(drop=True)
 
@@ -63,7 +48,7 @@ def _contexts(symbol: str, dates: pd.Series) -> pd.DataFrame:
     rows = []
     for day in sorted(pd.to_datetime(dates).dt.normalize().unique()):
         ctx = build_historical_setup_context(stock, benchmark, day, symbol, "QQQ")
-        rows.append({"ticker": symbol, "decision_date": pd.Timestamp(day), "trend_state": ctx.get("trend_state"), "support_state": ctx.get("support_state"), "predictability_state": ctx.get("predictability_state"), "context_available": _strict_bool(ctx.get("available", False))})
+        rows.append({"ticker": symbol, "decision_date": pd.Timestamp(day), "trend_state": ctx.get("trend_state"), "support_state": ctx.get("support_state"), "predictability_state": ctx.get("predictability_state"), "context_available": bool(ctx.get("available", False))})
     return pd.DataFrame(rows)
 
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import pandas as pd
 from pcs.research.stage4a_context import HistoricalTrendContextProvider
@@ -35,17 +34,8 @@ def main() -> None:
         }
     out = pd.DataFrame(records)
     out_path = ROOT / "stage4a_trend_context.parquet"
-    parquet_tmp = out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp")
-    audit_path = ROOT / "stage4a_trend_context_audit.json"
-    audit_tmp = audit_path.with_name(f".{audit_path.name}.{os.getpid()}.tmp")
-    try:
-        out.to_parquet(parquet_tmp, index=False)
-        os.replace(parquet_tmp, out_path)
-        audit_tmp.write_text(json.dumps(audit, indent=2), encoding="utf-8")
-        os.replace(audit_tmp, audit_path)
-    finally:
-        parquet_tmp.unlink(missing_ok=True)
-        audit_tmp.unlink(missing_ok=True)
+    out.to_parquet(out_path, index=False)
+    (ROOT / "stage4a_trend_context_audit.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
     print(json.dumps({"artifact": str(out_path), "audit": audit}, indent=2))
 
 if __name__ == "__main__":

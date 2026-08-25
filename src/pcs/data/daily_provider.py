@@ -44,9 +44,7 @@ def normalize_daily_frame(frame: pd.DataFrame, start_date=None, end_date=None) -
 
 class DailyDataProvider:
     def __init__(self, historical_root="data/raw/daily_forward_adjusted", live_root="data/live/daily"):
-        repo_root = Path(__file__).resolve().parents[3]
-        self.historical_root = (repo_root / historical_root if str(historical_root).replace("\\", "/") == "data/raw/daily_forward_adjusted" else Path(historical_root))
-        self.live_root = (repo_root / live_root if str(live_root).replace("\\", "/") == "data/live/daily" else Path(live_root))
+        self.historical_root, self.live_root = Path(historical_root), Path(live_root)
 
     def _read(self, path: Path, start_date=None, end_date=None) -> pd.DataFrame:
         return normalize_daily_frame(pd.read_csv(path), start_date=start_date, end_date=end_date)

@@ -8,20 +8,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from pcs.data.access import PCSDataAccess
+from pcs.data.daily_provider import DailyDataProvider
 from pcs.entry.support_contract import SUPPORT_PRODUCER_VERSION, classify_support
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ROOT = REPO_ROOT / "research_outputs/tsla_specialized_pcs_20260820"
-FROZEN = REPO_ROOT / "data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet"
-TREND = REPO_ROOT / "research_outputs/safe_strike_risk_map_v0_1/trend_histories/TSLA_trend.parquet"
+ROOT = Path("research_outputs/tsla_specialized_pcs_20260820")
+FROZEN = Path("data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet")
+TREND = Path("research_outputs/safe_strike_risk_map_v0_1/trend_histories/TSLA_trend.parquet")
 
 
 def candidate_id(row: pd.Series) -> str:
@@ -41,8 +39,8 @@ def backfill(root: Path = ROOT) -> dict:
     trend = pd.read_parquet(TREND).copy()
     trend["date"] = pd.to_datetime(trend["date"]).dt.normalize()
     payloads = trend.drop_duplicates("date").set_index("date")["support"]
-    daily = PCSDataAccess().read_prices(
-        "TSLA", start_date=frozen["decision_date"].min(), end_date=frozen["expiration"].max()
+    daily = DailyDataProvider().build_daily_series(
+        "TSLA", as_of_date=frozen["expiration"].max(), start_date=frozen["decision_date"].min()
     )
     daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
     bars = daily.drop_duplicates("date").set_index("date")
@@ -69,17 +67,11 @@ def backfill(root: Path = ROOT) -> dict:
             "low": None if bar is None else bar.get("low"),
             "close": None if bar is None else bar.get("close"),
             "volume": None if bar is None else bar.get("volume"),
-            "ohlcv_source": "PCSDataAccess:canonical_daily_source",
+            "ohlcv_source": "DailyDataProvider:purchased_qfq",
             "pit_status": "PIT" if bar is not None and payload is not None else "PIT_DATA_MISSING",
         })
     out = pd.DataFrame(rows)
-    support_path = root / "tsla_entry_support_backfill.parquet"
-    support_tmp = support_path.with_name(f".{support_path.name}.{os.getpid()}.tmp")
-    try:
-        out.to_parquet(support_tmp, index=False)
-        os.replace(support_tmp, support_path)
-    finally:
-        support_tmp.unlink(missing_ok=True)
+    out.to_parquet(root / "tsla_entry_support_backfill.parquet", index=False)
 
     variants_path = root / "tsla_specialized_candidate_variants.parquet"
     variants = pd.read_parquet(variants_path).copy()
@@ -92,12 +84,7 @@ def backfill(root: Path = ROOT) -> dict:
     before = set(variants["base_candidate_id"].dropna())
     join_payload = out.drop(columns=["decision_date"])
     joined = variants.merge(join_payload, left_on="base_candidate_id", right_on="candidate_id", how="left", validate="many_to_one")
-    variants_tmp = variants_path.with_name(f".{variants_path.name}.{os.getpid()}.tmp")
-    try:
-        joined.to_parquet(variants_tmp, index=False)
-        os.replace(variants_tmp, variants_path)
-    finally:
-        variants_tmp.unlink(missing_ok=True)
+    joined.to_parquet(variants_path, index=False)
     future_leakage = int(
         ((pd.to_datetime(out["support_asof"]) > pd.to_datetime(out["decision_date"])) |
          (pd.to_datetime(out["ohlcv_asof"]) > pd.to_datetime(out["decision_date"]))).sum()
@@ -116,13 +103,7 @@ def backfill(root: Path = ROOT) -> dict:
         "pit_status_counts": out.pit_status.value_counts().to_dict(),
         "status": "PASS" if len(out) == 1119 and out.candidate_id.nunique() == 1119 and out.candidate_id.duplicated().sum() == 0 and future_leakage == 0 else "FAIL",
     }
-    validation_path = root / "tsla_entry_support_validation.json"
-    validation_tmp = validation_path.with_name(f".{validation_path.name}.{os.getpid()}.tmp")
-    try:
-        validation_tmp.write_text(json.dumps(validation, indent=2), encoding="utf-8")
-        os.replace(validation_tmp, validation_path)
-    finally:
-        validation_tmp.unlink(missing_ok=True)
+    (root / "tsla_entry_support_validation.json").write_text(json.dumps(validation, indent=2), encoding="utf-8")
     return validation
 
 

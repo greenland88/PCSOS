@@ -2,15 +2,13 @@
 from __future__ import annotations
 
 import gc
-import hashlib
 import json
-import os
 import time
 from pathlib import Path
 
 import pandas as pd
 
-from pcs.data.access import PCSDataAccess
+from pcs.data.daily_provider import DailyDataProvider
 from pcs.research.credit_stop import run_backtest
 
 WINDOWS = {
@@ -19,36 +17,7 @@ WINDOWS = {
     "NVDA": ("2024-06-10", "2026-07-31"),
     "AMZN": ("2022-06-06", "2026-07-31"),
 }
-ROOT = Path(__file__).resolve().parents[1] / "research_outputs/safe_strike_chunked_population_monthly"
-RUNNER = Path(__file__).resolve()
-
-def shard_identity(symbol, start, end):
-    access = PCSDataAccess()
-    payload = {"ticker": symbol, "start": str(pd.Timestamp(start).date()), "end": str(pd.Timestamp(end).date()),
-               "daily_source_identity": access.source_data_identity("daily", symbol),
-               "benchmark_source_identity": access.source_data_identity("daily", "QQQ"),
-               "options_source_identity": access.source_data_identity("options", symbol),
-               "runner_sha256": hashlib.sha256(RUNNER.read_bytes()).hexdigest(),
-               "backtest_sha256": hashlib.sha256((RUNNER.parents[1] / "src/pcs/research/credit_stop.py").read_bytes()).hexdigest()}
-    payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-    return payload
-def output_sha(path):
-    h=hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda:f.read(1024*1024), b""): h.update(block)
-    return h.hexdigest()
-
-def valid_shard(path, symbol, start, end):
-    try:
-        sidecar = path.with_suffix(".identity.json")
-        saved=json.loads(sidecar.read_text()) if sidecar.exists() else {}
-        if saved.get("inputs") != shard_identity(symbol, start, end) or saved.get("output_sha256") != output_sha(path):
-            return False
-        frame = pd.read_parquet(path)
-        return len(frame) == 0 or (frame.ticker.astype(str).eq(symbol).all() and
-            pd.to_datetime(frame.entry_date).between(pd.Timestamp(start), pd.Timestamp(end)).all())
-    except Exception:
-        return False
+ROOT = Path("research_outputs/safe_strike_chunked_population_monthly")
 
 def chunks(start, end):
     cur = pd.Timestamp(start).to_period("M")
@@ -59,8 +28,9 @@ def chunks(start, end):
         yield lo.normalize(), hi.normalize()
         cur += 1
 
-def load_stock(access, symbol, end):
-    x = access.read_prices(symbol, None, end).sort_values("date").drop_duplicates("date")
+def load_stock(provider, symbol, end):
+    frames = [pd.read_parquet(p) for p in sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))]
+    x = pd.concat(frames, ignore_index=True).sort_values("date").drop_duplicates("date")
     x["date"] = pd.to_datetime(x["date"]).dt.normalize()
     return x[x.date <= pd.Timestamp(end)].copy()
 
@@ -84,13 +54,13 @@ def key_frame(df):
     return df[cols].sort_values(cols[:5]).reset_index(drop=True)
 
 def equivalence_test(symbol="QQQ", start="2026-01-02", end="2026-03-31"):
-    access = PCSDataAccess()
-    stock = load_stock(access, symbol, end)
-    bench = load_stock(access, "QQQ", end)
-    old = flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=start, end=end, backend="canonical")["trades"], symbol)
+    provider = DailyDataProvider()
+    stock = provider.build_daily_series(symbol, end)
+    bench = provider.build_daily_series("QQQ", end)
+    old = flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=start, end=end, backend="duckdb")["trades"], symbol)
     parts = []
     for lo, hi in chunks(start, end):
-        parts.append(flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")["trades"], symbol))
+        parts.append(flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="duckdb")["trades"], symbol))
     new = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=old.columns)
     a, b = key_frame(old), key_frame(new)
     if not a.equals(b):
@@ -102,31 +72,18 @@ def run_symbol(symbol):
     out = ROOT / "qualified" / symbol
     out.mkdir(parents=True, exist_ok=True)
     checkpoint = ROOT / "checkpoints.jsonl"
-    access = PCSDataAccess()
-    stock = load_stock(access, symbol, end)
-    bench = load_stock(access, "QQQ", end)
+    provider = DailyDataProvider()
+    stock = load_stock(provider, symbol, end)
+    bench = load_stock(provider, "QQQ", end)
     for lo, hi in chunks(start, end):
         name = f"{lo:%Y-%m}.parquet"
         target = out / name
-        if target.exists() and valid_shard(target, symbol, lo, hi):
+        if target.exists():
             continue
         t0 = time.perf_counter()
-        result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")
+        result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="duckdb")
         frame = flatten(result["trades"], symbol)
-        temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        try:
-            frame.to_parquet(temp, index=False)
-            pd.read_parquet(temp)
-            os.replace(temp, target)
-        finally:
-            temp.unlink(missing_ok=True)
-        identity_path = target.with_suffix(".identity.json")
-        identity_temp = identity_path.with_name(f".{identity_path.name}.{os.getpid()}.tmp")
-        try:
-            identity_temp.write_text(json.dumps({"inputs": shard_identity(symbol, lo, hi), "output_sha256": output_sha(target)}, indent=2), encoding="utf-8")
-            os.replace(identity_temp, identity_path)
-        finally:
-            identity_temp.unlink(missing_ok=True)
+        frame.to_parquet(target, index=False)
         record = {"ticker": symbol, "chunk_start": str(lo.date()), "chunk_end": str(hi.date()), "status": "COMPLETE", "qualified_trades": len(frame), "elapsed_seconds": round(time.perf_counter() - t0, 3), "source_option_files_touched": result["quality"].get("quarter_files_opened"), "rows_scanned": result["quality"].get("option_rows_loaded")}
         with checkpoint.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import os
-import uuid
 from pathlib import Path
 
 import duckdb
@@ -20,12 +18,7 @@ class ParquetStore:
         folder = self.root / "raw" / dataset / as_of.strftime("%Y-%m-%d")
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{name}_{as_of.strftime('%H%M%S')}.parquet"
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            pd.DataFrame(rows).to_parquet(tmp, index=False)
-            os.replace(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        pd.DataFrame(rows).to_parquet(path, index=False)
         return path
 
     def write_processed(self, dataset: str, rows: list[dict], name: str) -> Path:
@@ -34,12 +27,7 @@ class ParquetStore:
         folder = self.root / "processed" / dataset
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{name}.parquet"
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            pd.DataFrame(rows).to_parquet(tmp, index=False)
-            os.replace(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        pd.DataFrame(rows).to_parquet(path, index=False)
         return path
 
 

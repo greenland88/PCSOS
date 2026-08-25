@@ -8,19 +8,6 @@ import pandas as pd
 
 from pcs.research.variant_b_replay import ReplayPolicy, _replay_lifecycle_batch
 
-def _strict_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None or pd.isna(value):
-        return False
-    if isinstance(value, str):
-        value = value.strip().lower()
-        if value in {"true", "1", "yes"}:
-            return True
-        if value in {"false", "0", "no", ""}:
-            return False
-    return bool(value)
-
 
 class LifecycleAdapterError(RuntimeError):
     pass
@@ -30,7 +17,6 @@ class LifecycleAdapterError(RuntimeError):
 class Stage4ALifecycleReplayAdapter:
     lifecycle: pd.DataFrame
     policy: ReplayPolicy = ReplayPolicy()
-    trading_sessions: pd.DatetimeIndex | None = None
 
     @classmethod
     def from_phase0(cls, path: str | Path = "research_outputs/phase0_20260820/lifecycle_marks.parquet", policy: ReplayPolicy | None = None):
@@ -40,10 +26,12 @@ class Stage4ALifecycleReplayAdapter:
         return cls(pd.read_parquet(p), policy or ReplayPolicy())
 
     def __post_init__(self):
-        required = {"ticker", "candidate_id", "mark_date", "expiration", "short_strike", "long_strike", "short_bid", "short_ask", "long_bid", "long_ask"}
+        required = {"ticker", "candidate_id", "mark_date", "expiration", "short_strike", "long_strike", "short_bid", "short_ask", "long_bid", "long_ask", "option_type"}
         if not required.issubset(self.lifecycle.columns):
             raise LifecycleAdapterError("LIFECYCLE_ARTIFACT_MISSING")
         d = self.lifecycle.copy(); d["mark_date"] = pd.to_datetime(d.mark_date, errors="coerce"); d["expiration"] = pd.to_datetime(d.expiration, errors="coerce")
+        if not d.option_type.astype(str).str.lower().eq("p").all():
+            raise LifecycleAdapterError("LIFECYCLE_OPTION_TYPE_MISMATCH")
         if d[["mark_date", "expiration"]].isna().any().any() or (d.mark_date > d.expiration).any():
             raise LifecycleAdapterError("INVALID_LIFECYCLE_ORDER")
         if d.duplicated(["candidate_id", "mark_date"]).any():
@@ -56,21 +44,13 @@ class Stage4ALifecycleReplayAdapter:
         if rows.empty:
             raise LifecycleAdapterError("CANDIDATE_LIFECYCLE_IDENTITY_MISSING")
         expected = (str(candidate["ticker"]), pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["short_strike"]), float(candidate["long_strike"]))
-        identity_rows = pd.DataFrame({
-            "ticker": rows.ticker.astype(str),
-            "expiration": pd.to_datetime(rows.expiration).dt.normalize(),
-            "short_strike": pd.to_numeric(rows.short_strike),
-            "long_strike": pd.to_numeric(rows.long_strike),
-        })
-        if not (identity_rows.ticker.eq(expected[0]).all()
-                and identity_rows.expiration.eq(expected[1]).all()
-                and identity_rows.short_strike.eq(expected[2]).all()
-                and identity_rows.long_strike.eq(expected[3]).all()):
+        actual = (str(rows.iloc[0].ticker), pd.Timestamp(rows.iloc[0].expiration).normalize(), float(rows.iloc[0].short_strike), float(rows.iloc[0].long_strike))
+        if actual != expected:
             raise LifecycleAdapterError("CANDIDATE_LIFECYCLE_IDENTITY_MISSING")
         short = rows[["mark_date", "short_bid", "short_ask"]].rename(columns={"mark_date":"Trade Date", "short_bid":"Bid Price", "short_ask":"Ask Price"})
         long = rows[["mark_date", "long_bid", "long_ask"]].rename(columns={"mark_date":"Trade Date", "long_bid":"Bid Price", "long_ask":"Ask Price"})
         short["Trade Date"] = pd.to_datetime(short["Trade Date"]); long["Trade Date"] = pd.to_datetime(long["Trade Date"])
-        quote_index = {(expected[1], "p", expected[2]): short, (expected[1], "p", expected[3]): long}
+        quote_index = {(expected[1], expected[2]): short, (expected[1], expected[3]): long}
         try:
             result = _replay_lifecycle_batch({"date": pd.Timestamp(candidate["date"]), "expiration": expected[1], "short_strike": expected[2], "long_strike": expected[3], "credit": float(candidate["initial_credit"])}, quote_index, self.policy)
         except Exception as exc:
@@ -81,20 +61,7 @@ class Stage4ALifecycleReplayAdapter:
                        "entry_date": pd.Timestamp(candidate["date"]), "expiration_date": expected[1],
                        "initial_credit": float(candidate["initial_credit"]),
                        "holding_calendar_days": (pd.Timestamp(result["exit_date"]) - pd.Timestamp(candidate["date"])).days if result.get("exit_date") is not None else None,
-                       "holding_trading_days": self._holding_trading_days(candidate["date"], result.get("exit_date")),
-                       "holding_trading_days_status": ("AVAILABLE" if self.trading_sessions is not None else "TRADING_CALENDAR_UNAVAILABLE"),
-                       "stopped": _strict_bool(result.get("stop_triggered", False)),
-                       "expired": str(result.get("exit_reason", "")).upper() == "EXPIRATION",
+                       "holding_trading_days": int(len(pd.DatetimeIndex(pd.to_datetime(rows.mark_date)).unique())) if result.get("exit_date") is not None else None,
+                       "stopped": bool(result.get("stop_triggered", False)), "expired": result.get("exit_reason") == "TIME_EXIT",
                        "mfe": result.get("mfe"), "mae": result.get("mae"), "lifecycle_observation_count": result.get("mark_count")})
         return result
-
-    def _holding_trading_days(self, entry_date, exit_date):
-        if exit_date is None:
-            return None
-        entry = pd.Timestamp(entry_date).normalize(); exit_day = pd.Timestamp(exit_date).normalize()
-        if self.trading_sessions is None:
-            # Quote availability is not an exchange calendar; a missing quote
-            # must not silently turn a valid session into a non-session.
-            return None
-        sessions = pd.DatetimeIndex(self.trading_sessions).normalize()
-        return int(((sessions > entry) & (sessions <= exit_day)).sum())

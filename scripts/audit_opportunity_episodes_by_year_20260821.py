@@ -5,12 +5,10 @@ and daily date partitions for coverage. It does not replay or alter strategy.
 """
 from pathlib import Path
 import pandas as pd
-from pcs.data.access import PCSDataAccess
 
 BASE = Path("research_outputs/spy_qqq_pcs_baseline_20260821")
 EP = Path("research_outputs/opportunity_episode_analysis_20260821")
 OUT = EP
-ACCESS = PCSDataAccess()
 
 WINDOWS = {"TRAIN": (pd.Timestamp("2020-01-01"), pd.Timestamp("2025-12-31")),
            "VALIDATION": (pd.Timestamp("2026-01-01"), pd.Timestamp("2026-05-31"))}
@@ -40,9 +38,9 @@ def cycle_rows(x):
     if current: rows.append(current)
     return [(pd.DataFrame(g).entry.min(), max([q.exit for q in g if pd.notna(q.exit)], default=g[-1].entry)) for g in rows]
 
-def episode_rows(x, gap, sessions):
+def episode_rows(x, gap):
     if x.empty: return pd.DataFrame(columns=["episode_start", "episode_end", "number_of_entries"])
-    idx = {d: i for i, d in enumerate(sessions)}
+    idx = {d: i for i, d in enumerate(pd.bdate_range(x.entry.min(), x.entry.max()))}
     groups, current, start = [], [], None
     for _, r in x.iterrows():
         i = idx[r.entry]
@@ -58,10 +56,12 @@ def episode_rows(x, gap, sessions):
     return pd.DataFrame(out)
 
 def available_dates(ticker, lo, hi):
-    daily = ACCESS.read_prices(ticker, start_date=lo, end_date=hi)
-    if daily.empty:
-        return pd.DatetimeIndex([])
-    return pd.DatetimeIndex(pd.to_datetime(daily.date).dt.normalize().drop_duplicates().sort_values())
+    frames = []
+    for p in (Path("data/parquet/daily") / f"symbol={ticker}").glob("year=*/*.parquet"):
+        d = pd.read_parquet(p, columns=["date"])
+        frames.append(pd.to_datetime(d.date).dt.normalize())
+    if not frames: return pd.DatetimeIndex([])
+    return pd.DatetimeIndex(pd.concat(frames).drop_duplicates()).sort_values().intersection(pd.date_range(lo, hi))
 
 def main():
     detail, summary = [], []
@@ -71,8 +71,7 @@ def main():
             years = range(lo.year, hi.year + 1)
             daily = available_dates(ticker, lo, hi)
             for gap in (10, 15, 20):
-                sessions = daily[(daily >= x.entry.min()) & (daily <= x.entry.max())] if len(x) else daily
-                eps = episode_rows(x, gap, sessions)
+                eps = episode_rows(x, gap)
                 cycles = cycle_rows(x)
                 for year in years:
                     yd = daily[daily.year == year]
@@ -82,7 +81,6 @@ def main():
                     c = sum(s.year == year for s, _ in cycles)
                     # Baseline has no admission blocker; every qualifying baseline
                     # episode contains at least one baseline trade by construction.
-                    year_sessions = daily[(daily >= max(lo, pd.Timestamp(year, 1, 1))) & (daily <= min(hi, pd.Timestamp(year, 12, 31)))]
                     detail.append({"ticker": ticker, "split": split, "calendar_year": year,
                                    "gap_days": gap, "available_trading_days": len(yd),
                                    "raw_eligible_entry_dates": raw_dates,
@@ -92,7 +90,7 @@ def main():
                                    "episodes_blocked_by_existing_position": 0,
                                    "year_first_available_date": yd.min() if len(yd) else pd.NaT,
                                    "year_last_available_date": yd.max() if len(yd) else pd.NaT,
-                                   "year_data_coverage_rate_pct": round(100 * len(yd) / len(year_sessions), 4) if len(year_sessions) else None})
+                                   "year_data_coverage_rate_pct": round(100 * len(yd) / len(pd.bdate_range(max(lo, pd.Timestamp(year,1,1)), min(hi, pd.Timestamp(year,12,31)))), 4) if len(pd.bdate_range(max(lo, pd.Timestamp(year,1,1)), min(hi, pd.Timestamp(year,12,31)))) else None})
                     all_eps = len(eps)
                     summary.append({"ticker": ticker, "split": split, "calendar_year": year, "gap_days": gap,
                                     "episode_count": len(e), "baseline_trade_count": trade_count,

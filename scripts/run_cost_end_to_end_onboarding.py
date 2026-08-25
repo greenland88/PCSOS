@@ -30,7 +30,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="pcs_cost_clickhouse_") as td:
             path = Path(td) / "q.parquet"; _query(host, user, password, sql, path)
             return pq.ParquetFile(path).read().to_pandas()[OPTION_FIELDS]
-    result = onboard_ticker_incremental(SYMBOL, PERIODS, loader, adapter=adapter, access=access, dataset="options_v2", workers=int(os.getenv("PCS_ONBOARD_WORKERS", "8")), resume=True)
+    result = onboard_ticker_incremental(SYMBOL, PERIODS, loader, adapter=adapter, access=access, dataset="options", workers=int(os.getenv("PCS_ONBOARD_WORKERS", "8")), resume=True)
     print(result.to_dict())
     return 0 if result.status == "READY" else 1
 if __name__ == "__main__": raise SystemExit(main())

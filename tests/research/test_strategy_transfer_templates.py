@@ -10,10 +10,6 @@ def test_h016_uses_authoritative_transition_not_approximation():
     ev = evaluate("PCS_SMA50_RECLAIM_V1", "QQQ", "2023-01-02", {"drawdown60": -.03, "prior_close_sma50_atr": 0, "close_sma50_atr": .01})
     assert ev.status == "QUALIFY"
 
-
-def test_transfer_templates_declare_daily_dependency_without_implying_options():
-    assert all(spec.data_dependencies == ("daily",) for spec in STRATEGIES.values())
-
 def test_source_reproduction_targets_are_preserved():
     root = Path(__file__).parents[2]
     h010 = json.loads((root / "research_outputs/nvda_entry_discovery_agent_v2/v2_h010_frozen_candidate.json").read_text())

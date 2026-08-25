@@ -8,12 +8,11 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 import json
-import os
-import uuid
 from typing import Any
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
+from pcs.data.executable_boundary import resolve_executable_start_date
 from pcs.entry.contract_v2 import nearby_strikes, later_expirations
 from pcs.entry.gates import EventGate, LiquidityGate, RegimeGate, SafeStrikeGate, CreditEfficiencyGate, DTEGate
 from pcs.entry.support_contract import SupportState
@@ -24,44 +23,13 @@ from pcs.research.entry_candidate_universe import build_historical_setup_context
 from pcs.research.stage4a_full_replay import canonical_market_state_factory
 from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, LifecycleAdapterError
 from pcs.research.scheduled_event_calendar import load_calendar
+from pcs.research.ticker_readiness import assert_research_ready
 from pcs.research.variant_b_replay import ReplayPolicy, summarize_replay, _replay_lifecycle_batch, _load_replay_calendar
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _atomic_parquet(frame: pd.DataFrame, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        frame.to_parquet(temp, index=False)
-        pd.read_parquet(temp, columns=list(frame.columns))
-        os.replace(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def _atomic_json(value: Any, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
-        os.replace(temp, target)
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def _identity(ticker, day, expiry, short, long):
     raw = "|".join([ticker, str(pd.Timestamp(day).date()), str(pd.Timestamp(expiry).date()), f"{float(short):.15g}", f"{float(long):.15g}"])
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
-
-
-def _require_unique_quotes(quotes: pd.DataFrame) -> pd.DataFrame:
-    """Enforce the canonical quote identity; never choose a duplicate row."""
-    key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
-    duplicate = quotes.duplicated(key, keep=False)
-    if duplicate.any():
-        raise ValueError(f"CANONICAL_QUOTE_IDENTITY_DUPLICATE:{int(duplicate.sum())}")
-    return quotes
 
 
 def _candidate(row, ctx, chain, ticker):
@@ -95,7 +63,7 @@ def build_lifecycle_quote_rows(quotes: pd.DataFrame, candidate: dict[str, Any]) 
     entry = pd.Timestamp(candidate["date"]).normalize()
     expiry = pd.Timestamp(candidate["expiration"]).normalize()
     q = q[(q.symbol.astype(str).str.upper() == str(candidate["ticker"]).upper()) &
-          (q.trade_date >= entry) & (q.trade_date <= expiry) &
+          (q.trade_date > entry) & (q.trade_date <= expiry) &
           (q.expiration_date == expiry) & q.call_put.astype(str).str.lower().eq("p") &
           q.strike.isin([float(candidate["short_strike"]), float(candidate["long_strike"])])].copy()
     rows = []
@@ -109,7 +77,7 @@ def build_lifecycle_quote_rows(quotes: pd.DataFrame, candidate: dict[str, Any]) 
             legs[strike] = leg.iloc[0]
         short = legs[float(candidate["short_strike"])]
         long = legs[float(candidate["long_strike"])]
-        rows.append({"ticker": str(candidate["ticker"]).upper(), "candidate_id": candidate["candidate_id"],
+        rows.append({"ticker": str(candidate["ticker"]).upper(), "candidate_id": candidate["candidate_id"], "option_type": "p",
                      "mark_date": day, "expiration": expiry,
                      "short_strike": float(candidate["short_strike"]), "long_strike": float(candidate["long_strike"]),
                      "short_bid": short.bid, "short_ask": short.ask,
@@ -138,31 +106,37 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     # setup eligibility; delayed dates are checked only by execution gates.
     track_a_execution_only = bool(spec.signal_definition.get("track_a_execution_only", False))
     access = data_access or PCSDataAccess()
-    daily = access.read_prices(spec.ticker)
+    assert_research_ready(spec.ticker, access=access)
+    configured_start = pd.Timestamp(spec.date_range.get("start")) if spec.date_range.get("start") else None
+    boundary_start = pd.Timestamp(resolve_executable_start_date(spec.ticker, access.source_routes))
+    requested_start = max(configured_start, boundary_start) if configured_start is not None else boundary_start
+    daily = access.read_prices(spec.ticker, start_date=requested_start)
     daily["date"] = pd.to_datetime(daily.date).dt.normalize(); daily = daily.sort_values("date").reset_index(drop=True)
-    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max()
-    requested_end = pd.Timestamp(spec.date_range["end"]) if spec.date_range.get("end") else train_end
-    train_end = min(train_end, requested_end)
-    benchmark_symbol = str(spec.lifecycle_policy.get("benchmark_symbol", "QQQ")).upper()
-    horizon = str(spec.lifecycle_policy.get("outcome_horizon_policy", "SPLIT_CUTOFF")).upper()
-    if horizon not in {"SPLIT_CUTOFF", "ALLOW_CROSS_SPLIT"}:
-        raise ValueError(f"unknown outcome_horizon_policy: {horizon}")
-    if horizon == "ALLOW_CROSS_SPLIT" and not spec.final_oos_access:
-        raise ValueError("ALLOW_CROSS_SPLIT_REQUIRES_EXPLICIT_FINAL_OOS_ACCESS")
+    explicit_scope = bool(
+        spec.split_policy.get("name")
+        or spec.split_policy.get("train_end")
+        or spec.split_policy.get("validation_start")
+        or spec.split_policy.get("validation_end")
+        or spec.date_range.get("split")
+        or spec.date_range.get("start")
+        or spec.date_range.get("end")
+    )
+    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max
     option_source = access.resolve_source("options", spec.ticker)
-    requested_start = pd.Timestamp(spec.date_range.get("start", daily.date.min()))
+    requested_start = requested_start or pd.Timestamp(daily.date.min())
     # Keep the canonical feature warm-up, but do not load pre-scope history
     # into the replay process. The clean population remains the sole signal
     # population; this is only an I/O boundary for the requested period.
-    # Option coverage is an execution-data boundary, not a feature warm-up
-    # boundary.  Never truncate daily history merely because options begin
-    # later; doing so changes rolling indicators at the first eligible date.
-    train_start = max(pd.Timestamp(daily.date.min()), requested_start - pd.Timedelta(days=300))
+    train_start = max(pd.Timestamp(daily.date.min()), pd.Timestamp(option_source.first_date),
+                      requested_start - pd.Timedelta(days=300))
     train = daily[daily.date.between(train_start, train_end)].copy()
     execution_dates = spec.signal_definition.get("execution_dates")
     if execution_dates:
         allowed = {pd.Timestamp(x).normalize() for x in execution_dates}
         execution_date_set = allowed
+    benchmark_symbol = spec.signal_definition.get("benchmark_symbol")
+    if not benchmark_symbol:
+        raise ValueError("SPEC_INCOMPLETE: benchmark_symbol")
     benchmark = access.read_prices(benchmark_symbol, train.date.min(), train.date.max())
     train["atr"] = _atr14(train)
     option_last_date = pd.Timestamp(option_source.last_date)
@@ -171,16 +145,14 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
         # Read only each requested decision window (plus lifecycle horizon)
         # instead of materializing the ticker's entire options history.
         requested = sorted({pd.Timestamp(x).normalize() for x in execution_dates})
-        windows = [(day, min(day + pd.Timedelta(days=60), option_last_date,
-                             train_end if horizon == "SPLIT_CUTOFF" else option_last_date)) for day in requested]
+        windows = [(day, min(day + pd.Timedelta(days=50), option_last_date)) for day in requested]
         opts = access.read_quotes_for_windows(spec.ticker, windows)
         if len(opts):
-            opts = _require_unique_quotes(opts)
+            key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+            if opts.duplicated(key, keep=False).any():
+                raise LifecycleAdapterError("CANONICAL_QUOTE_DUPLICATE_IDENTITY")
     else:
-        option_end = min(train.date.max() + pd.Timedelta(days=50), option_last_date)
-        if horizon == "SPLIT_CUTOFF": option_end = min(option_end, train_end)
-        opts = access.read_quotes(spec.ticker, train.date.min(), option_end)
-    opts = _require_unique_quotes(opts)
+        opts = access.read_quotes(spec.ticker, train.date.min(), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
     # The canonical reader returns the full options schema.  The replay only
     # needs these fields; retaining Greeks and provenance columns through the
     # per-day grouping otherwise multiplies memory use without changing any
@@ -188,7 +160,6 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     opts = opts[["symbol", "trade_date", "expiration_date", "strike", "call_put",
                  "bid", "ask", "delta", "volume", "open_interest"]]
     opts.trade_date = pd.to_datetime(opts.trade_date).dt.normalize(); opts.expiration_date = pd.to_datetime(opts.expiration_date).dt.normalize()
-    actual_final_oos_read = bool(len(opts) and opts.trade_date.max() > train_end.normalize())
     # Use only the validated executable quote subset from the authoritative
     # clean research population.  Invalid physical rows and same-day expiry
     # records are not eligible contract quotes and must not poison replay.
@@ -196,13 +167,11 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                 & opts.expiration_date.gt(opts.trade_date)].copy()
     by_day = {d: g.copy() for d, g in opts.groupby("trade_date")}
     rules_cfg = load_rules(); gate_rules = json.loads(json.dumps(rules_cfg)); gate_rules["entry"]["hard_dte_min"] = int(rules["dte_min"]); gate_rules["entry"]["hard_dte_max"] = int(rules["dte_max"]); gate_rules["entry"]["safe_strike_atr"] = float(rules["safe_strike_atr"]); gate_rules["entry"]["min_credit_width_ratio"] = float(rules["min_credit_width_ratio"]); market_factory = canonical_market_state_factory(); regime_engine = MarketRegimeEngine(gate_rules)
-    calendar = _load_replay_calendar(REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
+    calendar = _load_replay_calendar("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
     setup_rows = []; candidates = []; context_rows = []; event_cache = {}; rejected = {k: 0 for k in ["TREND","PULLBACK","SUPPORT","PREDICTABILITY","REGIME","EVENT","DTE","SAFE_STRIKE","LIQUIDITY","CREDIT_WIDTH"]}
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
     context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
     for day in train.date:
-        if pd.Timestamp(day).normalize() < requested_start.normalize():
-            continue
         if execution_dates and pd.Timestamp(day).normalize() not in execution_date_set:
             continue
         ctx = context_table[pd.Timestamp(day).normalize()]
@@ -248,7 +217,9 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                     credit = float(short.bid - long.ask); ratio = credit / width if width else 0
                     if credit <= 0 or ratio < float(rules["min_credit_width_ratio"]): rejected["CREDIT_WIDTH"] += 1; continue
                     rec = {"date": day, "ticker": spec.ticker, "close": close, "atr": atr, "expiration": exp, "short_strike": float(short.strike), "comparison_short_strike": comparison_short, "long_strike": float(long.strike), "dte": int((exp-day).days), "short_delta": short.get("delta", 0), "credit": credit, "spread_width": width, "short_bid": float(short.bid), "short_ask": float(short.ask), "long_bid": float(long.bid), "long_ask": float(long.ask), "short_volume": int(short.volume), "short_oi": int(short.open_interest), "long_volume": int(long.volume), "long_oi": int(long.open_interest), "bid_ask_pct": float((short.ask-short.bid)/max((short.ask+short.bid)/2, 1e-12)), "nearby_strikes": nearby_strikes(chain, exp, "p", short.strike), "later_expirations": later_expirations(chain, exp, "p",), "expected_move": atr}
-                    tc = _candidate(pd.Series(rec), ctx, chain, spec.ticker); gate_results = []
+                    tc = _candidate(pd.Series(rec), ctx, chain, spec.ticker)
+                    tc.trading_sessions = train.date
+                    gate_results = []
                     if int(rules["dte_min"]) > rec["dte"] or int(rules["dte_max"]) < rec["dte"]:
                         rejected["DTE"] += 1; continue
                     try:
@@ -263,7 +234,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                     if rules["event_gate"]:
                         event_key = (pd.Timestamp(day).normalize(), pd.Timestamp(exp).normalize())
                         if event_key not in event_cache:
-                            event_cache[event_key] = EventGate(trading_sessions=daily.date).evaluate(tc, calendar)
+                            event_cache[event_key] = EventGate().evaluate(tc, calendar)
                         gate_results.append(event_cache[event_key])
                     gate_results.append(DTEGate(gate_rules).evaluate(tc))
                     gate_results.append(SafeStrikeGate(gate_rules, price_basis_service).evaluate(tc))
@@ -275,10 +246,6 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                         continue
                     rec["candidate_id"] = _identity(spec.ticker, day, exp, short.strike, long.strike); rec["initial_credit"] = credit; candidates.append(rec)
     frame = pd.DataFrame(candidates)
-    if len(frame):
-        identity_columns = ["ticker", "date", "expiration", "short_strike", "long_strike"]
-        if frame.duplicated(identity_columns, keep=False).any():
-            raise LifecycleAdapterError("DUPLICATE_CANDIDATE_IDENTITY")
     if broad_new_entry and len(frame):
         width_order = {float(width): rank for rank, width in enumerate(rules["allowed_widths"])}
         frame["_width_rank"] = frame["spread_width"].map(width_order).fillna(999)
@@ -288,20 +255,21 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     life_rows = []
     lifecycle_quotes = pd.DataFrame()
     if len(frame):
-        lifecycle_end = min((pd.to_datetime(frame["date"]) + pd.Timedelta(days=60)).max(), option_last_date)
-        if horizon == "SPLIT_CUTOFF": lifecycle_end = min(lifecycle_end, train_end)
         lifecycle_quotes = access.read_quotes(
             spec.ticker,
             frame["date"].min(),
-            lifecycle_end,
+            min((pd.to_datetime(frame["date"]) + pd.Timedelta(days=20)).max(), option_last_date),
         )
+        key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+        if lifecycle_quotes.duplicated(key, keep=False).any():
+            raise LifecycleAdapterError("CANONICAL_QUOTE_DUPLICATE_IDENTITY")
         lifecycle_quotes = lifecycle_quotes[["symbol", "trade_date", "expiration_date",
                                              "strike", "call_put", "bid", "ask"]]
         lifecycle_quotes["trade_date"] = pd.to_datetime(lifecycle_quotes["trade_date"]).dt.normalize()
         lifecycle_quotes["expiration_date"] = pd.to_datetime(lifecycle_quotes["expiration_date"]).dt.normalize()
     for r in frame.to_dict("records"):
-        q = lifecycle_quotes[(lifecycle_quotes.trade_date > pd.Timestamp(r["date"])) &
-                             (lifecycle_quotes.trade_date <= min(pd.Timestamp(r["expiration"]), pd.Timestamp(r["date"])+pd.Timedelta(days=60), train_end if horizon == "SPLIT_CUTOFF" else pd.Timestamp(r["expiration"]))) &
+        q = lifecycle_quotes[(lifecycle_quotes.trade_date >= pd.Timestamp(r["date"])) &
+                             (lifecycle_quotes.trade_date <= min(pd.Timestamp(r["expiration"]), pd.Timestamp(r["date"])+pd.Timedelta(days=20))) &
                              (lifecycle_quotes.expiration_date == pd.Timestamp(r["expiration"])) &
                              (lifecycle_quotes.strike.isin([r["short_strike"], r["long_strike"]]))]
         try:
@@ -311,22 +279,15 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
             if str(exc) == "CORPORATE_ACTION_CONTRACT_MAPPING_UNAVAILABLE":
                 continue
             raise
-    eligible_ids = {str(row["candidate_id"]) for row in life_rows}
-    eligible_records = [r for r in frame.to_dict("records") if str(r["candidate_id"]) in eligible_ids]
-    adapter = Stage4ALifecycleReplayAdapter(pd.DataFrame(life_rows), ReplayPolicy(), pd.DatetimeIndex(daily.date)) if life_rows else None
+    adapter = Stage4ALifecycleReplayAdapter(pd.DataFrame(life_rows), ReplayPolicy()) if life_rows else None
     results = []
-    for r in eligible_records:
-        if adapter is None: continue
+    for r in frame.to_dict("records"):
+        if adapter is None: break
         x = adapter(r); results.append({**r, **x})
     result_frame = pd.DataFrame(results); out = Path(output_dir) / spec.research_id; out.mkdir(parents=True, exist_ok=True)
-    # A rerun must not inherit artifacts from a prior candidate population.
-    # Only replay-owned files are invalidated; source data and unrelated
-    # research artifacts remain untouched.
-    for stale in ("candidates.parquet", "lifecycle_results.parquet", "entry_context.parquet", "yearly_metrics.json", "replay_report.json"):
-        (out / stale).unlink(missing_ok=True)
-    if len(frame): _atomic_parquet(frame, out / "candidates.parquet")
-    if len(result_frame): _atomic_parquet(result_frame, out / "lifecycle_results.parquet")
-    if context_rows: _atomic_parquet(pd.DataFrame(context_rows).drop_duplicates("decision_date"), out / "entry_context.parquet")
+    if len(frame): frame.to_parquet(out / "candidates.parquet", index=False)
+    if len(result_frame): result_frame.to_parquet(out / "lifecycle_results.parquet", index=False)
+    if context_rows: pd.DataFrame(context_rows).drop_duplicates("decision_date").to_parquet(out / "entry_context.parquet", index=False)
     summary = summarize_replay(result_frame) if len(result_frame) else pd.DataFrame()
     metrics = summary.iloc[0].to_dict() if len(summary) else {}
     yearly_metrics = []
@@ -344,11 +305,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                 "win_rate": float((pnl > 0).mean()) if len(pnl) else None,
                 "stop_rate": float(group["stop_triggered"].fillna(False).astype(bool).mean()),
             })
-    _atomic_json(yearly_metrics, out / "yearly_metrics.json")
-    completed_lifecycles = int(result_frame.status.astype(str).eq("COMPLETE").sum()) if "status" in result_frame else 0
-    decision_days = int(pd.to_datetime(train.date).dt.normalize().ge(requested_start.normalize()).sum())
-    report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":decision_days,"WARMUP_DAYS":len(train)-decision_days,"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":int(len(candidates)),"LIFECYCLE_RESULT_ROWS":len(result_frame),"LIFECYCLES_COMPLETED":completed_lifecycles, **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "final_oos_read": actual_final_oos_read,"final_oos_read_policy": horizon,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
-    report["outcome_horizon_policy"] = {"mode": horizon, "cutoff": str(train_end.date()) if horizon == "SPLIT_CUTOFF" else None}
-    report["benchmark_symbol"] = benchmark_symbol
-    _atomic_json(report, out / "replay_report.json")
+    (out / "yearly_metrics.json").write_text(json.dumps(yearly_metrics, indent=2), encoding="utf-8")
+    report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":len(train),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "final_oos_read":False,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
+    (out / "replay_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report

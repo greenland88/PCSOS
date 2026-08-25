@@ -13,7 +13,6 @@ def freeze_universe():
     q="""select symbol ticker, min(date)::date first_date, max(date)::date last_date,
     count(*) trading_days from read_parquet('data/parquet/daily/**/*.parquet', union_by_name=true, hive_partitioning=true)
     where symbol not in ('NVDA','QQQ','AMZN','TSLA') group by symbol having count(*) >= 750"""
-    q = q.replace("data/parquet/daily/**/*.parquet", str((STORE / "**/*.parquet").as_posix()).replace("\\", "/"))
     d=c.execute(q).fetchdf(); c.close(); d["eligibility_status"]="ELIGIBLE"; d["eligibility_reason"]="successful daily migration; >=750 rows; development symbols excluded"; d["universe_version"]=UNIVERSE_VERSION; d=d.sort_values("ticker").reset_index(drop=True)
     d.to_csv(OUT/"r1_external_validation_universe_v1.csv",index=False); h=hashlib.sha256("\n".join(d.ticker).encode()).hexdigest(); (OUT/"r1_external_validation_universe_v1.sha256").write_text(h+"  r1_external_validation_universe_v1.csv\n",encoding="utf-8"); return d,h
 
@@ -36,7 +35,7 @@ def _assign(x):
     return pd.DataFrame(rows)
 
 def run_batches(batch_size=BATCH):
-    u,h=freeze_universe(); root=OUT/"r1_external_batches"; root.mkdir(exist_ok=True); manifest=OUT/"r1_external_batch_manifest.csv"; old=pd.read_csv(manifest) if manifest.exists() else pd.DataFrame(); code_hash=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(); compact=ROOT/"research_cache/r1_external_v1/ohlcv_compact/ohlcv_compact.parquet"; source_identity=f"{compact.stat().st_size}:{compact.stat().st_mtime_ns}" if compact.exists() else "MISSING"; required={"universe_checksum":h,"implementation_sha256":code_hash,"source_identity":source_identity}; done=set(old.loc[old.status.eq("SUCCESS") & old.universe_checksum.eq(h) & old.implementation_sha256.eq(code_hash) & old.source_identity.eq(source_identity),"batch_id"]) if len(old) and required.keys() <= set(old.columns) else set(); rows=[]; c=duckdb.connect(); c.execute("set enable_progress_bar=false")
+    u,h=freeze_universe(); root=OUT/"r1_external_batches"; root.mkdir(exist_ok=True); manifest=OUT/"r1_external_batch_manifest.csv"; old=pd.read_csv(manifest) if manifest.exists() else pd.DataFrame(); done=set(old.loc[old.status.eq("SUCCESS"),"batch_id"]) if len(old) else set(); rows=[]; c=duckdb.connect(); c.execute("set enable_progress_bar=false")
     for bid,start in enumerate(range(0,len(u),batch_size),1):
         bid=f"{bid:04d}"; syms=u.ticker.iloc[start:start+batch_size].tolist(); path=root/f"r1_external_batch_{bid}.parquet"
         if bid in done and path.exists(): continue
@@ -45,7 +44,6 @@ def run_batches(batch_size=BATCH):
             for _,g in raw.groupby("ticker",sort=False): outs.append(_assign(_features(g)))
             out=pd.concat(outs,ignore_index=True) if outs else pd.DataFrame(); out.to_parquet(path,index=False); rows.append({"batch_id":bid,"ticker_start":syms[0],"ticker_end":syms[-1],"ticker_count":len(syms),"row_count":len(out),"status":"SUCCESS","output_file":str(path),"r1_version":R1_FROZEN_V1["version"],"universe_version":UNIVERSE_VERSION})
         except Exception as e: rows.append({"batch_id":bid,"ticker_start":syms[0],"ticker_end":syms[-1],"ticker_count":len(syms),"row_count":0,"status":"FAILED","output_file":str(path),"error_message":repr(e),"r1_version":R1_FROZEN_V1["version"],"universe_version":UNIVERSE_VERSION})
-        rows[-1].update(required)
         pd.concat([old,pd.DataFrame(rows)],ignore_index=True).to_csv(manifest,index=False)
     c.close(); return u,h,pd.read_csv(manifest) if manifest.exists() else pd.DataFrame()
 

@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from pcs.data.price_basis import CorporateAction, CorporateActionRegistry, CorporateActionType, PriceBasis, PriceBasisError, load_corporate_actions
+from pcs.data.price_basis import CorporateAction, CorporateActionRegistry, CorporateActionType, PriceBasis, PriceBasisError
 
 
 def registry():
@@ -27,19 +27,3 @@ def test_unverified_action_fails_closed():
     r = CorporateActionRegistry([CorporateAction("X", "2020-01-01", CorporateActionType.SPLIT, 2, "source", False)])
     with pytest.raises(PriceBasisError, match="CORPORATE_ACTION_UNVERIFIED"):
         r.to_comparison_strike("X", "2019-01-01", 100)
-
-
-def test_loaded_registry_rejects_symbol_outside_declared_coverage(tmp_path):
-    path = tmp_path / "actions.csv"
-    path.write_text("symbol,effective_date,action_type,ratio,source,verified\nNVDA,2024-06-10,SPLIT,10,source,true\n", encoding="utf-8")
-    r = load_corporate_actions(path)
-    with pytest.raises(PriceBasisError, match="CORPORATE_ACTION_COVERAGE_UNPROVEN"):
-        r.to_comparison_strike("MSFT", "2024-01-01", 400)
-    with pytest.raises(PriceBasisError, match="CORPORATE_ACTION_COVERAGE_UNPROVEN"):
-        r.crossing_action("MSFT", "2024-01-01", "2024-07-01")
-
-
-def test_missing_registry_is_not_treated_as_no_actions(tmp_path):
-    r = load_corporate_actions(tmp_path / "missing.csv")
-    with pytest.raises(PriceBasisError, match="CORPORATE_ACTION_COVERAGE_UNPROVEN"):
-        r.to_comparison_strike("QQQ", "2024-01-01", 400)

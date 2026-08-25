@@ -6,7 +6,7 @@ from pcs.research.stage4a_lifecycle import LifecycleAdapterError
 
 
 def candidate():
-    return {"ticker": "AMD", "candidate_id": "c1", "date": "2021-01-14",
+    return {"ticker": "AMD", "candidate_id": "c1", "date": "2021-01-13",
             "expiration": "2021-02-19", "short_strike": 77.5, "long_strike": 72.5}
 
 

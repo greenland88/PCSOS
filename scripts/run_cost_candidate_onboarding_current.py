@@ -6,7 +6,6 @@ import hashlib, json, os, time
 import pandas as pd
 from pcs.research.entry_candidate_universe import build_historical_setup_context, _atr14
 from pcs.research.credit_stop import load_quotes_canonical_index
-from pcs.data.access import PCSDataAccess
 
 OUT=Path("research_outputs/cost_onboarding_20260821"); BATCH=OUT/"candidate_batches"; STATE=OUT/"candidate_checkpoint.json"; PROGRESS=OUT/"candidate_progress.json"; BATCH.mkdir(parents=True,exist_ok=True)
 SAFE=2.3; DTE_LO=30; DTE_HI=45; CREDIT=.10; WORKERS=int(os.getenv("PCS_CANDIDATE_WORKERS","8")); PERIODS=[str(p) for p in pd.period_range("2020Q1","2026Q3",freq="Q")]
@@ -20,32 +19,10 @@ def sha(path):
     with path.open("rb") as f:
         for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
-def valid_partition(path, period):
-    try:
-        frame = pd.read_parquet(path)
-    except Exception:
-        return False
-    required = {"candidate_id", "ticker", "decision_date", "expiration", "short_strike", "long_strike"}
-    if not required.issubset(frame.columns):
-        return False
-    dates = pd.to_datetime(frame["decision_date"], errors="coerce")
-    p = pd.Period(period)
-    return (frame["ticker"].astype(str).eq("COST").all()
-            and dates.notna().all()
-            and dates.between(p.start_time.normalize(), p.end_time.normalize()).all()
-            and not frame["candidate_id"].duplicated().any())
-def run_identity():
-    access=PCSDataAccess(); payload={"ticker":"COST","benchmark":"QQQ","periods":PERIODS,
-        "safe_strike_atr":SAFE,"dte_min":DTE_LO,"dte_max":DTE_HI,"credit_ratio":CREDIT,
-        "daily":access.source_data_identity("daily","COST"),
-        "benchmark_daily":access.source_data_identity("daily","QQQ"),
-        "options":access.source_data_identity("options","COST"),
-        "runner":hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-    payload["sha256"]=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest(); return payload
 def load_daily(sym):
-    d=PCSDataAccess().read_prices(sym).drop_duplicates("date"); d.date=pd.to_datetime(d.date).dt.normalize(); d["atr14"]=_atr14(d); return d.sort_values("date").reset_index(drop=True)
+    ps=sorted((Path("data/parquet/daily")/f"symbol={sym}").rglob("*.parquet")); d=pd.concat([pd.read_parquet(p) for p in ps],ignore_index=True).drop_duplicates("date"); d.date=pd.to_datetime(d.date).dt.normalize(); d["atr14"]=_atr14(d); return d.sort_values("date").reset_index(drop=True)
 def period_work(period,stock,bench):
-    p=pd.Period(period); start=max(pd.Timestamp(p.start_time),pd.Timestamp("2020-01-02")); end=min(pd.Timestamp(p.end_time),pd.Timestamp("2026-07-31")); idx,meta=load_quotes_canonical_index("COST",start,end); rows=[]; dates=0; setup=0
+    p=pd.Period(period); start=max(pd.Timestamp(p.start_time),pd.Timestamp("2020-01-02")); end=min(pd.Timestamp(p.end_time),pd.Timestamp("2026-07-31")); idx,meta=load_quotes_canonical_index("COST",start,end,root="data/parquet/options_v2"); rows=[]; dates=0; setup=0
     for day in sorted(idx):
         chain=idx[day]; dr=stock[stock.date.eq(day)]
         if dr.empty or pd.isna(dr.iloc[0].atr14): continue
@@ -63,19 +40,9 @@ def period_work(period,stock,bench):
                 rows.append({"candidate_id":cid,"ticker":"COST","decision_date":str(day.date()),"expiration":str(pd.Timestamp(expiry).date()),"underlying_price":close,"atr":atr,"safe_strike_atr":SAFE,"dte":int(r["s_DTE"]),"short_strike":float(r["s_Strike"]),"long_strike":float(r["l_Strike"]),"width":float(r["width"]),"credit":float(r["credit"]),"credit_width_ratio":float(r["ratio"]),"short_bid":float(r["s_Bid Price"]),"short_ask":float(r["s_Ask Price"]),"short_delta":float(r["s_Delta"]) if pd.notna(r["s_Delta"]) else None,"short_oi":int(r["s_Open Interest"]),"short_volume":int(r["s_Volume"]),"long_bid":float(r["l_Bid Price"]),"long_ask":float(r["l_Ask Price"]),"long_oi":int(r["l_Open Interest"]),"long_volume":int(r["l_Volume"]),"trend_state":ctx.get("trend_state"),"support_state":ctx.get("support_state"),"predictability_state":ctx.get("predictability_state"),"market_state":"PIT_SAFE_CONTEXT","event_state":"NOT_INCLUDED","pit_status":"PIT_SAFE","source_provenance":"PCSDataAccess:options_v2"})
     frame=pd.DataFrame(rows); path=BATCH/f"period={period}.parquet"; tmp=path.with_suffix(".tmp"); frame.to_parquet(tmp,index=False); os.replace(tmp,path); return {"period":period,"status":"COMMITTED","output_path":str(path),"output_checksum":sha(path),"row_count":len(frame),"decision_dates":dates,"setup_pass_dates":setup,"meta":meta}
 def main():
-    started=time.time(); stock=load_daily("COST"); bench=load_daily("QQQ"); identity=run_identity(); state=json.loads(STATE.read_text()) if STATE.exists() else {"ticker":"COST","version":"candidate.v2","partitions":{},"identity":identity}
-    if state.get("identity") != identity:
-        if STATE.exists(): raise RuntimeError("COST_RESUME_IDENTITY_CHANGED")
-        state["identity"] = identity
+    started=time.time(); stock=load_daily("COST"); bench=load_daily("QQQ"); state=json.loads(STATE.read_text()) if STATE.exists() else {"ticker":"COST","version":"candidate.v2","partitions":{}}
     for p in PERIODS: state["partitions"].setdefault(p,{"status":"PENDING"})
-    atomic_json(STATE,state); pending=[]
-    for p in PERIODS:
-        saved=state["partitions"][p]; output=Path(saved.get("output_path",""))
-        reusable=(saved.get("status")=="COMMITTED" and output.is_file()
-                  and saved.get("output_checksum")==sha(output)
-                  and valid_partition(output, p))
-        if not reusable: pending.append(p)
-    durations=[]
+    atomic_json(STATE,state); pending=[p for p in PERIODS if state["partitions"][p].get("status")!="COMMITTED" or not Path(state["partitions"][p].get("output_path","")).exists()]; durations=[]
     def report(stage):
         committed=[p for p in PERIODS if state["partitions"].get(p,{}).get("status")=="COMMITTED"]; failed=[p for p in PERIODS if state["partitions"].get(p,{}).get("status")=="FAILED"]; dates=sum(int(state["partitions"][p].get("decision_dates",0)) for p in committed); candidates=sum(int(state["partitions"][p].get("row_count",0)) for p in committed); avg=sum(durations)/len(durations) if durations else None; atomic_json(PROGRESS,{"ticker":"COST","stage":stage,"workers":WORKERS,"completed_work_units":len(committed),"total_work_units":len(PERIODS),"active_workers":0,"failed_work_units":len(failed),"completed_decision_dates":dates,"candidates_generated":candidates,"elapsed_seconds":round(time.time()-started,2),"average_work_unit_seconds":round(avg,2) if avg else None,"remaining_work_units":len(PERIODS)-len(committed)-len(failed),"eta_seconds":round((len(PERIODS)-len(committed))*avg,2) if avg else None})
     report("resuming")

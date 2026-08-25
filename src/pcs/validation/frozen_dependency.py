@@ -29,11 +29,9 @@ def sha(path: Path) -> str:
 
 def resolve(config: dict, root: Path, *, tool_version: str) -> dict:
     """Verify the sealed chain and attest only known transitive mismatches."""
-    root = Path(root).resolve()
     transitive_names = {
         "config/data_source_routes.yaml": "ticker route provenance",
         "data/manifests/storage_manifest.csv": "daily/options manifest provenance",
-        "data/manifests/storage_manifest_options_v2.csv": "options_v2 manifest provenance",
     }
     direct = []
     transitive = []
@@ -53,7 +51,7 @@ def resolve(config: dict, root: Path, *, tool_version: str) -> dict:
         classification = (declaration or {}).get("classification") if declaration else (TRANSITIVE if role else DIRECT)
         rec = {"name": name, "pinned_hash": pinned, "classification": classification,
                "semantic_role": role or "sealed FINAL OOS runtime input"}
-        path = Path(name) if Path(name).is_absolute() else root / name
+        path = Path(name) if Path(name).is_absolute() else Path.cwd() / name
         rec["current_hash"] = sha(path) if path.exists() else None
         rec["status"] = "MATCH" if rec["current_hash"] == pinned else "CHANGED"
         (transitive if classification == TRANSITIVE else direct).append(rec)
@@ -79,8 +77,6 @@ def resolve(config: dict, root: Path, *, tool_version: str) -> dict:
 
 def write_attestation(config_path: Path, output: Path, *, tool_version: str) -> dict:
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    config_path = Path(config_path).resolve()
-    root = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
-    result = resolve(config, root, tool_version=tool_version)
+    result = resolve(config, config_path.parent, tool_version=tool_version)
     output.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

@@ -19,10 +19,8 @@ def test_predictability_score_is_bounded():
         for i in range(1, 31)
     ]
     features = calculate_market_features(rows)
-    score = features[-1]["predictability_score"]
-    # Strict feature warm-up intentionally leaves short histories unusable.
-    # Once a score exists, it must remain within the documented range.
-    assert (score != score) or (0 <= score <= 100)
+    assert features[-1]["predictability_score"] <= 100
+    assert features[-1]["predictability_score"] >= 0
 
 
 def test_parquet_snapshots_do_not_overwrite(tmp_path):

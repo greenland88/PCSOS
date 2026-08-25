@@ -4,6 +4,11 @@ import argparse
 import re
 import csv, hashlib, time
 import pandas as pd
+from pcs.data.parquet_store import read_option_source, write_option_partition
+from pcs.data.storage_manifest import append_manifest, now_utc
+from pcs.data.storage_schema import OPTIONS_SCHEMA_VERSION
+from pcs.data.duckdb_store import connect, refresh_views
+
 OUT=Path("research_outputs"); PARQUET=Path("data/parquet/options"); MANIFEST=Path("data/manifests/storage_manifest.csv")
 
 def _existing(source, path):

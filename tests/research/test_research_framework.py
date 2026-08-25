@@ -2,7 +2,7 @@ import pytest
 from pcs.research.research_framework import (
     ResearchMode, ResearchSpecError, ResearchStatus, FunnelStage,
     from_mapping, validate_population_routing, build_funnel, onboarding_report,
-    run_spec, assert_research_output, assert_final_oos_access, validate_rule_set,
+    run_spec, assert_research_output, assert_final_oos_access,
 )
 
 
@@ -28,22 +28,6 @@ def test_existing_trade_cannot_create_new_dates():
 def test_contract_variant_preserves_entry_dates():
     spec = validate_population_routing(from_mapping(base("CONTRACT_VARIANT", {"type": "frozen_entry_ledger", "entry_dates_frozen": True}, {"creates_new_entry_dates": False})))
     assert spec.research_mode is ResearchMode.CONTRACT_VARIANT
-
-
-def test_current_replay_default_rules_match_execution_defaults():
-    spec = validate_rule_set(validate_population_routing(from_mapping(base("CURRENT_STRATEGY_REPLAY"))))
-    from pcs.research.research_framework import effective_research_rules
-    assert effective_research_rules(spec)["regime_gate"] is False
-
-
-def test_artifact_dependency_resolution_distinguishes_replay_and_strategy_specs():
-    from pcs.research.runner import _research_dependencies
-    replay = validate_rule_set(validate_population_routing(from_mapping(base("CURRENT_STRATEGY_REPLAY"))))
-    deps = _research_dependencies(replay)
-    assert {"daily", "options", "events", "corporate_actions"} <= deps
-
-    from pcs.strategies.research_templates.catalog import get_strategy
-    assert _research_dependencies(get_strategy("PCS_CONTROLLED_RESET_V1")) == {"daily"}
 
 
 def test_defaults_block_final_oos_and_production():

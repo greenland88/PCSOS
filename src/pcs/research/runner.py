@@ -5,13 +5,12 @@ research modules provide preflight counts; they never choose a population.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 import json
 import hashlib
 import os
 import gc
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import pandas as pd
@@ -21,7 +20,6 @@ from .research_framework import (
     ResearchMode, ResearchSpec, ResearchStatus, ResearchSpecError,
     FunnelStage, build_funnel, onboarding_report, validate_population_routing,
     load_spec, spec_hash, assert_research_output, validate_rule_set,
-    effective_research_rules,
 )
 from pcs.data.access import PCSDataAccess, DataAccessError
 from .underlying_state import evaluate_as_of, UnderlyingState
@@ -31,48 +29,12 @@ from pcs.trend.market_structure import _find_confirmed_swings
 from pcs.trend.relative_strength import RelativeStrengthResult, _classify_state, _is_stock_specific_weakness, _safe_return
 from .pit_cache_identity import build_pit_cache_identity, cache_identity_matches
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _runner_code_version() -> str:
-    """Bind artifact acceptance to the actual runner implementation."""
-    return "pcs.research.runner:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-
-
-def _research_dependencies(spec: Any) -> set[str]:
-    """Resolve research inputs from explicit declarations and replay policy.
-
-    Strategy transfer specs carry ``data_dependencies`` directly.  Legacy
-    ResearchSpec YAMLs predate that field, so current-strategy replay must
-    derive its non-optional inputs from the actual policy gates instead of
-    silently treating every replay as daily-only.
-    """
-    declared = getattr(spec, "data_dependencies", None)
-    if declared is not None:
-        return set(declared)
-    deps = {"daily"}
-    if spec.research_mode == ResearchMode.CURRENT_STRATEGY_REPLAY:
-        deps.add("options")
-        if bool(spec.rules.get("event_gate", True)):
-            deps.add("events")
-        if spec.lifecycle_policy.get("source") or spec.lifecycle_policy.get("corporate_actions", True):
-            deps.add("corporate_actions")
-    return deps
-
 
 def _status_for_funnel(records: list[Any]) -> str:
     return next((r.status.value for r in records if r.output_count == 0), ResearchStatus.COMPUTABLE.value)
 
 
-def _strict_flag(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and value in (0, 1):
-        return bool(value)
-    return isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}
-
-
-def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str, checkpoint_dir: str | Path | None = None) -> list[dict[str, Any]]:
+def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str) -> list[dict[str, Any]]:
     """Evaluate the existing PIT adapter with reusable daily-only inputs."""
     config = TrendIndicatorConfig()
     indicators = calculate_base_indicators(daily, config)
@@ -114,41 +76,11 @@ def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str, checkpoint_dir: str
     # Threads share the read-only caches and avoid eight copies of the full
     # historical DataFrame on Windows.  Sort by original chunk start to keep
     # byte/order semantics deterministic.
-    checkpoint = Path(checkpoint_dir) if checkpoint_dir is not None else None
-    if checkpoint is not None:
-        checkpoint.mkdir(parents=True, exist_ok=True)
-
-    def persist_chunk(start, chunk):
-        if checkpoint is None:
-            return
-        target = checkpoint / f"chunk_{start:08d}.json"
-        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp.write_text(json.dumps(chunk, default=str), encoding="utf-8")
-            os.replace(temp, target)
-        finally:
-            temp.unlink(missing_ok=True)
-
-    cached_chunks = {}
-    for start, end in bounds:
-        if checkpoint is None:
-            continue
-        path = checkpoint / f"chunk_{start:08d}.json"
-        if path.exists():
-            try:
-                rows = json.loads(path.read_text(encoding="utf-8"))
-                if len(rows) == end - start:
-                    cached_chunks[start] = rows
-            except (OSError, ValueError, TypeError):
-                continue
-    missing_bounds = [item for item in bounds if item[0] not in cached_chunks]
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="pcs-msft-pit") as pool:
-        for start, chunk in pool.map(evaluate_chunk, missing_bounds):
-            persist_chunk(start, chunk)
-            cached_chunks[start] = chunk
+        completed = list(pool.map(evaluate_chunk, bounds))
     result = []
-    for start, _ in bounds:
-        result.extend(cached_chunks[start])
+    for _, chunk in sorted(completed, key=lambda item: item[0]):
+        result.extend(chunk)
     gc.collect()
     return result
 
@@ -158,10 +90,7 @@ class ResearchRunner:
 
     def __init__(self, spec: ResearchSpec, *, output_dir: str | Path = "research_outputs"):
         self.spec = validate_rule_set(validate_population_routing(spec))
-        root = Path(output_dir)
-        if not root.is_absolute():
-            root = REPO_ROOT / root
-        self.output_dir = root / self.spec.research_id
+        self.output_dir = Path(output_dir) / self.spec.research_id
         assert_research_output(self.output_dir)
 
     @classmethod
@@ -202,7 +131,11 @@ class ResearchRunner:
         if self.spec.research_mode.value != "CURRENT_STRATEGY_REPLAY":
             return {}
         from .research_framework import CURRENT_RULE_DEFAULTS
-        return effective_research_rules(self.spec)
+        out = dict(CURRENT_RULE_DEFAULTS)
+        out.update(self.spec.rules)
+        out["allowed_widths"] = [float(x) for x in out["allowed_widths"]]
+        out["width_mode"] = str(out["width_mode"]).upper()
+        return out
 
     def rule_set_plumbing(self, counts: Mapping[str, int] | None = None) -> dict[str, Any]:
         """Return an isolated rule-set funnel contract for adapter execution.
@@ -233,7 +166,6 @@ class ResearchRunner:
     def execute_current_strategy_replay(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
         if self.spec.research_mode.value not in {"CURRENT_STRATEGY_REPLAY", "NEW_ENTRY"}:
             raise ResearchSpecError("EXECUTION_ONLY_SUPPORTS_NEW_ENTRY_OR_CURRENT_REPLAY")
-        data_access = data_access or PCSDataAccess()
         from .ticker_readiness import assert_research_ready
         from pcs.data.ticker_registry import get_ticker_state
         registry_state = get_ticker_state(self.spec.ticker)
@@ -253,36 +185,11 @@ class ResearchRunner:
                 raise RuntimeError(f"CLEAN_DATASET_UNAVAILABLE:{p}")
             frame = pd.read_parquet(p)
             required = {"date", "symbol", "testable_day"}
-            if not required.issubset(frame.columns) or frame.empty or not frame.testable_day.map(_strict_flag).all():
+            if not required.issubset(frame.columns) or frame.empty or not bool(frame.testable_day.all()):
                 raise RuntimeError("CLEAN_DATASET_VALIDATION_FAILED")
-            frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
-            start = pd.Timestamp(self.spec.date_range.get("start"))
-            end = pd.Timestamp(self.spec.date_range.get("end"))
-            if frame.symbol.astype(str).str.upper().ne(self.spec.ticker.upper()).any():
-                raise RuntimeError("CLEAN_DATASET_TICKER_MISMATCH")
-            if frame.date.isna().any() or (~frame.date.between(start, end)).any():
-                raise RuntimeError("CLEAN_DATASET_DATE_SCOPE_MISMATCH")
-            key_columns = [c for c in ("symbol", "date", "candidate_id", "opportunity_id") if c in frame.columns]
-            if len(key_columns) >= 2 and frame.duplicated(key_columns).any():
-                raise RuntimeError("CLEAN_DATASET_DUPLICATE_KEYS")
-            identity_column = next((c for c in ("source_data_identity", "data_version") if c in frame.columns), None)
-            if identity_column is None:
-                raise RuntimeError("CLEAN_DATASET_SOURCE_IDENTITY_MISSING")
-            current_identity = data_access.source_data_identity("daily", self.spec.ticker)
-            if frame[identity_column].astype(str).nunique() != 1 or str(frame[identity_column].iloc[0]) != current_identity:
-                raise RuntimeError("CLEAN_DATASET_SOURCE_IDENTITY_MISMATCH")
-            # Admission is also population routing: replay only the dates
-            # present in the authoritative clean dataset, in stable order.
-            dates = sorted(frame.date.dt.date.astype(str).unique().tolist())
-            signal = dict(self.spec.signal_definition)
-            signal["execution_dates"] = dates
-            signal["authoritative_clean_population"] = True
-            replay_spec = replace(self.spec, signal_definition=signal)
-        else:
-            replay_spec = self.spec
         from .current_strategy_replay import run_current_strategy_replay
         from pcs.data.price_basis import load_corporate_actions
-        return run_current_strategy_replay(replay_spec, data_access=data_access, output_dir=self.output_dir.parent,
+        return run_current_strategy_replay(self.spec, data_access=data_access, output_dir=self.output_dir.parent,
                                            price_basis_service=load_corporate_actions())
 
     execute_research_replay = execute_current_strategy_replay
@@ -294,12 +201,7 @@ class ResearchRunner:
         assert_research_output(self.output_dir / filename)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         target = self.output_dir / filename
-        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-            os.replace(temp, target)
-        finally:
-            temp.unlink(missing_ok=True)
+        target.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         return target
 
     @staticmethod
@@ -325,37 +227,16 @@ class ResearchRunner:
             if not path.is_file():
                 raise FileNotFoundError(f"artifact manifest file missing: {relative}")
             records.append({"path": relative.replace("\\", "/"), "sha256": self._sha256(path)})
-        input_identities = {"daily": data_version}
-        access = PCSDataAccess()
-        dependencies = _research_dependencies(self.spec)
-        for dataset in sorted(dependencies & {"options", "options_v2", "options_v3"}):
-            try:
-                input_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
-            except Exception:
-                input_identities[dataset] = "UNAVAILABLE"
-        benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
-        if benchmark:
-            try:
-                input_identities["benchmark_daily"] = access.source_data_identity("daily", str(benchmark))
-            except Exception:
-                input_identities["benchmark_daily"] = "UNAVAILABLE"
-        event_path = REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
-        input_identities["event_calendar"] = self._sha256(event_path) if event_path.exists() else "UNAVAILABLE"
-        action_path = REPO_ROOT / "config/data/corporate_actions.csv"
-        input_identities["corporate_actions"] = self._sha256(action_path) if action_path.exists() else "UNAVAILABLE"
         manifest = {
             "research_id": self.spec.research_id, "status": "CURRENT",
             "artifact_version": artifact_version, "population_semantics": population_semantics,
             "data_source": "PCS_CANONICAL_DATA", "ticker": self.spec.ticker,
-            "created_at": datetime.now(timezone.utc).isoformat(), "code_version": _runner_code_version(),
-            "data_version": data_version, "input_identities": input_identities,
-            "spec_hash": spec_hash(self.spec), "files": records,
+            "created_at": datetime.now(timezone.utc).isoformat(), "code_version": "pcs.research.runner:1.1",
+            "data_version": data_version, "spec_hash": spec_hash(self.spec), "files": records,
             "current": True,
         }
         target = self.output_dir / "artifact_manifest.json"
-        # Use a per-writer temp name: two workers rebuilding the same
-        # research id must never share/truncate one staging file.
-        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temp = target.with_suffix(".json.tmp")
         temp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         os.replace(temp, target)
         return target
@@ -369,24 +250,13 @@ class ResearchRunner:
         if (manifest.get("current") is not True or manifest.get("data_source") != "PCS_CANONICAL_DATA"
                 or manifest.get("research_id") != self.spec.research_id
                 or manifest.get("spec_hash") != spec_hash(self.spec)
-                or manifest.get("code_version") != _runner_code_version()):
+                or manifest.get("code_version") != "pcs.research.runner:1.1"):
             raise RuntimeError("STALE_ARTIFACT")
         try:
-            access = PCSDataAccess()
-            current_identities = {"daily": access.source_data_identity("daily", self.spec.ticker)}
-            dependencies = _research_dependencies(self.spec)
-            for dataset in sorted(dependencies & {"options", "options_v2", "options_v3"}):
-                current_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
-            benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
-            if benchmark:
-                current_identities["benchmark_daily"] = access.source_data_identity("daily", str(benchmark))
-            event_path = REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
-            current_identities["event_calendar"] = self._sha256(event_path) if event_path.exists() else "UNAVAILABLE"
-            action_path = REPO_ROOT / "config/data/corporate_actions.csv"
-            current_identities["corporate_actions"] = self._sha256(action_path) if action_path.exists() else "UNAVAILABLE"
+            current_data_version = PCSDataAccess().resolve_source("daily", self.spec.ticker).source_version
         except Exception as exc:
             raise RuntimeError("STALE_ARTIFACT") from exc
-        if manifest.get("input_identities") != current_identities:
+        if manifest.get("data_version") != current_data_version:
             raise RuntimeError("STALE_ARTIFACT")
         for record in manifest.get("files", []):
             file_path = self.output_dir / record["path"]
@@ -411,81 +281,49 @@ class ResearchRunner:
         replay lifecycle, tune thresholds, or read any candidate ledger.
         """
         access = data_access or PCSDataAccess()
-        split_end_raw = self.spec.split_policy.get("train_end")
-        split_end = pd.Timestamp(split_end_raw).normalize() if split_end_raw else None
-        requested_end = pd.Timestamp(end_date).normalize() if end_date is not None else None
-        final_oos_read = bool(split_end is not None and requested_end is not None and requested_end > split_end)
-        if final_oos_read and not self.spec.final_oos_access:
-            return {"module": "pcs.research.runner", "version": "1.0", "ticker": self.spec.ticker,
-                    "research_mode": self.spec.research_mode.value, "status": "FINAL_OOS_BLOCKED",
-                    "data_source": "PCS_CANONICAL_DATA", "exact_reason": "requested end_date exceeds TRAIN split",
-                    "final_oos_read": False, "production_changes_allowed": False,
-                    "reason_codes": ["FINAL_OOS_ACCESS_NOT_AUTHORIZED"]}
-        effective_end = requested_end
-        if split_end is not None and not final_oos_read:
-            effective_end = split_end if effective_end is None else min(effective_end, split_end)
         try:
-            daily = access.read_prices(self.spec.ticker, start_date, effective_end)
+            daily = access.read_prices(self.spec.ticker, start_date, end_date)
             daily_status = "PASS" if len(daily) else "MISSING"
         except (FileNotFoundError, DataAccessError, ValueError) as exc:
             return {"module": "pcs.research.runner", "version": "1.0", "ticker": self.spec.ticker,
                     "research_mode": self.spec.research_mode.value, "status": ResearchStatus.DAILY_DATA_MISSING.value,
                     "data_source": "PCS_CANONICAL_DATA", "exact_reason": str(exc),
-                    "final_oos_read": final_oos_read, "production_changes_allowed": False}
-        dependencies = _research_dependencies(self.spec)
-        options_status = "NOT_REQUIRED"
-        option_source = {"status": "NOT_REQUIRED"}
-        if "options" in dependencies or "options_v2" in dependencies or "options_v3" in dependencies:
-            options_status = "PASS"
-            try:
-                option_source = access.resolve_source("options", self.spec.ticker)
-            except Exception as exc:
-                options_status, option_source = "MISSING", {"exact_reason": str(exc)}
+                    "final_oos_read": False, "production_changes_allowed": False}
+        options_status = "PASS"
+        try:
+            option_source = access.resolve_source("options", self.spec.ticker)
+        except Exception as exc:
+            options_status, option_source = "MISSING", {"exact_reason": str(exc)}
         # Build the existing PIT state adapter's timeline.  Do not replace it
         # with a local indicator calculation; dependency failures must remain
         # explicit rather than becoming UNKNOWN precursor results.
         timeline_path = self.output_dir / "pit_state_timeline.parquet"
-        daily_source = access.resolve_source("daily", self.spec.ticker, start_date, effective_end)
+        daily_source = access.resolve_source("daily", self.spec.ticker, start_date, end_date)
         cache_meta = build_pit_cache_identity(
             symbol=self.spec.ticker,
-            daily_data_identity=access.source_data_identity("daily", self.spec.ticker),
+            daily_data_identity=daily_source.source_version,
             date_range={"start": str(daily.date.min().date()), "end": str(daily.date.max().date())},
             feature_config=asdict(TrendIndicatorConfig()), research_config=self.spec.rules,
         )
         cache_created_at = datetime.now(timezone.utc).isoformat()
         cache_action = "MISS_REBUILT"
         if timeline_path.exists():
-            try:
-                cached = pd.read_parquet(timeline_path)
-                cache_valid = cache_identity_matches(cached, cache_meta)
-                cached_ready = sum(
-                    _strict_flag(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
-                    for row in cached.to_dict("records")
-                )
-                expected_dates = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
-                cached_dates = pd.to_datetime(cached["date"], errors="coerce").dt.normalize() if "date" in cached else pd.Series(dtype="datetime64[ns]")
-                exact_calendar = (
-                    len(cached) == len(daily)
-                    and cached_dates.notna().all()
-                    and not cached_dates.duplicated().any()
-                    and set(cached_dates) == set(expected_dates)
-                )
-                if (cache_valid and exact_calendar
-                        and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker}
-                        and cached_ready > 0):
-                    states = cached.to_dict("records")
-                    cache_action = "REUSED_COMPATIBLE"
-                else:
-                    identity_compatible = cache_valid
-                    states = _evaluate_pit_timeline(daily, self.spec.ticker, self.output_dir / "pit_chunks" / cache_meta["identity_sha256"])
-                    cache_valid = False
-                    cache_action = ("IDENTITY_COMPATIBLE_BUT_NOT_READY_REBUILT" if identity_compatible else "STALE_OR_MISSING_IDENTITY_REBUILT")
-            except Exception:
-                states = _evaluate_pit_timeline(daily, self.spec.ticker, self.output_dir / "pit_chunks" / cache_meta["identity_sha256"])
+            cached = pd.read_parquet(timeline_path)
+            cache_valid = cache_identity_matches(cached, cache_meta)
+            cached_ready = sum(
+                bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
+                for row in cached.to_dict("records")
+            )
+            if cache_valid and len(cached) == len(daily) and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker} and cached_ready > 0:
+                states = cached.to_dict("records")
+                cache_action = "REUSED_COMPATIBLE"
+            else:
+                identity_compatible = cache_valid
+                states = _evaluate_pit_timeline(daily, self.spec.ticker)
                 cache_valid = False
-                cache_action = "CORRUPT_ARTIFACT_REBUILT"
+                cache_action = ("IDENTITY_COMPATIBLE_BUT_NOT_READY_REBUILT" if identity_compatible else "STALE_OR_MISSING_IDENTITY_REBUILT")
         else:
-            states = _evaluate_pit_timeline(daily, self.spec.ticker, self.output_dir / "pit_chunks" / cache_meta["identity_sha256"])
+            states = _evaluate_pit_timeline(daily, self.spec.ticker)
             cache_valid = False
         if not timeline_path.exists() or not cache_valid:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -503,12 +341,9 @@ class ResearchRunner:
                     timeline_frame[column] = timeline_frame[column].map(
                         lambda value: json.dumps(value, default=str) if isinstance(value, (list, dict, tuple)) else value
                     )
-            temp_timeline = timeline_path.with_name(f".{timeline_path.name}.{uuid.uuid4().hex}.tmp")
-            timeline_frame.to_parquet(temp_timeline, index=False)
-            pd.read_parquet(temp_timeline, columns=list(timeline_frame.columns))
-            temp_timeline.replace(timeline_path)
+            timeline_frame.to_parquet(timeline_path, index=False)
         state_ready = sum(
-            _strict_flag(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
+            bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
             for row in states
         )
         breakdown_runs = 0
@@ -543,8 +378,7 @@ class ResearchRunner:
         result.update({"data_source": "PCS_CANONICAL_DATA", "daily_source": "PCSDataAccess",
                        "daily_rows": len(daily), "daily_first_date": str(daily.date.min().date()),
                        "daily_last_date": str(daily.date.max().date()),
-                       "options_source": option_source.to_dict() if hasattr(option_source, "to_dict") else option_source,
-                       "final_oos_read": final_oos_read})
+                       "options_source": option_source.to_dict() if hasattr(option_source, "to_dict") else option_source})
         result["state_timeline_rows"] = len(states)
         result["state_ready_rows"] = state_ready
         result["pit_cache_action"] = cache_action
@@ -564,20 +398,15 @@ class ResearchRunner:
     def calendar_preflight(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
         """Fast canonical-calendar admission check without state construction."""
         access = data_access or PCSDataAccess()
-        train_end_raw = self.spec.split_policy.get("train_end")
-        train_end = pd.Timestamp(train_end_raw).normalize() if train_end_raw else None
-        daily = access.read_prices(self.spec.ticker, end_date=train_end)
-        dependencies = _research_dependencies(self.spec)
-        options = None
-        if "options" in dependencies or "options_v2" in dependencies or "options_v3" in dependencies:
-            options = access.resolve_source("options", self.spec.ticker)
+        daily = access.read_prices(self.spec.ticker)
+        options = access.resolve_source("options", self.spec.ticker)
         result = {
             "module": "pcs.research.runner", "version": "1.1", "research_id": self.spec.research_id,
             "ticker": self.spec.ticker, "research_mode": self.spec.research_mode.value,
             "status": ResearchStatus.COMPUTABLE.value, "data_source": "PCS_CANONICAL_DATA",
             "daily_source": "PCSDataAccess", "daily_rows": len(daily),
             "daily_first_date": str(daily.date.min().date()), "daily_last_date": str(daily.date.max().date()),
-            "options_source": options.to_dict() if options is not None else {"status": "NOT_REQUIRED"}, "final_oos_read": False,
+            "options_source": options.to_dict(), "final_oos_read": False,
             "production_changes_allowed": False, "signal_execution": "NOT_RUN",
             "reason_codes": ["RESEARCH_SPEC_VALIDATED", "CANONICAL_CALENDAR_RESOLVED", "FINAL_OOS_NOT_READ"],
         }

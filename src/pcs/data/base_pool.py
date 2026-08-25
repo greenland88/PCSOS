@@ -10,8 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import hashlib
-import os
-import uuid
 from typing import Any
 
 import pandas as pd
@@ -37,37 +35,13 @@ def _reason_list(*values: str) -> list[str]:
     return sorted({v for v in values if v})
 
 
-def _atomic_frame(frame: pd.DataFrame, path: Path, *, csv: bool = False) -> None:
-    """Publish a pool artifact only after the complete file is written."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        if csv:
-            frame.to_csv(tmp, index=False)
-        else:
-            frame.to_parquet(tmp, index=False)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _atomic_json(payload: dict[str, Any], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 def _tier(score: float) -> str:
     return "TIER_A" if score >= 0.80 else "TIER_B" if score >= 0.60 else "TIER_C"
 
 
 def _underlying_rows(manifest: pd.DataFrame, config: BasePoolConfig, access: PCSDataAccess) -> pd.DataFrame:
     try:
-        files = str(access.parquet_root / "daily" / "symbol=*" / "year=*" / "*.parquet")
+        files = str(Path("data/parquet/daily") / "symbol=*" / "year=*" / "*.parquet")
         daily = duckdb.connect().execute("select upper(symbol) symbol, min(date) coverage_start, max(date) coverage_end, count(*) daily_rows, avg(volume) avg_share_volume, avg(close*volume) avg_dollar_volume from read_parquet(?, hive_partitioning=true) group by upper(symbol)", [files]).fetchdf()
         manifest = manifest.merge(daily, on="symbol", how="left")
     except Exception:
@@ -129,21 +103,21 @@ def _option_metrics(access: PCSDataAccess, symbol: str, config: BasePoolConfig) 
 
 
 def build_base_pool(*, access: PCSDataAccess | None = None, daily_manifest: str | Path = "data/manifests/daily_universe_migration.csv", output_dir: str | Path = "research_outputs/global_pcs_base_universe", config: BasePoolConfig = BasePoolConfig()) -> dict[str, Any]:
-    access = access or PCSDataAccess()
-    daily_manifest = access._storage_path(daily_manifest)
-    manifest = pd.read_csv(daily_manifest)
+    access = access or PCSDataAccess(); manifest = pd.read_csv(daily_manifest)
     # The base pool is a live research input boundary.  Never select an
     # options_recent/options_monthly migration store merely because its
     # manifest happens to exist; ticker-specific canonical routing is the
     # source of truth for both membership and quality reads.
-    canonical_options_manifest = access.data_root / "manifests/storage_manifest_options_v2.csv"
-    option_symbols = set(pd.read_csv(canonical_options_manifest).symbol.astype(str).str.upper()) if canonical_options_manifest.exists() else set()
     under = _underlying_rows(manifest, config, access)
     records = []
     for r in under.to_dict("records"):
         if r["underlying_status"] not in {"UNDERLYING_ELIGIBLE", "UNDERLYING_WATCH"}: om = {"options_status": "OPTIONS_DATA_BLOCKED", "reason_codes": ["UNDERLYING_NOT_ELIGIBLE"], "option_quality_score": 0.0, "option_quality_rank": 0, "has_options": False, "historical_options_status": "NOT_AVAILABLE"}
-        elif r["symbol"] not in option_symbols: om = {"options_status": "OPTIONS_DATA_BLOCKED", "reason_codes": ["NO_OPTIONS"], "option_quality_score": 0.0, "option_quality_rank": 0, "has_options": False, "historical_options_status": "NOT_AVAILABLE"}
-        else: om = _option_metrics(access, r["symbol"], config)
+        else:
+            try:
+                access.resolve_source("options", r["symbol"])
+                om = _option_metrics(access, r["symbol"], config)
+            except (FileNotFoundError, DataAccessError, DataQualityError, ValueError):
+                om = {"options_status": "OPTIONS_DATA_BLOCKED", "reason_codes": ["NO_OPTIONS"], "option_quality_score": 0.0, "option_quality_rank": 0, "has_options": False, "historical_options_status": "NOT_AVAILABLE"}
         reasons = _reason_list(*(r.pop("reason_codes", []) + om.pop("reason_codes", [])))
         pool = r["underlying_status"] == "UNDERLYING_ELIGIBLE" and om["options_status"] == "OPTIONS_ELIGIBLE"
         score = round(0.45 * float(r["underlying_score"]) + 0.55 * float(om["option_quality_score"]), 6)
@@ -158,19 +132,15 @@ def build_base_pool(*, access: PCSDataAccess | None = None, daily_manifest: str 
     pool1["instrument_type"] = "UNKNOWN"; pool1["calculation_version"] = "base-pool-v2"; pool1["last_checked_at"] = datetime.now(timezone.utc).isoformat()
     members = sorted(pool1.loc[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE"), "symbol"].astype(str).str.upper())
     membership_hash = hashlib.sha256("\n".join(members).encode()).hexdigest()
-    _atomic_frame(pool1, pool1_dir / "all_symbols_status.parquet"); _atomic_frame(pool1, pool1_dir / "all_symbols_status.csv", csv=True)
-    eligible_pool1 = pool1[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE")]
-    _atomic_frame(eligible_pool1, pool1_dir / "underlying_pool.parquet"); _atomic_frame(eligible_pool1, pool1_dir / "underlying_pool.csv", csv=True)
+    pool1.to_parquet(pool1_dir / "all_symbols_status.parquet", index=False); pool1.to_csv(pool1_dir / "all_symbols_status.csv", index=False)
+    pool1[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE")].to_parquet(pool1_dir / "underlying_pool.parquet", index=False); pool1[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE")].to_csv(pool1_dir / "underlying_pool.csv", index=False)
     pool1_manifest = {"pool_version":"pool1-v1", "calculation_version":"base-pool-v2", "total_universe":len(pool1), "eligible_count":len(members), "watch_count":int((pool1.pool1_status=="UNDERLYING_WATCH").sum()), "rejected_count":int((pool1.pool1_status=="UNDERLYING_REJECTED").sum()), "blocked_count":int((pool1.pool1_status=="DATA_BLOCKED").sum()), "membership_hash":membership_hash, "membership_symbols":members, "POOL_1_FROZEN":True}
-    _atomic_json(pool1_manifest, pool1_dir / "manifest.json")
-    pool2 = out[out.symbol.isin(members)].copy(); pool2["pool_1_membership_hash"] = membership_hash
-    _atomic_frame(pool2, pool2_dir / "all_options_status.parquet"); _atomic_frame(pool2, pool2_dir / "all_options_status.csv", csv=True)
-    eligible_pool2 = pool2[pool2.pool_status.eq("PCS_BASE_POOL")]
-    _atomic_frame(eligible_pool2, pool2_dir / "pcs_base_pool.parquet"); _atomic_frame(eligible_pool2, pool2_dir / "pcs_base_pool.csv", csv=True)
-    _atomic_json({"pool_version":"pool2-v1", "calculation_version":"base-pool-v2", "POOL_1_INPUT_HASH":membership_hash, "pool_1_symbol_count":len(members), "evaluated_count":len(pool2), "base_pool_count":int((pool2.pool_status=="PCS_BASE_POOL").sum())}, pool2_dir / "manifest.json")
-    _atomic_frame(out, target / "pcs_base_pool.parquet"); _atomic_frame(out, target / "pcs_base_pool.csv", csv=True)
+    (pool1_dir / "manifest.json").write_text(json.dumps(pool1_manifest, indent=2), encoding="utf-8")
+    pool2 = out[out.symbol.isin(members)].copy(); pool2["pool_1_membership_hash"] = membership_hash; pool2.to_parquet(pool2_dir / "all_options_status.parquet", index=False); pool2.to_csv(pool2_dir / "all_options_status.csv", index=False); pool2[pool2.pool_status.eq("PCS_BASE_POOL")].to_parquet(pool2_dir / "pcs_base_pool.parquet", index=False); pool2[pool2.pool_status.eq("PCS_BASE_POOL")].to_csv(pool2_dir / "pcs_base_pool.csv", index=False)
+    (pool2_dir / "manifest.json").write_text(json.dumps({"pool_version":"pool2-v1", "calculation_version":"base-pool-v2", "POOL_1_INPUT_HASH":membership_hash, "pool_1_symbol_count":len(members), "evaluated_count":len(pool2), "base_pool_count":int((pool2.pool_status=="PCS_BASE_POOL").sum())}, indent=2), encoding="utf-8")
+    out.to_parquet(target / "pcs_base_pool.parquet", index=False); out.to_csv(target / "pcs_base_pool.csv", index=False)
     summary = {"module":"pcs.data.base_pool", "version":"1.0", "status":"COMPLETED", "data_source":"PCS_CANONICAL_DATA", "total_symbols_discovered":int(len(out)), "underlying_checked":int(len(out)), "underlying_eligible":int((out.underlying_status == "UNDERLYING_ELIGIBLE").sum()), "underlying_rejected":int(out.underlying_status.eq("UNDERLYING_REJECTED").sum()), "underlying_blocked":int(out.underlying_status.eq("DATA_BLOCKED").sum()), "options_checked":int(out.underlying_status.eq("UNDERLYING_ELIGIBLE").sum()), "options_eligible":int(out.options_status.eq("OPTIONS_ELIGIBLE").sum()), "options_rejected":int(out.options_status.eq("OPTIONS_REJECTED").sum()), "options_blocked":int(out.options_status.eq("OPTIONS_DATA_BLOCKED").sum()), "base_pool_count":int(elig.sum()), "tier_a_count":int((out.tier == "TIER_A").sum()), "tier_b_count":int((out.tier == "TIER_B").sum()), "tier_c_count":int((out.tier == "TIER_C").sum()), "rules_changed":False, "pcs_strategy_tested":False, "profitability_tested":False, "final_oos_read":False, "generated_at":datetime.now(timezone.utc).isoformat()}
-    summary["artifact_sha256"] = hashlib.sha256((target / "pcs_base_pool.parquet").read_bytes()).hexdigest(); _atomic_json(summary, target / "pool_manifest.json"); return summary
+    summary["artifact_sha256"] = hashlib.sha256((target / "pcs_base_pool.parquet").read_bytes()).hexdigest(); (target / "pool_manifest.json").write_text(json.dumps(summary, indent=2), encoding="utf-8"); return summary
 
 
 __all__ = ["BasePoolConfig", "build_base_pool"]

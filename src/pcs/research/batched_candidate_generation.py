@@ -12,7 +12,6 @@ import pandas as pd
 
 from .credit_stop import load_quotes_canonical_index
 from .entry_candidate_universe import generate_observable_candidates
-from pcs.data.access import PCSDataAccess
 
 
 def _sha(path: Path) -> str:
@@ -36,23 +35,9 @@ def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def _config_hash(symbol: str, start: str, end: str, daily_path: str | Path, benchmark_path: str | Path) -> str:
-    access = PCSDataAccess()
-    def input_identity(dataset: str, name: str, path: str | Path) -> str:
-        normalized = str(path).replace("\\", "/")
-        if normalized.startswith("data/") or "data/raw/" in normalized:
-            return access.source_data_identity(dataset, name)
-        p = Path(path)
-        return _sha(p) if p.exists() else "MISSING"
-
+def _config_hash(symbol: str, start: str, end: str) -> str:
     payload = {"symbol": symbol.upper(), "start": start, "end": end,
-               "producer": "pcs.research.entry_candidate_universe.generate_observable_candidates",
-               "daily_identity": input_identity("daily", symbol, daily_path),
-               "benchmark_identity": input_identity("daily", "QQQ", benchmark_path),
-               "options_identity": access.source_data_identity("options", symbol),
-               "code_identity": {str(p): _sha(p) for p in (
-                   Path(__file__), Path(__file__).with_name("entry_candidate_universe.py"),
-                   Path(__file__).with_name("credit_stop.py"))}}
+               "producer": "pcs.research.entry_candidate_universe.generate_observable_candidates"}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -60,7 +45,7 @@ def run_batched_candidates(symbol: str, daily_path: str | Path, benchmark_path: 
                            start: str, end: str, output_root: str | Path,
                            workers: int = 8, resume: bool = True) -> dict[str, Any]:
     symbol = symbol.upper(); out = Path(output_root); batches = out / "batches"
-    state_path = out / "candidate_checkpoint.json"; cfg = _config_hash(symbol, start, end, daily_path, benchmark_path)
+    state_path = out / "candidate_checkpoint.json"; cfg = _config_hash(symbol, start, end)
     periods = [(p.year, p.quarter) for p in pd.period_range(pd.Timestamp(start), pd.Timestamp(end), freq="Q")]
     state = json.loads(state_path.read_text()) if resume and state_path.exists() else {"symbol": symbol, "config_hash": cfg, "batches": {}}
     if state.get("config_hash") != cfg: raise ValueError("CANDIDATE_CONFIG_HASH_CHANGED")

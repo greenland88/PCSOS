@@ -7,7 +7,6 @@ existing PCS producer are retained as null and recorded as BLOCKED.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pandas as pd
@@ -21,25 +20,6 @@ SOURCE = Path("research_outputs/safe_strike_stage2/2.3ATR")
 OUT = ROOT / "candidate_inputs"
 FIELDS = tuple(REQUIRED)
 
-def _atomic_frame(frame: pd.DataFrame, path: Path, kind: str) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        if kind == "parquet":
-            frame.to_parquet(temp, index=False)
-        else:
-            frame.to_csv(temp, index=False)
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-
-def _atomic_json(value: object, path: Path) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-
 
 def canonicalize() -> dict:
     OUT.mkdir(parents=True, exist_ok=True)
@@ -49,7 +29,7 @@ def canonicalize() -> dict:
         source = SOURCE / f"{ticker}.parquet"
         if not source.exists():
             frame = pd.DataFrame(columns=FIELDS)
-            _atomic_frame(frame, OUT / f"{ticker}.parquet", "parquet")
+            frame.to_parquet(OUT / f"{ticker}.parquet", index=False)
             reason = "no existing fixed Stage 4A candidate artifact"
             a = audit_inputs(frame)
             summaries.append({"ticker": ticker, "candidate_rows": 0,
@@ -71,7 +51,7 @@ def canonicalize() -> dict:
             for field in FIELDS:
                 if field not in frame:
                     frame[field] = pd.NA
-            _atomic_frame(frame, OUT / f"{ticker}.parquet", "parquet")
+            frame.to_parquet(OUT / f"{ticker}.parquet", index=False)
             a = audit_inputs(frame)
             populated = sum(field in a.available for field in
                             ("dte", "support_level", "normal_daily_move",
@@ -92,14 +72,14 @@ def canonicalize() -> dict:
                                          "source_expected": "existing PCS producer",
                                          "reason_unavailable": "no exact producer in current candidate contract",
                                          "classification": "BLOCKED"})
-    _atomic_frame(pd.DataFrame(summaries), OUT / "validation_summary.csv", "csv")
-    _atomic_frame(pd.DataFrame(missing_rows), OUT / "missing_fields.csv", "csv")
+    pd.DataFrame(summaries).to_csv(OUT / "validation_summary.csv", index=False)
+    pd.DataFrame(missing_rows).to_csv(OUT / "missing_fields.csv", index=False)
     result = {"module": "stage4a_entry_contract_canonicalization", "version": "1.0",
               "tickers": TICKERS, "summaries": summaries,
               "missing_fields": missing_rows,
               "can_run_decision_engine": all(x["audit_inputs"] is True for x in summaries),
               "status": "STAGE4A ENTRY CONTRACT COMPLETE" if not missing_rows else "STAGE4A ENTRY CONTRACT PARTIAL"}
-    _atomic_json(result, OUT / "manifest.json")
+    (OUT / "manifest.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     return result
 
 

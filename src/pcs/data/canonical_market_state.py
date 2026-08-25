@@ -104,10 +104,5 @@ def write_canonical_market_states(frame: pd.DataFrame, report: dict[str, Any], o
         temporary.unlink(missing_ok=True)
     sidecar = output.with_suffix(".validation.json")
     payload = {**report, "status": "READY" if not report["missing_dates"] else "BLOCKED_SOURCE_COVERAGE", "calculation_version": VERSION, "artifact": str(output), "market_state_semantics": "breadth_positive=SPY_QQQ_MARKET_CONFIRMATION", "created_at": datetime.now(ZoneInfo("UTC")).isoformat()}
-    sidecar_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        sidecar_tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(sidecar_tmp, sidecar)
-    finally:
-        sidecar_tmp.unlink(missing_ok=True)
+    sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return output

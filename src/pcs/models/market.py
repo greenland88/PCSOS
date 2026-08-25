@@ -9,15 +9,14 @@ class Regime(StrEnum):
 
 
 class MarketState(BaseModel):
-    # Missing market confirmation must never silently become a healthy regime.
-    qqq_above_20dma: bool = False
-    qqq_above_50dma: bool = False
-    qqq_above_200dma: bool = False
-    spy_above_50dma: bool = False
-    soxx_above_50dma: bool = False
+    qqq_above_20dma: bool = True
+    qqq_above_50dma: bool = True
+    qqq_above_200dma: bool = True
+    spy_above_50dma: bool = True
+    soxx_above_50dma: bool = True
     # Legacy field name. Current contract is SPY_QQQ_MARKET_CONFIRMATION:
     # (SPY close > SPY SMA50) AND (QQQ close > QQQ SMA50).
-    breadth_positive: bool = False
+    breadth_positive: bool = True
     vix: float | None = None
     recent_drawdown_pct: float = 0.0
     sharp_selloff: bool = False

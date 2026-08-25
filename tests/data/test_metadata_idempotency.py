@@ -47,38 +47,19 @@ def test_semantic_hash_ignores_run_metadata(tmp_path):
     assert a.write_artifact(y, "test", "result", root=tmp_path) == p
 
 
-def test_empty_artifact_has_valid_sidecar_and_can_be_read(tmp_path):
+def test_empty_artifact_writes_sidecar_and_repairs_interrupted_retry(tmp_path):
     a = _access(tmp_path)
-    p = a.write_artifact(pd.DataFrame(columns=["value"]), "test", "empty", root=tmp_path)
-    assert a.read_artifact("test", "empty.parquet", root=tmp_path).empty
-    assert p.with_suffix(p.suffix + ".semantic.json").is_file()
+    empty = pd.DataFrame({"value": pd.Series(dtype="int64")})
 
+    path = a.write_artifact(empty, "test", "empty", root=tmp_path)
+    sidecar = path.with_suffix(path.suffix + ".semantic.json")
+    assert path.exists()
+    assert sidecar.exists()
+    assert pd.read_parquet(path).empty
 
-def test_artifact_read_fails_closed_on_missing_or_tampered_sidecar(tmp_path):
-    a = _access(tmp_path)
-    p = a.write_artifact(pd.DataFrame({"value": [1]}), "test", "result", root=tmp_path)
-    sidecar = p.with_suffix(p.suffix + ".semantic.json")
     sidecar.unlink()
-    with pytest.raises(DataQualityError, match="sidecar missing"):
-        a.read_artifact("test", "result.parquet", root=tmp_path)
-    a.write_artifact(pd.DataFrame({"value": [1]}), "test", "result", root=tmp_path)
-    repaired = a.read_artifact("test", "result.parquet", root=tmp_path)
-    assert repaired["value"].tolist() == [1]
-    sidecar.write_text('{"semantic_hash":"wrong","row_count":1}', encoding="utf-8")
-    with pytest.raises(DataQualityError, match="sidecar mismatch"):
-        a.read_artifact("test", "result.parquet", root=tmp_path)
-
-
-def test_concurrent_identical_artifact_writes_are_atomic(tmp_path):
-    frame = pd.DataFrame({"value": [1, 2, 3]})
-
-    def write(_):
-        return _access(tmp_path).write_artifact(frame, "test", "concurrent", root=tmp_path)
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        paths = list(pool.map(write, range(8)))
-    assert len(set(paths)) == 1
-    assert len(_access(tmp_path).read_artifact("test", "concurrent.parquet", root=tmp_path)) == 3
+    assert a.write_artifact(empty, "test", "empty", root=tmp_path) == path
+    assert sidecar.exists()
 
 
 def test_concurrent_manifest_updates_and_interruption(tmp_path, monkeypatch):

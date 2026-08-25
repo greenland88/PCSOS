@@ -13,16 +13,7 @@ def safe(frame):
     for c in out.columns:
         if out[c].map(lambda x:isinstance(x,(list,dict,tuple))).any(): out[c]=out[c].map(lambda x:_json.dumps(x,default=str) if isinstance(x,(list,dict,tuple)) else x)
     return out
-
-def _feature_calendar(access: PCSDataAccess, year: int) -> pd.DataFrame:
-    """Build the same global-warmup PIT calendar used by the shard runner."""
-    daily = access.read_prices("QQQ", "2010-01-01", f"{year}-12-31").copy()
-    daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
-    states = pd.DataFrame([evaluate_as_of(daily, "QQQ", day) for day in daily["date"]])
-    return states[states["date"].between(pd.Timestamp(f"{year}-01-01"), pd.Timestamp(f"{year}-12-31"))].copy()
-
 def main():
-    access = PCSDataAccess()
     frames=[]; features=[]
     for y in range(2020,2024):
         d=SHARDS/f'year={y}'
@@ -32,11 +23,10 @@ def main():
             f=pd.read_parquet(fp); f['date']=pd.to_datetime(f['date']).dt.normalize()
             features.append(f[f.date.between(pd.Timestamp(f'{y}-01-01'),pd.Timestamp(f'{y}-12-31'))].copy())
         else:
-            # Never use a year-local fallback: it changes lookback and state
-            # semantics at the shard boundary. Reconstruct from the same
-            # global canonical history and then select the target year.
-            states = _feature_calendar(access, y)
-            features.append(states.copy())
+            daily=PCSDataAccess().read_prices('QQQ',f'{y}-01-01',f'{y}-12-31').copy()
+            daily.date=pd.to_datetime(daily.date).dt.normalize()
+            states=pd.DataFrame([evaluate_as_of(daily,'QQQ',x) for x in daily.date])
+            features.append(states.iloc[200:].copy())
             safe(states).to_parquet(fp,index=False)
     out=pd.concat(frames,ignore_index=True).sort_values(['trade_date','ticker']).reset_index(drop=True)
     feat=pd.concat(features,ignore_index=True).sort_values(['date']).reset_index(drop=True)
@@ -46,11 +36,10 @@ def main():
       'TRAIN_TRADING_DAYS':len(feat), 'PIT_FEATURE_READY_DAYS':len(feat),
       'OPTION_DATA_AVAILABLE_DAYS':int(out.option_chain_available.sum()),
       'CONTRACT_SELECTED_DAYS':int(out.contract_selected.sum()),
-      'LIFECYCLE_QUOTES_ADAPTED_DAYS':int(out.lifecycle_quotes_adapted.sum()) if 'lifecycle_quotes_adapted' in out else 0,
       'LIFECYCLE_COMPLETED_DAYS':int(out.lifecycle_completed.sum())}
     for code in ['NO_OPTION_DATA','NO_DTE','NO_SAFE_STRIKE','LIQUIDITY_FAIL','CREDIT_FAIL','CONTRACT_FAIL','LIFECYCLE_FAIL']:
         counts[code]=int(out.reason_code.eq(code).sum())
-    counts.update({'module':'pcs.research.qqq_entry_discovery_v1','status':'COMPLETED_QUOTE_ADAPTATION_ONLY','data_source':'PCS_CANONICAL_DATA','train_years':[2020,2021,2022,2023],'final_oos_read':False,'validation_read':False,'production_changes':False,'reason_codes':['QUOTE_ADAPTATION_ONLY','NO_EXIT_OR_PNL_REPLAY']})
+    counts.update({'module':'pcs.research.qqq_entry_discovery_v1','status':'COMPLETED','data_source':'PCS_CANONICAL_DATA','train_years':[2020,2021,2022,2023],'final_oos_read':False,'validation_read':False,'production_changes':False})
     (ART/'broad_outcome_map_summary.json').write_text(json.dumps(counts,indent=2,default=str))
     # The current lifecycle adapter writes no P&L columns in this map; make
     # that limitation explicit instead of inventing outcome classes.

@@ -1,0 +1,3 @@
+scenario_id: current_entry_v1_setup_one
+base_scenario: current_entry_v1_uncapped
+position_policy: {rule_id: eligibility_setup_one}

@@ -228,7 +228,7 @@ def validate_txt_clickhouse_overlap(txt: pd.DataFrame, clickhouse: pd.DataFrame)
     return OverlapResult("READY", len(joined), count, [] if count == 0 else ["CLICKHOUSE_QUOTE_DIFFERENCE_AUDIT"])
 
 
-def onboard_ticker(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options_v2") -> OnboardingResult:
+def onboard_ticker(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options") -> OnboardingResult:
     """Onboard a new ticker, ending only in READY or BLOCKED."""
     symbol = str(symbol).strip().upper()
     frames = []
@@ -270,7 +270,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _checkpoint_path(root: Path, symbol: str) -> Path:
-    return root / "onboarding_checkpoints" / f"{str(symbol).upper()}_options_v2.json"
+    return root / "onboarding_checkpoints" / f"{str(symbol).upper()}_options.json"
 
 
 def activate_authoritative_route(symbol: str, *, dataset: str, manifest_path: str, parquet_root: str, routes_path: str | Path = "config/data_source_routes.yaml") -> None:
@@ -287,7 +287,7 @@ def _atomic_json(path: Path, value: dict) -> None:
     os.replace(tmp, path)
 
 
-def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options_v2", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> OnboardingResult:
+def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> OnboardingResult:
     """Generic partition-checkpointed onboarding with fail-closed activation.
 
     Workers only validate/build physical partitions. Manifest/provenance and route
@@ -343,7 +343,7 @@ def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clic
     return OnboardingResult(symbol, "READY", len(required), rows_written, records, [], f"incremental checkpoint finalized and route activated: {cp}")
 
 
-def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options_v2", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, daily_frame: pd.DataFrame | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> GenericOnboardingResult:
+def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, daily_frame: pd.DataFrame | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> GenericOnboardingResult:
     """Run generic canonical onboarding through the universal readiness gate."""
     if daily_frame is not None:
         from .incremental_update import update_ticker

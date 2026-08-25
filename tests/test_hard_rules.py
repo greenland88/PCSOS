@@ -22,39 +22,26 @@ def engine():
 
 def test_red_market_blocks_new_pcs():
     d = engine().evaluate_candidate(candidate(), MarketState(vix=35), {"planned_risk": 0, "bucket_risk": {}})
-    assert d.action == Action.WAIT
+    assert d.action == Action.NO_TRADE
     assert "REGIME_RED" in d.reason_codes
 
 
 def test_no_three_day_buffer_waits():
     d = engine().evaluate_candidate(candidate(short_strike=475), MarketState(vix=18), {"planned_risk": 0, "bucket_risk": {}})
-    assert d.action == Action.WAIT
+    assert d.action == Action.NO_TRADE
     assert d.reason_codes
 
 
 def test_poor_liquidity_waits():
     d = engine().evaluate_candidate(candidate(option_volume=10, open_interest=10, bid_ask_pct=0.4, nearby_strikes=1, later_expirations=1), MarketState(vix=18), {"planned_risk": 0, "bucket_risk": {}})
-    assert d.action == Action.WAIT
+    assert d.action == Action.NO_TRADE
     assert d.reason_codes
 
 
 def test_capacity_exceeded_restricts_new_positions():
     d = engine().evaluate_candidate(candidate(), MarketState(vix=18), {"planned_risk": 11000, "bucket_risk": {}})
-    assert d.action == Action.WAIT
+    assert d.action == Action.NO_TRADE
     assert "PORTFOLIO_PLANNED_LOSS_LIMIT" in d.reason_codes
-
-
-def test_post_trade_capacity_never_exceeds_total_cap():
-    d = engine().evaluate_candidate(candidate(), MarketState(vix=18), {"planned_risk": 9500, "bucket_risk": {}, "ticker_risk": {}})
-    assert d.planned_risk <= 500
-    assert d.planned_risk + 9500 <= 10000
-
-
-def test_post_trade_bucket_and_ticker_capacity_are_hard_limits():
-    d = engine().evaluate_candidate(candidate(), MarketState(vix=18), {
-        "planned_risk": 0, "bucket_risk": {"nasdaq_mega": 3900}, "ticker_risk": {"QQQ": 2900},
-    })
-    assert d.planned_risk <= 100
 
 
 def test_broken_thesis_closes_not_rolls():

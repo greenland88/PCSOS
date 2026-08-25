@@ -2,8 +2,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import json, numpy as np, pandas as pd
 
-REPO_ROOT=Path(__file__).resolve().parents[1]
-ART=REPO_ROOT/'data/parquet/research/variant_b_full'; RISK=REPO_ROOT/'data/parquet/research/premium_risk'; OUT=REPO_ROOT/'data/parquet/research/pit_compensation'; OUT.mkdir(parents=True,exist_ok=True)
+ART=Path('data/parquet/research/variant_b_full'); RISK=Path('data/parquet/research/premium_risk'); OUT=Path('data/parquet/research/pit_compensation'); OUT.mkdir(parents=True,exist_ok=True)
 TICKERS=['AAPL','AMD','AMZN','AVGO','CRM','GOOGL','HOOD','META','MSFT','MU','NFLX','NVDA','QQQ','SPY','TSLA','VRT']
 MIN_COND=30; MIN_TICKER=30
 
