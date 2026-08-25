@@ -4,6 +4,7 @@ import json
 import pandas as pd
 from .models import response
 from pcs.data.duckdb_store import connect, refresh_views, query_daily, query_option_chain
+from pcs.data.access import PCSDataAccess, DataAccessError
 from pcs.data.derived_store import read_derived, read_backtest_trades
 from pcs.research.compatibility import compatibility
 
@@ -11,11 +12,11 @@ def _con(symbols=None):
     con=connect(":memory:"); refresh_views(con, symbols=symbols); return con
 
 def get_daily_history(symbol, start_date, end_date):
-    con=_con([symbol]); df=query_daily(con,symbol,start_date,end_date); con.close()
+    df=PCSDataAccess().read_prices(symbol, start_date, end_date)
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol, as_of=end_date)
 
 def get_option_chain(symbol, trade_date, expiration_date=None):
-    con=_con([symbol]); df=query_option_chain(con,symbol,trade_date); con.close()
+    df=PCSDataAccess().read_option_chain(symbol, trade_date)
     if expiration_date is not None and not df.empty: df=df[pd.to_datetime(df.expiration_date).dt.date==pd.Timestamp(expiration_date).date()]
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol, as_of=trade_date)
 

@@ -6,6 +6,7 @@ contract selection, lifecycle, or production configuration.
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any, Callable
+import pandas as pd
 
 @dataclass(frozen=True)
 class Evaluation:
@@ -29,7 +30,7 @@ class StrategySpec:
 
     def evaluate(self, ticker: str, date: Any, pit_features: dict[str, Any]) -> Evaluation:
         values = {k: pit_features.get(k) for k in self.features}
-        missing = [k for k, v in values.items() if v is None]
+        missing = [k for k, v in values.items() if v is None or pd.isna(v)]
         if missing:
             return Evaluation(self.strategy_id, str(ticker).upper(), date, "NO_QUALIFY", "missing PIT feature", ("PIT_FEATURE_MISSING",), values)
         ok = bool(self._predicate(values))

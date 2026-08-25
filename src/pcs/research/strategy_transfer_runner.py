@@ -30,7 +30,9 @@ def _features(d: pd.DataFrame) -> pd.DataFrame:
 def run_transfer(request: TransferRequest, *, data_access: PCSDataAccess | None = None, output_dir: str | Path | None = None) -> dict[str, Any]:
     spec = get_strategy(request.strategy_id); ticker = request.ticker.upper(); access = data_access or PCSDataAccess()
     try:
-        daily = access.read_prices(ticker, request.train_start, request.train_end)
+        requested_start = pd.Timestamp(request.train_start)
+        warmup_start = requested_start - pd.Timedelta(days=320)
+        daily = access.read_prices(ticker, warmup_start, request.train_end)
         access.validate_schema(daily, "daily"); access.validate_coverage(daily, ticker, request.train_start, request.train_end, "date")
         if daily.empty or daily.date.duplicated().any(): raise DataQualityError("daily duplicate keys or empty coverage")
         # Options validation is intentionally a readiness gate; execution engines
@@ -39,14 +41,16 @@ def run_transfer(request: TransferRequest, *, data_access: PCSDataAccess | None 
         access.validate_schema(options, "options")
     except (OSError, ValueError, DataAccessError, DataQualityError) as exc:
         return {"module":"pcs.research.strategy_transfer_runner","status":"DATA_BLOCKED","reason_codes":["CANONICAL_DATA_INVALID"],"ticker":ticker,"strategy_id":request.strategy_id,"error":str(exc)}
-    frame = _features(daily); dates=[]; evaluations=[]
+    frame = _features(daily); frame = frame[frame.date >= requested_start].copy(); dates=[]; evaluations=[]
     for _, row in frame.iterrows():
         ev = spec.evaluate(ticker, row.date, row.to_dict()); evaluations.append(asdict(ev))
         if ev.status == "QUALIFY": dates.append(pd.Timestamp(row.date))
     qualifying = pd.Series(sorted(set(dates)))
     episodes=[]
     if len(qualifying):
-        breaks = qualifying.diff().dt.days.fillna(999).gt(4).cumsum()
+        sessions = pd.DatetimeIndex(frame.date).normalize()
+        positions = {d: i for i, d in enumerate(sessions)}
+        breaks = qualifying.map(lambda d: positions.get(pd.Timestamp(d).normalize(), -999)).diff().fillna(999).ne(1).cumsum()
         episodes = [{"episode_id":int(i),"qualifying_dates":[d.date().isoformat() for d in g]} for i,g in qualifying.groupby(breaks)]
     result = {"module":"pcs.research.strategy_transfer_runner","version":"v1","status":"COMPLETED_DESCRIPTIVE","strategy_id":request.strategy_id,"ticker":ticker,"train_start":request.train_start,"train_end":request.train_end,"qualifying_dates":[d.date().isoformat() for d in qualifying],"independent_episodes":episodes,"executable_episodes":[],"trades":[],"performance":{},"reason_codes":["EXACT_TRANSFER","PIT_FEATURES","CANONICAL_DATA_VALIDATED","CONTRACT_LIFECYCLE_DELEGATED"]}
     if output_dir:
