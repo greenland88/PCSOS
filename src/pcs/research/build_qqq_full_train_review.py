@@ -21,6 +21,16 @@ def loo(g):
 def candidate(id,name,rule,source,qualifying=None,episodes=None):
     x=source.copy(); x.trade_date=pd.to_datetime(x.trade_date); out={"HYPOTHESIS_ID":id,"descriptive_name":name,"setup_family":name,"exact_rule":rule,"qualifying_dates":qualifying,"unique_dates":qualifying,"independent_episodes":episodes,"executable_episodes":episodes,"status":"DESCRIPTIVE_ONLY","performance":metric(x),"year_performance":year_metrics(x),"episode_robustness":{**concentration(x),**loo(x)},"contract_robustness":"NOT_TESTED","contract_integrity":"not available in this descriptive artifact","discovery_controls":{"qqq_only":True,"validation_read":False,"final_oos_read":False,"production_changes":False}}
     return out
+def episode_first(frame, calendar):
+    """Group qualifying dates by adjacent sessions, never calendar-day gaps."""
+    x=frame.sort_values("trade_date").copy()
+    sessions=pd.DatetimeIndex(pd.to_datetime(calendar).dt.normalize().drop_duplicates().sort_values())
+    positions=pd.Series(range(len(sessions)),index=sessions)
+    x["_session_index"]=pd.to_datetime(x.trade_date).dt.normalize().map(positions)
+    if x["_session_index"].isna().any():
+        raise ValueError("QQQ_TRAIN_SESSION_INDEX_INCOMPLETE")
+    x["episode"]=(x["_session_index"].diff().fillna(999).ne(1)).cumsum()
+    return x.groupby("episode",as_index=False).first()
 def main():
     broad=pd.read_parquet(ART/"authoritative_lifecycle_outcomes_train_2020_2023.parquet"); broad.trade_date=pd.to_datetime(broad.trade_date)
     frozen=load("frozen_family_episode_eval.json"); robust=load("family_robustness_summary.json"); summary=load("qqq_train_discovery_summary.json");
@@ -28,9 +38,9 @@ def main():
     candidates=[]
     for k,(sid,n,rule,fam) in specs.items():
         z=frozen["families"][k]; # reconstruct one-entry rows from canonical transition table
-        d=pd.read_parquet(ART/"qqq_state_transition_features_train_2020_2023.parquet"); d.trade_date=pd.to_datetime(d.trade_date); masks={"QQQ_V1_H001":d.close_sma200_atr.between(.0879,8.109),"QQQ_V1_H002":d.vol_pct_rank.between(.429,.753),"QQQ_V1_H003":d.volume_ratio20<=.834}; q=d[masks[k]].sort_values("trade_date"); q["episode"]=(q.trade_date.diff().dt.days.fillna(99)>4).cumsum(); q=q.groupby("episode",as_index=False).first(); candidates.append(candidate(sid,n,rule,q,int(z["all_qualifying"]["qualifying_dates"]),len(q)))
+        d=pd.read_parquet(ART/"qqq_state_transition_features_train_2020_2023.parquet"); d.trade_date=pd.to_datetime(d.trade_date); masks={"QQQ_V1_H001":d.close_sma200_atr.between(.0879,8.109),"QQQ_V1_H002":d.vol_pct_rank.between(.429,.753),"QQQ_V1_H003":d.volume_ratio20<=.834}; q=episode_first(d[masks[k]], d.trade_date); candidates.append(candidate(sid,n,rule,q,int(z["all_qualifying"]["qualifying_dates"]),len(q)))
     for n,file,rule in [("H004","h004_variant_summary.json","0.429 < vol_pct_rank <= 0.753 AND volume_ratio20 <= 0.834"),("H005","h005_variant_summary.json","0.0879 < close_sma200_atr <= 8.109 AND 0.429 < vol_pct_rank <= 0.753")]:
-        z=load(file); d=pd.read_parquet(ART/"qqq_state_transition_features_train_2020_2023.parquet"); d.trade_date=pd.to_datetime(d.trade_date); mask=(d.vol_pct_rank.between(.429,.753)&(d.volume_ratio20<=.834)) if n=="H004" else (d.close_sma200_atr.between(.0879,8.109)&d.vol_pct_rank.between(.429,.753)); q=d[mask].sort_values('trade_date'); q['episode']=(q.trade_date.diff().dt.days.fillna(99)>4).cumsum(); q=q.groupby('episode',as_index=False).first(); candidates.append(candidate(n,n,rule,q,z['qualifying_dates'],z['independent_episodes']))
+        z=load(file); d=pd.read_parquet(ART/"qqq_state_transition_features_train_2020_2023.parquet"); d.trade_date=pd.to_datetime(d.trade_date); mask=(d.vol_pct_rank.between(.429,.753)&(d.volume_ratio20<=.834)) if n=="H004" else (d.close_sma200_atr.between(.0879,8.109)&d.vol_pct_rank.between(.429,.753)); q=episode_first(d[mask], d.trade_date); candidates.append(candidate(n,n,rule,q,z['qualifying_dates'],z['independent_episodes']))
     cr=load("controlled_reset_fixed_family.json"); candidates.append({"HYPOTHESIS_ID":"CONTROLLED_RESET","descriptive_name":"Controlled reset","exact_rule":"drawdown60 <= -0.02 AND ret10 > 0","independent_episodes":47,"performance":cr["all"],"year_performance":cr["year_metrics"],"status":"DESCRIPTIVE_ONLY","episode_robustness":load('controlled_reset_timing.json')['timing_rules']['FIRST_QUALIFICATION']['leave_one_episode_out']})
     h006=pd.read_parquet('research_outputs/qqq_entry_discovery_agent_v1_h006_timing_train/shards_v2/merged.parquet'); h006=h006[h006.lifecycle_completed].copy(); h006.trade_date=pd.to_datetime(h006.trade_date)
     h006r=load('h006_outcome_audit_round41.json'); candidates.append({"HYPOTHESIS_ID":"H006","descriptive_name":"First stabilization after controlled reset","exact_rule":"drawdown60 <= -0.02 AND ret10 > 0 AND ret5 > 0; first confirmation within episode","signal_dates":41,"contracts_selected":39,"independent_episodes":39,"executable_episodes":39,"performance":metric(h006),"year_performance":year_metrics(h006),"episode_robustness":{**concentration(h006),**loo(h006)},"outcome_classes":h006r['outcome_counts'],"status":"OWNER_REVIEW_READY_DESCRIPTIVE_ONLY","contract_robustness":"NOT_TESTED"})
