@@ -64,14 +64,19 @@ def audit_option_frame(frame, *, source=None, source_file=None, source_member=No
     reasons = reasons.mask(reasons.isna() & (raw.ask.isna() | ~np.isfinite(raw.ask) | raw.ask.lt(0)), "QUOTE_ASK_INVALID")
     reasons = reasons.mask(reasons.isna() & raw.ask.lt(raw.bid), "QUOTE_CROSSED")
     eligible = reasons.isna()
-    key = raw[OPTION_KEY_FIELDS].astype(object).astype(str).agg("|".join, axis=1)
-    duplicate = eligible & key.duplicated(keep=False)
+    # Use native multi-column duplicate detection. Building a string key for
+    # every historical quote row is materially slower and allocates a large
+    # temporary object array on dense ticker histories.
+    duplicate = eligible & raw[OPTION_KEY_FIELDS].duplicated(keep=False)
     if duplicate.any():
         payload = [c for c in OPTION_FIELDS if c not in OPTION_KEY_FIELDS]
-        varying = raw.loc[eligible].groupby(key[eligible], sort=False, dropna=False)[payload].nunique(dropna=False).gt(1).any(axis=1)
-        conflict_keys = set(varying[varying].index)
-        reasons = reasons.mask(duplicate & key.isin(conflict_keys), "OPTION_CONFLICTING_IDENTITY")
-        reasons = reasons.mask(duplicate & ~key.isin(conflict_keys), "OPTION_DUPLICATE_IDENTITY")
+        duplicate_rows = raw.loc[duplicate]
+        varying = duplicate_rows.groupby(OPTION_KEY_FIELDS, sort=False, dropna=False)[payload].nunique(dropna=False).gt(1).any(axis=1)
+        conflict_keys = varying[varying].index
+        duplicate_index = pd.MultiIndex.from_frame(raw[OPTION_KEY_FIELDS])
+        conflict_mask = duplicate_index.isin(conflict_keys)
+        reasons = reasons.mask(duplicate & conflict_mask, "OPTION_CONFLICTING_IDENTITY")
+        reasons = reasons.mask(duplicate & ~conflict_mask, "OPTION_DUPLICATE_IDENTITY")
     meta = {"source": source, "source_file": source_file, "source_member": source_member,
             "source_version": source_version, "partition": partition}
     quarantine = raw.loc[reasons.notna()].copy()

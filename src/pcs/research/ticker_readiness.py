@@ -105,7 +105,27 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
         if not manifest_ok: _block(r,"MANIFEST","MANIFEST_MISSING_OR_STALE","canonical route manifest missing or source version absent")
         if not route_matches: _block(r,"MANIFEST","ROUTE_MANIFEST_MISMATCH","canonical route does not resolve to a successful manifest row")
         if not provenance_ok: _block(r,"MANIFEST","PROVENANCE_INCOMPLETE","canonical provenance manifest missing or ticker/dataset absent")
-        qa=access.audit_options_quality(s, start_date=executable_start); dup=int(qa["duplicate_option_rows"]); conflicts=int(qa["ambiguous_conflicting_option_keys"]); usable=int(qa["usable_30_45_dte_rows"]); valid_quotes=int(qa["valid_30_45_dte_quote_rows"]); valid_exp_rows=int(qa["valid_30_45_dte_expiration_rows"]); valid_strike_rows=int(qa["valid_30_45_dte_strike_rows"]); null_identity=int(qa.get("null_identity_rows", 0)); executable_invalid=int(qa.get("executable_invalid_rows", 0)); valid_bid=valid_quotes == usable; valid_exp=valid_exp_rows == usable; valid_strike=valid_strike_rows == usable; r.checks["options"]={"route":ev,"executable_start_date":executable_start,"raw_rows":int(qa.get("raw_rows",0)),"canonical_rows":int(qa.get("canonical_rows",0)),"quarantined_rows":int(qa.get("quarantined_rows",0)),"executable_rows":int(qa.get("executable_rows",0)),"executable_invalid_rows":executable_invalid,"quarantine_reason_breakdown":qa.get("reason_breakdown",{}),"affected_dates":qa.get("affected_dates",[]),"affected_partitions":qa.get("affected_partitions",[]),"affected_percentage":qa.get("affected_percentage",0.0),"duplicate_option_rows":dup,"duplicate_option_keys":int(qa["duplicate_option_keys"]),"identical_duplicate_keys":int(qa["identical_duplicate_keys"]),"ambiguous_conflicting_option_keys":conflicts,"null_identity_rows":null_identity,"valid_bid_ask":valid_bid,"valid_expirations":valid_exp,"valid_strikes":valid_strike,"usable_30_45_dte_rows":usable,"valid_30_45_dte_quote_rows":valid_quotes,"invalid_30_45_dte_quote_rows":usable-valid_quotes}
+        # A SUCCESS manifest row is not sufficient canonical identity: retain
+        # disappeared files as explicit evidence and apply the global
+        # executable boundary to their admission severity.
+        physical_findings = access.audit_manifest_physical_integrity(
+            s, dataset=ev["resolved_dataset"], start_date=executable_start,
+            end_date=spec.get("last_date"),
+        )
+        historical_findings = access.audit_manifest_physical_integrity(
+            s, dataset=ev["resolved_dataset"],
+        )
+        r.checks["manifest_physical_integrity"] = {
+            "findings": historical_findings,
+            "blocking_findings": [x for x in physical_findings if x["blocking"]],
+            "historical_integrity_warnings": [x for x in historical_findings if not x["blocking"]],
+        }
+        for finding in physical_findings:
+            if finding["blocking"]:
+                _block(r, "OPTIONS", "MANIFEST_PHYSICAL_MISMATCH",
+                       f"{finding['partition']} manifest SUCCESS but parquet is missing",
+                       "repair canonical partition and refresh manifest")
+        qa=access.audit_options_quality(s, start_date=executable_start); dup=int(qa["duplicate_option_rows"]); conflicts=int(qa["ambiguous_conflicting_option_keys"]); usable=int(qa["usable_30_45_dte_rows"]); valid_quotes=int(qa["valid_30_45_dte_quote_rows"]); valid_exp_rows=int(qa["valid_30_45_dte_expiration_rows"]); valid_strike_rows=int(qa["valid_30_45_dte_strike_rows"]); null_identity=int(qa.get("null_identity_rows", 0)); executable_invalid=int(qa.get("executable_invalid_rows", 0)); valid_bid=valid_quotes == usable; valid_exp=valid_exp_rows == usable; valid_strike=valid_strike_rows == usable; r.checks["options"]={"route":ev,"options_identity":{"dataset":ev["resolved_dataset"],"manifest":ev["resolved_manifest"],"source_version":ev["source_version"],"schema_version":ev["spec"].get("schema_version")},"executable_start_date":executable_start,"raw_rows":int(qa.get("raw_rows",0)),"canonical_rows":int(qa.get("canonical_rows",0)),"quarantined_rows":int(qa.get("quarantined_rows",0)),"executable_rows":int(qa.get("executable_rows",0)),"executable_invalid_rows":executable_invalid,"quarantine_reason_breakdown":qa.get("reason_breakdown",{}),"affected_dates":qa.get("affected_dates",[]),"affected_partitions":qa.get("affected_partitions",[]),"affected_percentage":qa.get("affected_percentage",0.0),"duplicate_option_rows":dup,"duplicate_option_keys":int(qa["duplicate_option_keys"]),"identical_duplicate_keys":int(qa["identical_duplicate_keys"]),"ambiguous_conflicting_option_keys":conflicts,"null_identity_rows":null_identity,"valid_bid_ask":valid_bid,"valid_expirations":valid_exp,"valid_strikes":valid_strike,"usable_30_45_dte_rows":usable,"valid_30_45_dte_quote_rows":valid_quotes,"invalid_30_45_dte_quote_rows":usable-valid_quotes}
         if conflicts: _block(r,"OPTIONS","OPTIONS_AMBIGUOUS_CONFLICTING_KEYS",f"{conflicts} conflicting option keys")
         if null_identity: _block(r,"OPTIONS","OPTIONS_CANONICAL_IDENTITY_INVALID",f"{null_identity} rows have null option identity fields")
         if dup: _block(r,"OPTIONS","OPTIONS_DUPLICATE_KEYS",f"{dup} duplicate key rows")

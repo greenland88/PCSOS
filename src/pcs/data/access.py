@@ -21,6 +21,7 @@ import pandas as pd
 import yaml
 
 from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, OPTIONS_REQUIRED_FIELDS, audit_option_frame
+from .executable_boundary import resolve_executable_start_date
 
 
 class DataAccessError(RuntimeError):
@@ -50,7 +51,16 @@ class SourceSpec:
 class PCSDataAccess:
     """Canonical read/write API for market data and persisted PCS artifacts."""
 
-    def __init__(self, manifest_path="data/manifests/storage_manifest.csv", parquet_root="data/parquet", source_routes_path="config/data_source_routes.yaml", source_routes=None):
+    def __init__(self, manifest_path="data/manifests/storage_manifest.csv", parquet_root="data/parquet", source_routes_path="config/data_source_routes.yaml", source_routes=None, routing_mode: str | None = None):
+        default_manifest = Path("data/manifests/storage_manifest.csv")
+        if routing_mode is None:
+            # Backward-compatible inference for existing isolated fixtures.
+            routing_mode = "canonical" if Path(manifest_path).resolve() == default_manifest.resolve() else "isolated"
+        if routing_mode not in {"canonical", "isolated"}:
+            raise ValueError(f"UNKNOWN_ROUTING_MODE:{routing_mode}")
+        if routing_mode == "canonical" and Path(manifest_path).resolve() != default_manifest.resolve():
+            raise DataAccessError("CANONICAL_MODE_REQUIRES_DEFAULT_MANIFEST")
+        self.routing_mode = routing_mode
         self.manifest_path = Path(manifest_path)
         self.provenance_manifest_path = self.manifest_path.with_name("data_provenance_manifest.csv")
         self.parquet_root = Path(parquet_root)
@@ -61,6 +71,17 @@ class PCSDataAccess:
         if not metadata_path.exists() and self.manifest_path.parent == Path("data/manifests"):
             metadata_path = Path("data/manifests/price_basis_metadata.csv")
         self._price_basis_metadata = pd.read_csv(metadata_path) if metadata_path.exists() else pd.DataFrame()
+
+    @classmethod
+    def canonical(cls, **kwargs):
+        kwargs["routing_mode"] = "canonical"
+        return cls(**kwargs)
+
+    @classmethod
+    def isolated(cls, *, manifest_path, **kwargs):
+        kwargs["manifest_path"] = manifest_path
+        kwargs["routing_mode"] = "isolated"
+        return cls(**kwargs)
 
     def get_price_basis(self, dataset: str, symbol: str) -> dict[str, Any]:
         """Return explicit basis metadata; absent metadata is UNKNOWN."""
@@ -85,7 +106,7 @@ class PCSDataAccess:
         # Explicit manifests are isolated stores (tests, fixtures, or
         # caller-provided datasets); production per-ticker routes must not
         # redirect them.
-        if self.manifest_path != Path("data/manifests/storage_manifest.csv"):
+        if self.routing_mode == "isolated":
             if dataset == "options":
                 manifest = self._read_manifest(self.manifest_path)
                 if not manifest.empty and "dataset" in manifest and manifest.dataset.astype(str).str.startswith("options_").any():
@@ -252,6 +273,15 @@ class PCSDataAccess:
             & (manifest.symbol.astype(str).str.upper() == symbol)
             & (manifest.status == "SUCCESS")
         ]
+        if resolved_dataset.startswith("options_v2"):
+            integrity = self.audit_manifest_physical_integrity(
+                symbol, dataset=resolved_dataset, start_date=start_date, end_date=end_date
+            )
+            blocking = [x for x in integrity if x["blocking"]]
+            if blocking:
+                raise DataQualityError(
+                    f"MANIFEST_PHYSICAL_MISMATCH:{symbol}:{blocking[:3]}"
+                )
         # Daily partitions migrated by the canonical universe pipeline may be
         # recorded in the migration manifest before they are folded into the
         # compact storage manifest.  Resolve that manifest generically by
@@ -320,6 +350,17 @@ class PCSDataAccess:
                         active_files = [p for p in manifest_files if pd.Period(f"{p.parent.parent.name.split('=', 1)[1]}Q{p.parent.name.split('=', 1)[1]}") in requested_periods]
             if not active_files:
                 raise FileNotFoundError(f"no active option partitions for {symbol}")
+            unreadable = []
+            for candidate in active_files:
+                try:
+                    with candidate.open("rb"):
+                        pass
+                except (OSError, PermissionError) as exc:
+                    unreadable.append({"path": str(candidate), "error": str(exc)})
+            if unreadable:
+                raise DataQualityError(
+                    f"canonical option partition unreadable for {symbol}: {unreadable[:3]}"
+                )
             # Pass an explicit file list to DuckDB; this is the authoritative
             # discovery result and cannot be re-expanded recursively.
             path = Path(";".join(str(x) for x in sorted(active_files)))
@@ -329,6 +370,72 @@ class PCSDataAccess:
             path = parquet_root / resolved_dataset / f"symbol={symbol}" / "**" / "*.parquet"
         schema = rows.schema_version.iloc[0] if "schema_version" in rows else "1"
         return SourceSpec(resolved_dataset, symbol, "partitioned_parquet", str(path).replace("\\", "/"), str(lo.date()), str(hi.date()), int(rows.row_count.sum()), f"storage_manifest_v1:{manifest_path}", str(schema))
+
+    def audit_manifest_physical_integrity(self, symbol: str, *, dataset: str = "options_v2",
+                                          start_date=None, end_date=None) -> list[dict[str, Any]]:
+        """Audit SUCCESS manifest rows against their declared physical files.
+
+        A manifest row remains evidence even when its file has disappeared.
+        Missing partitions before the executable boundary are warnings; a
+        missing partition in the executable/requested window is blocking.
+        """
+        symbol = self._symbol(symbol)
+        resolved_dataset, manifest_path, _ = self._resolve_route(dataset, symbol)
+        manifest = self._manifest if manifest_path == self.manifest_path else self._read_manifest(manifest_path)
+        if manifest.empty or "parquet_path" not in manifest.columns:
+            return []
+        rows = manifest[
+            manifest.dataset.astype(str).eq(resolved_dataset)
+            & manifest.symbol.astype(str).str.upper().eq(symbol)
+            & manifest.status.astype(str).str.upper().eq("SUCCESS")
+        ]
+        boundary = resolve_executable_start_date(symbol, self.source_routes)
+        requested_start = pd.Timestamp(start_date).date() if start_date is not None else None
+        requested_end = pd.Timestamp(end_date).date() if end_date is not None else None
+        findings = []
+        declared_periods = set()
+        for _, row in rows.iterrows():
+            year, quarter = row.get("year"), row.get("quarter")
+            if pd.isna(year) or pd.isna(quarter):
+                continue
+            period = pd.Period(f"{int(year)}Q{int(quarter)}", freq="Q")
+            declared_periods.add(period)
+            period_start, period_end = period.start_time.date(), period.end_time.date()
+            if requested_start and period_end < requested_start or requested_end and period_start > requested_end:
+                continue
+            raw = str(row.get("parquet_path", ""))
+            path = Path(raw) if Path(raw).is_absolute() else Path.cwd() / raw
+            if not path.exists():
+                in_executable = period_end >= boundary
+                findings.append({
+                    "symbol": symbol, "dataset": resolved_dataset,
+                    "partition": f"{int(year)}Q{int(quarter)}",
+                    "status": "MISSING_PHYSICAL_FILE",
+                    "manifest_status": "SUCCESS",
+                    "blocking": bool(in_executable),
+                    "reason": "IN_EXECUTABLE_WINDOW" if in_executable else "OUTSIDE_EXECUTABLE_WINDOW",
+                    "reason_code": "MANIFEST_PHYSICAL_MISMATCH",
+                    "path": raw,
+                })
+        # A successful source advertises a date span; every quarter intersecting
+        # the admitted span must have a canonical partition declaration.
+        if len(rows):
+            source_start = pd.Timestamp(rows.min_date.min()).date()
+            source_end = pd.Timestamp(rows.max_date.max()).date()
+            effective_start = max(source_start, boundary, requested_start or source_start)
+            effective_end = min(source_end, requested_end or source_end)
+            if effective_start <= effective_end:
+                for period in pd.period_range(effective_start, effective_end, freq="Q"):
+                    if period not in declared_periods:
+                        blocking = period.end_time.date() >= boundary
+                        findings.append({
+                            "symbol": symbol, "dataset": resolved_dataset,
+                            "partition": str(period), "status": "MISSING_MANIFEST_PARTITION",
+                            "manifest_status": "MISSING", "blocking": blocking,
+                            "reason": "IN_EXECUTABLE_WINDOW" if blocking else "OUTSIDE_EXECUTABLE_WINDOW",
+                            "reason_code": "HISTORICAL_PARTITION_MISSING", "path": None,
+                        })
+        return findings
 
     def validate_schema(self, frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
         is_options = dataset == "options" or dataset.startswith("options")
@@ -378,6 +485,12 @@ class PCSDataAccess:
             parquet_input: str | list[str] = spec.path
             if ";" in spec.path:
                 parquet_input = spec.path.split(";")
+            elif spec.dataset.startswith("options_v2"):
+                # DuckDB's Windows parameter binding treats a drive-qualified
+                # single path as a glob in the scalar reader. Use the same
+                # explicit-file path as multi-partition reads so canonical
+                # v2 routes behave identically for one or many shards.
+                parquet_input = [spec.path]
             if isinstance(parquet_input, list):
                 # DuckDB's parameterized multi-file reader can duplicate rows
                 # when active Parquet files were atomically replaced during a

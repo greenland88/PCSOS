@@ -54,6 +54,8 @@ class OnboardingResult:
     provenance_records: int
     reason_codes: list[str] = field(default_factory=list)
     explanation: str = ""
+    duplicate_count: int = 0
+    conflict_count: int = 0
 
     def to_dict(self):
         return asdict(self)
@@ -337,7 +339,7 @@ def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clic
             source_version = f"historical_txt:{meta['source_member']}:sha256:{meta['source_sha256']}"
             path = access.write_partition(checked, dataset, symbol, f"year={year}/quarter={quarter}", source_version=source_version, filename=target.name, update_manifest=False, allow_overwrite=True)
             checksum = _sha256_file(path)
-            return part, {"ticker": symbol, "partition_id": part, "source_type": meta["source"], "source_identity": meta["source_member"], "source_path": meta["source_path"], "source_hash": meta["source_sha256"], "pipeline_version": "onboarding.v2", "schema_version": "1", "status": "COMMITTED", "row_count": len(checked), "output_path": str(path), "output_checksum": checksum, "validation_timestamp": datetime.now(timezone.utc).isoformat(), "committed_timestamp": datetime.now(timezone.utc).isoformat(), "failure_code": None, "failure_reason": None, "provenance": {**meta, "dataset": dataset, "symbol": symbol, "source_version": source_version, "status": "READY", "written_rows": len(checked)}}
+            return part, {"ticker": symbol, "partition_id": part, "source_type": meta["source"], "source_identity": meta["source_member"], "source_path": meta["source_path"], "source_hash": meta["source_sha256"], "pipeline_version": "onboarding.v2", "schema_version": "1", "status": "COMMITTED", "row_count": len(checked), "output_path": str(path), "output_checksum": checksum, "validation_timestamp": datetime.now(timezone.utc).isoformat(), "committed_timestamp": datetime.now(timezone.utc).isoformat(), "failure_code": None, "failure_reason": None, "duplicate_count": policy.exact_duplicates_removed, "conflict_count": policy.conflicts_blocked, "provenance": {**meta, "dataset": dataset, "symbol": symbol, "source_version": source_version, "status": "READY", "written_rows": len(checked)}}
         except Exception as exc:
             return part, {"ticker": symbol, "partition_id": part, "status": "FAILED", "failure_code": type(exc).__name__, "failure_reason": str(exc)}
 
@@ -359,7 +361,9 @@ def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clic
     if activate_route:
         activate_authoritative_route(symbol, dataset=dataset, manifest_path=str(access.manifest_path), parquet_root=str(access.parquet_root), routes_path=routes_path)
     message = f"incremental checkpoint finalized and {'route activated' if activate_route else 'route pending final activation'}: {cp}"
-    return OnboardingResult(symbol, "READY", len(required), rows_written, records, [], message)
+    return OnboardingResult(symbol, "READY", len(required), rows_written, records, [], message,
+                            duplicate_count=sum(int(state["partitions"][p].get("duplicate_count", 0)) for p in required),
+                            conflict_count=sum(int(state["partitions"][p].get("conflict_count", 0)) for p in required))
 
 
 def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 4, resume: bool = True, checkpoint_root: str | Path | None = None, daily_frame: pd.DataFrame | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> GenericOnboardingResult:
@@ -438,6 +442,9 @@ def run_system_onboarding(symbol: str, *, adapter: HistoricalTxtZipAdapter, acce
             return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, result.explanation, reason_codes=result.reason_codes)
         state.shards_complete = result.periods
         state.rows_written = result.rows_written
+        state.rows_processed = result.rows_written
+        state.duplicate_count = result.duplicate_count
+        state.conflict_count = result.conflict_count
         return StageResult("PASS", metrics=result.to_dict())
 
     def validate(state):
@@ -456,18 +463,23 @@ def run_system_onboarding(symbol: str, *, adapter: HistoricalTxtZipAdapter, acce
         result = preflight_ticker(symbol, access=PCSDataAccess(manifest_path=access.manifest_path, parquet_root=access.parquet_root))
         if str(result.PCS_RESEARCH_READY).upper() not in {"YES", "TRUE", "PASS"}:
             return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, "canonical ticker readiness failed", result.to_dict(), result.reason_codes)
+        case_payload = result.checks.get("contract_selection", {}).get("case")
+        if case_payload:
+            state.metrics["_readiness_smoke_case"] = case_payload
         return StageResult("PASS", metrics=result.to_dict(), reason_codes=result.reason_codes)
 
     smoke_case: dict[str, Any] = {}
 
     def contract_smoke(state):
-        from .readiness import discover_lifecycle_smoke_case
-        case, evidence = discover_lifecycle_smoke_case(access, symbol)
-        if case is None:
+        from .readiness import LifecycleSmokeCase
+        payload = state.metrics.get("_readiness_smoke_case")
+        if not payload:
             return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, "contract selection smoke failed",
-                               metrics=evidence, reason_codes=["CONTRACT_SELECTION_SMOKE_FAILED"])
+                               reason_codes=["CONTRACT_SELECTION_SMOKE_FAILED"])
+        fields = {key: payload[key] for key in LifecycleSmokeCase.__dataclass_fields__ if key in payload}
+        case = LifecycleSmokeCase(**fields)
         smoke_case["case"] = case
-        return StageResult("PASS", metrics={"case": case.to_dict(), "evidence": evidence})
+        return StageResult("PASS", metrics={"case": case.to_dict(), "evidence": "REUSED_CANONICAL_READINESS"})
 
     def lifecycle_smoke(state):
         from .readiness import execute_lifecycle_smoke

@@ -98,7 +98,7 @@ def run_general_pcs_replay(ticker: str, train_start: str = "2018-01-01",
         "rules": {"dte_min": 30, "dte_max": 45, "safe_strike_atr": 2.3, "allowed_widths": [5, 10, 2], "width_mode": "ALL", "min_credit_width_ratio": .10, "trend_gate": True, "pullback_gate": True, "support_gate": True, "regime_gate": False, "event_gate": True, "liquidity_gate": True, "predictability_gate": True},
     }
     spec = from_mapping(raw)
-    replay = ResearchRunner(spec, output_dir=output_dir).execute_current_strategy_replay()
+    replay = ResearchRunner(spec, output_dir=output_dir).execute_current_strategy_replay(data_access=access)
     replay_dir = Path(output_dir) / spec.research_id
     lifecycle = pd.read_parquet(replay_dir / "lifecycle_results.parquet") if (replay_dir / "lifecycle_results.parquet").exists() else pd.DataFrame()
     candidates = pd.read_parquet(replay_dir / "candidates.parquet") if (replay_dir / "candidates.parquet").exists() else pd.DataFrame()

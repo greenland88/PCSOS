@@ -27,6 +27,10 @@ def test_stages_advance_and_persist(tmp_path):
     payload = json.loads((tmp_path / "ABC" / "state.json").read_text())
     assert payload["symbol"] == "ABC"
     assert payload["status"] == "PASS"
+    assert set(payload["stage_status"].values()) == {"PASS"}
+    progress = OnboardingEngine("ABC", tmp_path).progress()
+    assert progress["stage"] == OnboardingStage.RESEARCH_READY
+    assert progress["current_metrics"]["elapsed_seconds"] >= 0
 
 
 def test_resume_skips_completed_stages(tmp_path):

@@ -61,6 +61,12 @@ def get_ticker_state(ticker: str, *, access: PCSDataAccess | None = None,
     daily_check = checks.get("daily", {})
     options_check = checks.get("options", {})
     blockers = readiness.get("blockers", [])
+    saved_identity = options_check.get("options_identity") or {}
+    identity_matches = bool(options and saved_identity.get("dataset") == options.dataset
+                            and saved_identity.get("source_version") == options.source_version)
+    stale = bool(readiness and not identity_matches)
+    if stale:
+        blockers = list(blockers) + [{"reason_code": "STALE_READINESS_SOURCE_IDENTITY", "detail": "readiness artifact does not match current canonical options route"}]
     primary = blockers[0].get("reason_code", "UNKNOWN_READINESS") if blockers else "NONE"
     pit = checks.get("pit", {})
     pit_through = None
@@ -79,13 +85,13 @@ def get_ticker_state(ticker: str, *, access: PCSDataAccess | None = None,
         provenance=checks.get("manifest_provenance", {}).get("provenance_path"),
         PIT_ready_through=pit_through,
         DATA_READY=readiness.get("DATA_READY", "NO" if daily_error else "UNKNOWN"),
-        OPTIONS_READY=readiness.get("OPTIONS_READY", "NO" if options_error else "UNKNOWN"),
-        PIT_READY=readiness.get("PIT_READY", "NO"),
-        CONTRACT_SELECTION_READY=readiness.get("CONTRACT_SELECTION_READY", "NO"),
-        LIFECYCLE_READY=readiness.get("LIFECYCLE_READY", "NO"),
-        PCS_RESEARCH_READY=readiness.get("PCS_RESEARCH_READY", "NO"),
+        OPTIONS_READY="NO" if stale else readiness.get("OPTIONS_READY", "NO" if options_error else "UNKNOWN"),
+        PIT_READY="NO" if stale else readiness.get("PIT_READY", "NO"),
+        CONTRACT_SELECTION_READY="NO" if stale else readiness.get("CONTRACT_SELECTION_READY", "NO"),
+        LIFECYCLE_READY="NO" if stale else readiness.get("LIFECYCLE_READY", "NO"),
+        PCS_RESEARCH_READY="NO" if stale else readiness.get("PCS_RESEARCH_READY", "NO"),
         PRIMARY_BLOCKER=primary,
-        reason_codes=tuple(readiness.get("reason_codes", [])),
+        reason_codes=tuple(readiness.get("reason_codes", [])) + (("STALE_READINESS_SOURCE_IDENTITY",) if stale else ()),
     )
 
 

@@ -17,7 +17,8 @@ def test_registry_is_typed_view_over_readiness(tmp_path):
         "DATA_READY": "YES", "OPTIONS_READY": "YES", "PIT_READY": "YES",
         "CONTRACT_SELECTION_READY": "YES", "LIFECYCLE_READY": "YES",
         "PCS_RESEARCH_READY": "YES", "reason_codes": [], "blockers": [],
-        "checks": {"daily": {"coverage_end": "2026-01-01"}, "pit": {"state_ready_rows": 1}},
+        "checks": {"daily": {"coverage_end": "2026-01-01"}, "pit": {"state_ready_rows": 1},
+                    "options": {"options_identity": {"dataset": "options_v2", "source_version": "options-v1"}}},
     }), encoding="utf-8")
     state = get_ticker_state("QQQ", access=RegistryAccess(), readiness_dir=tmp_path)
     assert state.PCS_RESEARCH_READY == "YES"

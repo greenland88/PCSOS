@@ -168,13 +168,14 @@ class ResearchRunner:
             raise ResearchSpecError("EXECUTION_ONLY_SUPPORTS_NEW_ENTRY_OR_CURRENT_REPLAY")
         from .ticker_readiness import assert_research_ready
         from pcs.data.ticker_registry import get_ticker_state
-        registry_state = get_ticker_state(self.spec.ticker)
+        access = data_access or PCSDataAccess.canonical()
+        registry_state = get_ticker_state(self.spec.ticker, access=access)
         if registry_state.PCS_RESEARCH_READY != "YES":
             raise ResearchSpecError(
                 f"PCS_RESEARCH_NOT_READY_REGISTRY:{self.spec.ticker.upper()}:"
                 f"{registry_state.PRIMARY_BLOCKER}"
             )
-        assert_research_ready(self.spec.ticker, access=data_access)
+        assert_research_ready(self.spec.ticker, access=access)
         clean_path = self.spec.population_source.get("authoritative_clean_dataset")
         if clean_path:
             # This is an explicit, research-scoped admission path.  It validates
@@ -189,7 +190,7 @@ class ResearchRunner:
                 raise RuntimeError("CLEAN_DATASET_VALIDATION_FAILED")
         from .current_strategy_replay import run_current_strategy_replay
         from pcs.data.price_basis import load_corporate_actions
-        return run_current_strategy_replay(self.spec, data_access=data_access, output_dir=self.output_dir.parent,
+        return run_current_strategy_replay(self.spec, data_access=access, output_dir=self.output_dir.parent,
                                            price_basis_service=load_corporate_actions())
 
     execute_research_replay = execute_current_strategy_replay

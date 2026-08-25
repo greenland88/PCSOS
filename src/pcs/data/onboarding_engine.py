@@ -72,6 +72,7 @@ class OnboardingState:
     conflict_count: int = 0
     failure_type: str | None = None
     failure_reason: str | None = None
+    stage_status: dict[str, str] = field(default_factory=dict)
     attempts: dict[str, int] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     reason_codes: list[str] = field(default_factory=list)
@@ -102,10 +103,14 @@ class OnboardingEngine:
 
     def load(self) -> OnboardingState:
         if not self.state_path.exists():
-            return OnboardingState(self.symbol)
+            state = OnboardingState(self.symbol)
+            state.stage_status = {stage.value: OnboardingStatus.PENDING.value for stage in STAGES}
+            return state
         raw = json.loads(self.state_path.read_text(encoding="utf-8"))
         raw.pop("_schema", None)
-        return OnboardingState(**raw)
+        state = OnboardingState(**raw)
+        state.stage_status = {stage.value: OnboardingStatus.PENDING.value for stage in STAGES} | state.stage_status
+        return state
 
     def persist(self, state: OnboardingState) -> None:
         _atomic_write(self.state_path, {"_schema": "pcs.onboarding.v1", **asdict(state)})
@@ -116,6 +121,7 @@ class OnboardingEngine:
             return state
         state.started_at = state.started_at or _now()
         state.status = OnboardingStatus.RUNNING
+        state.stage_status = {stage.value: OnboardingStatus.PENDING.value for stage in STAGES} | state.stage_status
         self.persist(state)
         start = STAGES.index(OnboardingStage(state.stage))
         for index, stage in enumerate(STAGES[start:], start=start):
@@ -123,6 +129,8 @@ class OnboardingEngine:
             if handler is None:
                 return self._fail(state, stage, FailureType.RECOVERABLE_ENGINEERING, "missing stage handler")
             state.stage = stage.value
+            state.stage_status[stage.value] = OnboardingStatus.RUNNING.value
+            self.persist(state)
             stage_started = time.perf_counter()
             result = self._execute(handler, state, stage)
             state.metrics[stage.value] = {
@@ -132,7 +140,9 @@ class OnboardingEngine:
             }
             state.reason_codes = result.reason_codes
             if result.status.upper() != "PASS":
+                state.stage_status[stage.value] = OnboardingStatus.BLOCKED.value
                 return self._fail(state, stage, result.failure_type or FailureType.RECOVERABLE_ENGINEERING, result.failure_reason or "stage failed")
+            state.stage_status[stage.value] = OnboardingStatus.PASS.value
             state.status = OnboardingStatus.PASS if stage == OnboardingStage.RESEARCH_READY else OnboardingStatus.RUNNING
             state.failure_type = state.failure_reason = None
             if stage != OnboardingStage.RESEARCH_READY:
@@ -148,6 +158,7 @@ class OnboardingEngine:
         current = state.metrics.get(state.stage, {})
         return {
             "symbol": state.symbol, "stage": state.stage, "status": state.status,
+            "stage_status": state.stage_status,
             "shards": {"complete": state.shards_complete, "total": state.shards_total},
             "rows": {"processed": state.rows_processed, "written": state.rows_written},
             "duplicates": state.duplicate_count, "conflicts": state.conflict_count,
@@ -175,6 +186,7 @@ class OnboardingEngine:
     def _fail(self, state: OnboardingState, stage: OnboardingStage, failure_type: str, reason: str) -> OnboardingState:
         state.stage = stage.value
         state.status = OnboardingStatus.BLOCKED
+        state.stage_status[stage.value] = OnboardingStatus.BLOCKED.value
         state.failure_type = str(failure_type)
         state.failure_reason = reason
         self.persist(state)
