@@ -1,7 +1,12 @@
 import pandas as pd
 import pytest
 
-from pcs.research.stage4a_lifecycle import LifecycleAdapterError, Stage4ALifecycleReplayAdapter
+from pcs.research.stage4a_lifecycle import LifecycleAdapterError, Stage4ALifecycleReplayAdapter, _strict_bool
+
+
+def test_stop_flag_parsing_is_strict():
+    assert _strict_bool("true") is True
+    assert _strict_bool("false") is False
 
 
 def lifecycle_row(**changes):

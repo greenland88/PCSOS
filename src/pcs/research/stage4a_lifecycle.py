@@ -8,6 +8,19 @@ import pandas as pd
 
 from pcs.research.variant_b_replay import ReplayPolicy, _replay_lifecycle_batch
 
+def _strict_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes"}:
+            return True
+        if value in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
 
 class LifecycleAdapterError(RuntimeError):
     pass
@@ -70,7 +83,7 @@ class Stage4ALifecycleReplayAdapter:
                        "holding_calendar_days": (pd.Timestamp(result["exit_date"]) - pd.Timestamp(candidate["date"])).days if result.get("exit_date") is not None else None,
                        "holding_trading_days": self._holding_trading_days(candidate["date"], result.get("exit_date")),
                        "holding_trading_days_status": ("AVAILABLE" if self.trading_sessions is not None else "TRADING_CALENDAR_UNAVAILABLE"),
-                       "stopped": bool(result.get("stop_triggered", False)),
+                       "stopped": _strict_bool(result.get("stop_triggered", False)),
                        "expired": bool(result.get("exit_date") is not None and pd.Timestamp(result["exit_date"]).normalize() >= expected[1]),
                        "mfe": result.get("mfe"), "mae": result.get("mae"), "lifecycle_observation_count": result.get("mark_count")})
         return result
