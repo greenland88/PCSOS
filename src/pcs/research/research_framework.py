@@ -155,7 +155,10 @@ CURRENT_RULE_DEFAULTS = {
     "allowed_widths": (5.0, 10.0, 2.0), "width_mode": "ALL",
     "min_credit_width_ratio": 0.10,
     "trend_gate": True, "pullback_gate": True, "support_gate": True,
-    "regime_gate": True, "event_gate": True, "liquidity_gate": True,
+    # Current-strategy replay has historically executed without the regime
+    # gate unless a spec explicitly enables it.  Keep dry-run/plumbing and
+    # execution on the same default; explicit spec values remain authoritative.
+    "regime_gate": False, "event_gate": True, "liquidity_gate": True,
     "predictability_gate": True,
 }
 

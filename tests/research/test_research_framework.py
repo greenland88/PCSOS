@@ -30,6 +30,12 @@ def test_contract_variant_preserves_entry_dates():
     assert spec.research_mode is ResearchMode.CONTRACT_VARIANT
 
 
+def test_current_replay_default_rules_match_execution_defaults():
+    spec = validate_rule_set(validate_population_routing(from_mapping(base("CURRENT_STRATEGY_REPLAY"))))
+    from pcs.research.research_framework import effective_research_rules
+    assert effective_research_rules(spec)["regime_gate"] is False
+
+
 def test_defaults_block_final_oos_and_production():
     raw = base(); raw.pop("final_oos_access"); raw.pop("production_changes_allowed")
     result = run_spec_from_raw(raw)
