@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import pandas as pd
 from pcs.research.credit_stop import run_backtest
 from pcs.data.access import PCSDataAccess
@@ -13,5 +14,10 @@ def main():
   for s,(a,b) in WINDOWS.items():
    r=run_backtest(stock(s,b),stock('QQQ',b),option_root=f'data/parquet/options_monthly/{s}',start=a,end=b,backend='canonical',safe_strike_atr=atr)
    frames.append(pd.DataFrame([{**{k:v for k,v in t.items() if k!='events'},'ticker':s,'target_buffer_atr':atr} for t in r['trades']]))
-  out=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame(); out.to_parquet(ROOT/f'research_outputs/safe_strike_{atr:.1f}ATR_candidates.parquet',index=False); print(atr,len(out))
+  out=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame(); target=ROOT/f'research_outputs/safe_strike_{atr:.1f}ATR_candidates.parquet'; temp=target.with_name(f'.{target.name}.{os.getpid()}.tmp')
+  try:
+   out.to_parquet(temp,index=False); pd.read_parquet(temp); os.replace(temp,target)
+  finally:
+   temp.unlink(missing_ok=True)
+  print(atr,len(out))
 if __name__=='__main__': main()
