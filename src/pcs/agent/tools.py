@@ -28,7 +28,13 @@ def get_research_run(run_id):
     if json_path.exists(): return response("AVAILABLE","DATA_AVAILABLE",[json.loads(json_path.read_text(encoding="utf-8"))])
     path=_REPO_ROOT / "data/manifests/research_runs.csv"
     if not path.exists(): return response("UNAVAILABLE","DATA_NOT_FOUND")
-    df=pd.read_csv(path,engine="python",on_bad_lines="skip"); rows=df[df.run_id.astype(str)==str(run_id)].to_dict("records")
+    try:
+        # Never hide a malformed manifest row: a partial result is not an
+        # auditable research run and could silently omit the requested run.
+        df=pd.read_csv(path, engine="python")
+    except (OSError, ValueError, pd.errors.ParserError) as exc:
+        return response("UNAVAILABLE", "MANIFEST_CORRUPT", [], reason_codes=["MANIFEST_CORRUPT", type(exc).__name__])
+    rows=df[df.run_id.astype(str)==str(run_id)].to_dict("records")
     return response("AVAILABLE" if rows else "UNAVAILABLE", "DATA_AVAILABLE" if rows else "DATA_NOT_FOUND", rows)
 
 def get_backtest_trades(run_id):
