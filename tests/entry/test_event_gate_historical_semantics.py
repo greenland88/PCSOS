@@ -40,3 +40,10 @@ def test_past_and_future_events_ignore_past_event():
 
 def test_no_events_is_allowed():
     assert EventGate().evaluate(Candidate(), calendar()).status == GateStatus.PASS
+
+
+def test_pit_calendar_requires_exchange_sessions():
+    c = calendar("2025-01-20").assign(event_date_known_at_entry=True)
+    c.attrs["historical_pit_required"] = True
+    result = EventGate().evaluate(Candidate(), c)
+    assert result.reason_codes == ("EVENT_TRADING_CALENDAR_UNAVAILABLE",)

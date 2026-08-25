@@ -32,6 +32,8 @@ class EventGate:
             known_column = next((c for c in ("event_date_known_at_entry", "known_at_entry") if c in calendar.columns), None)
             if known_column is None:
                 return GateResult("event", GateStatus.FAIL, ("EVENT_PIT_METADATA_UNAVAILABLE",))
+            if self.trading_sessions is None:
+                return GateResult("event", GateStatus.FAIL, ("EVENT_TRADING_CALENDAR_UNAVAILABLE",))
         if risk > 0:
             return GateResult("event", GateStatus.FAIL, ("EVENT_RISK_PRESENT",))
         try:
