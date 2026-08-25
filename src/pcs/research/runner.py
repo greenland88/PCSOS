@@ -11,6 +11,7 @@ import json
 import hashlib
 import os
 import gc
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import pandas as pd
@@ -460,7 +461,7 @@ class ResearchRunner:
                     timeline_frame[column] = timeline_frame[column].map(
                         lambda value: json.dumps(value, default=str) if isinstance(value, (list, dict, tuple)) else value
                     )
-            temp_timeline = timeline_path.with_suffix(".parquet.tmp")
+            temp_timeline = timeline_path.with_name(f".{timeline_path.name}.{uuid.uuid4().hex}.tmp")
             timeline_frame.to_parquet(temp_timeline, index=False)
             pd.read_parquet(temp_timeline, columns=list(timeline_frame.columns))
             temp_timeline.replace(timeline_path)
