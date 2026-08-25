@@ -17,7 +17,9 @@ def test_adapter_reuses_base_replay_and_preserves_identity():
     result = adapter({"ticker": "NVDA", "candidate_id": "c1", "date": "2025-01-01", "expiration": "2025-02-05", "short_strike": 100.0, "long_strike": 95.0, "initial_credit": 1.0})
     assert result["candidate_id"] == "c1"
     assert result["ticker"] == "NVDA"
-    assert result["exit_reason"] in {"PROFIT_CAPTURE", "STOP", "TIME_EXIT"}
+    assert result["exit_reason"] in {"PROFIT_CAPTURE", "STOP", "TIME_EXIT", "RIGHT_CENSORED"}
+    if result["exit_reason"] == "RIGHT_CENSORED":
+        assert result["realized_pnl"] is None
 
 
 def test_missing_candidate_lifecycle_fails_closed():
