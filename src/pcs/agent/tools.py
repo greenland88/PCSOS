@@ -5,6 +5,7 @@ import pandas as pd
 from .models import response
 from pcs.data.access import PCSDataAccess, DataAccessError
 from pcs.data.derived_store import read_derived, read_backtest_trades
+from pcs.data.market_data_service import MarketDataService
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -94,3 +95,14 @@ def get_data_compatibility(symbol, as_of):
              "error_type": type(exc).__name__}
         status = "UNAVAILABLE"
     return response(status, c["reason_code"], c, ticker, as_of=as_of)
+
+def get_live_stock_market_data(symbol, run_id=None, request_id=None):
+    """Read-only private-gateway stock snapshot for Agent orchestration."""
+    return MarketDataService().get_stock_realtime(symbol, run_id=run_id, request_id=request_id)
+
+def get_live_option_chain(symbol, limit=250, max_pages=4, run_id=None, request_id=None):
+    """Read-only current option chain; capped to bound context and API use."""
+    return MarketDataService().get_option_chain_realtime(
+        symbol, limit=min(int(limit), 250), max_pages=min(int(max_pages), 4),
+        run_id=run_id, request_id=request_id,
+    )
