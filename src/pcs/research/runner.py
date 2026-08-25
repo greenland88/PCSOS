@@ -5,7 +5,7 @@ research modules provide preflight counts; they never choose a population.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import json
 import hashlib
@@ -190,6 +190,7 @@ class ResearchRunner:
     def execute_current_strategy_replay(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
         if self.spec.research_mode.value not in {"CURRENT_STRATEGY_REPLAY", "NEW_ENTRY"}:
             raise ResearchSpecError("EXECUTION_ONLY_SUPPORTS_NEW_ENTRY_OR_CURRENT_REPLAY")
+        data_access = data_access or PCSDataAccess()
         from .ticker_readiness import assert_research_ready
         from pcs.data.ticker_registry import get_ticker_state
         registry_state = get_ticker_state(self.spec.ticker)
@@ -227,9 +228,18 @@ class ResearchRunner:
             current_identity = data_access.source_data_identity("daily", self.spec.ticker)
             if frame[identity_column].astype(str).nunique() != 1 or str(frame[identity_column].iloc[0]) != current_identity:
                 raise RuntimeError("CLEAN_DATASET_SOURCE_IDENTITY_MISMATCH")
+            # Admission is also population routing: replay only the dates
+            # present in the authoritative clean dataset, in stable order.
+            dates = sorted(frame.date.dt.date.astype(str).unique().tolist())
+            signal = dict(self.spec.signal_definition)
+            signal["execution_dates"] = dates
+            signal["authoritative_clean_population"] = True
+            replay_spec = replace(self.spec, signal_definition=signal)
+        else:
+            replay_spec = self.spec
         from .current_strategy_replay import run_current_strategy_replay
         from pcs.data.price_basis import load_corporate_actions
-        return run_current_strategy_replay(self.spec, data_access=data_access, output_dir=self.output_dir.parent,
+        return run_current_strategy_replay(replay_spec, data_access=data_access, output_dir=self.output_dir.parent,
                                            price_basis_service=load_corporate_actions())
 
     execute_research_replay = execute_current_strategy_replay
