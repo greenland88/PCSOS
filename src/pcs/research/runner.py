@@ -39,6 +39,27 @@ def _runner_code_version() -> str:
     return "pcs.research.runner:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
+def _research_dependencies(spec: Any) -> set[str]:
+    """Resolve research inputs from explicit declarations and replay policy.
+
+    Strategy transfer specs carry ``data_dependencies`` directly.  Legacy
+    ResearchSpec YAMLs predate that field, so current-strategy replay must
+    derive its non-optional inputs from the actual policy gates instead of
+    silently treating every replay as daily-only.
+    """
+    declared = getattr(spec, "data_dependencies", None)
+    if declared is not None:
+        return set(declared)
+    deps = {"daily"}
+    if spec.research_mode == ResearchMode.CURRENT_STRATEGY_REPLAY:
+        deps.add("options")
+        if bool(spec.rules.get("event_gate", True)):
+            deps.add("events")
+        if spec.lifecycle_policy.get("source") or spec.lifecycle_policy.get("corporate_actions", True):
+            deps.add("corporate_actions")
+    return deps
+
+
 def _status_for_funnel(records: list[Any]) -> str:
     return next((r.status.value for r in records if r.output_count == 0), ResearchStatus.COMPUTABLE.value)
 
@@ -306,7 +327,7 @@ class ResearchRunner:
             records.append({"path": relative.replace("\\", "/"), "sha256": self._sha256(path)})
         input_identities = {"daily": data_version}
         access = PCSDataAccess()
-        dependencies = set(getattr(self.spec, "data_dependencies", ()))
+        dependencies = _research_dependencies(self.spec)
         for dataset in sorted(dependencies & {"options", "options_v2", "options_v3"}):
             try:
                 input_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
@@ -353,7 +374,7 @@ class ResearchRunner:
         try:
             access = PCSDataAccess()
             current_identities = {"daily": access.source_data_identity("daily", self.spec.ticker)}
-            dependencies = set(getattr(self.spec, "data_dependencies", ()))
+            dependencies = _research_dependencies(self.spec)
             for dataset in sorted(dependencies & {"options", "options_v2", "options_v3"}):
                 current_identities[dataset] = access.source_data_identity(dataset, self.spec.ticker)
             benchmark = self.spec.lifecycle_policy.get("benchmark_symbol")
