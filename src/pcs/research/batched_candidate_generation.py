@@ -12,6 +12,7 @@ import pandas as pd
 
 from .credit_stop import load_quotes_canonical_index
 from .entry_candidate_universe import generate_observable_candidates
+from pcs.data.access import PCSDataAccess
 
 
 def _sha(path: Path) -> str:
@@ -36,10 +37,12 @@ def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
 
 
 def _config_hash(symbol: str, start: str, end: str, daily_path: str | Path, benchmark_path: str | Path) -> str:
+    options_identity = PCSDataAccess().source_data_identity("options", symbol)
     payload = {"symbol": symbol.upper(), "start": start, "end": end,
                "producer": "pcs.research.entry_candidate_universe.generate_observable_candidates",
                "daily_identity": _sha(Path(daily_path)) if Path(daily_path).exists() else "MISSING",
                "benchmark_identity": _sha(Path(benchmark_path)) if Path(benchmark_path).exists() else "MISSING",
+               "options_identity": options_identity,
                "code_identity": {str(p): _sha(p) for p in (Path(__file__), Path(__file__).with_name("entry_candidate_universe.py"))}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
