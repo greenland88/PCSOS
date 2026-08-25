@@ -2,11 +2,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import json,numpy as np,pandas as pd
 import pcs.research.entry_candidate_universe as m
-ART=Path('data/parquet/research/variant_b_full'); ROOT=Path('data/raw/daily_forward_adjusted'); OUT=Path('data/parquet/research/negative_attribution'); OUT.mkdir(parents=True,exist_ok=True)
+from pcs.data.access import PCSDataAccess
+REPO_ROOT=Path(__file__).resolve().parents[1]
+ART=REPO_ROOT/'data/parquet/research/variant_b_full'; OUT=REPO_ROOT/'data/parquet/research/negative_attribution'; OUT.mkdir(parents=True,exist_ok=True)
 TICKERS=['TSLA','MU','GOOGL','META','AMZN','SPY','QQQ','AVGO','NVDA','MSFT']
 def run(t):
  tr=pd.read_parquet(ART/f'{t}_full_post2020_2d.parquet'); tr=tr[tr.status.eq('COMPLETE')].copy(); tr['date']=pd.to_datetime(tr.date); tr['exit_date']=pd.to_datetime(tr.exit_date)
- d=m._daily(ROOT/f'{t}_daily_qfq.csv'); d['atr14']=m._atr14(d); rows=[]
+ d=PCSDataAccess().read_prices(t); d['atr14']=m._atr14(d); rows=[]
  for _,r in tr.iterrows():
   q=d[d.date>r.date]; path=q[q.date<=r.exit_date].head(20)
   if path.empty: continue
