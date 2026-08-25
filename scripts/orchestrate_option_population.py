@@ -66,11 +66,19 @@ def main():
   list(pool.map(run_ticker, WINDOWS))
  files=[p for s in WINDOWS for p in sorted((OUT/s).glob('*.parquet'))]
  import pyarrow as pa, pyarrow.parquet as pq
- writer=None
- for p in files:
-  t=pa.Table.from_pandas(pd.read_parquet(p),preserve_index=False)
-  if writer is None: writer=pq.ParquetWriter(ROOT/'unified_four_ticker_option_qualified.parquet',t.schema)
-  writer.write_table(t)
- if writer: writer.close()
+ target=ROOT/'unified_four_ticker_option_qualified.parquet'; temp=target.with_name(f'.{target.name}.{os.getpid()}.tmp')
+ writer=None; total_rows=0
+ try:
+  for p in files:
+   t=pa.Table.from_pandas(pd.read_parquet(p),preserve_index=False)
+   if writer is None: writer=pq.ParquetWriter(temp,t.schema)
+   elif t.schema != writer.schema: raise RuntimeError('UNIFIED_SCHEMA_MISMATCH')
+   writer.write_table(t); total_rows += t.num_rows
+  if writer: writer.close(); writer=None
+  if temp.exists() and pq.ParquetFile(temp).metadata.num_rows != total_rows: raise RuntimeError('UNIFIED_ROW_COUNT_MISMATCH')
+  os.replace(temp,target)
+ finally:
+  if writer: writer.close()
+  temp.unlink(missing_ok=True)
  print(json.dumps({'status':'COMPLETE','completed_months':len(files),'unified_path':str((ROOT/'unified_four_ticker_option_qualified.parquet').resolve())}))
 if __name__=='__main__':main()
