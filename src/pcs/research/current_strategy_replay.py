@@ -55,6 +55,15 @@ def _identity(ticker, day, expiry, short, long):
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+def _require_unique_quotes(quotes: pd.DataFrame) -> pd.DataFrame:
+    """Enforce the canonical quote identity; never choose a duplicate row."""
+    key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+    duplicate = quotes.duplicated(key, keep=False)
+    if duplicate.any():
+        raise ValueError(f"CANONICAL_QUOTE_IDENTITY_DUPLICATE:{int(duplicate.sum())}")
+    return quotes
+
+
 def _candidate(row, ctx, chain, ticker):
     exp = row["expiration"]; typ = chain[chain.call_put.eq("p")]
     return TradeCandidate(ticker=str(ticker).upper(), expiration=str(pd.Timestamp(exp).date()),
@@ -166,7 +175,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                              train_end if horizon == "SPLIT_CUTOFF" else option_last_date)) for day in requested]
         opts = access.read_quotes_for_windows(spec.ticker, windows)
         if len(opts):
-            opts = opts.drop_duplicates(["symbol", "trade_date", "expiration_date", "call_put", "strike"], keep="first")
+            opts = _require_unique_quotes(opts)
     else:
         option_end = min(train.date.max() + pd.Timedelta(days=50), option_last_date)
         if horizon == "SPLIT_CUTOFF": option_end = min(option_end, train_end)
