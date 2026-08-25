@@ -2,7 +2,9 @@
 from .core import ResearchRule,RuleResult,RuleStatus,validate_chain
 from pcs.entry.gates import DTEGate,SafeStrikeGate,CreditEfficiencyGate
 import yaml
-RULES=yaml.safe_load(open("config/pcs_rules.yaml",encoding="utf8"))
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+RULES=yaml.safe_load((_REPO_ROOT / "config/pcs_rules.yaml").open(encoding="utf8"))
 def gate(adapter,name):
  def run(c,p):
   try:

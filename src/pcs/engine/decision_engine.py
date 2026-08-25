@@ -16,8 +16,11 @@ from pcs.scoring.support_score import score_support
 from pcs.scoring.trend_score import score_trend
 from pcs.scoring.underlying_quality import score_underlying_quality
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def load_rules(path: str | Path = "config/pcs_rules.yaml") -> dict:
+    if str(path).replace("\\", "/") == "config/pcs_rules.yaml":
+        path = _REPO_ROOT / path
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
