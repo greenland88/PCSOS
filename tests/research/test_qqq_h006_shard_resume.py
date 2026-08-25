@@ -28,6 +28,7 @@ def _row():
 def test_qqq_h006_resume_requires_matching_output_checksum(tmp_path):
     path = tmp_path / "shard.parquet"
     frame, summary = _write_shard(path, [_row()])
+    summary["year"] = 2023
     assert _SHARD_COLUMNS.issubset(frame.columns)
     assert _valid_shard_output(path, summary)
 
@@ -38,6 +39,19 @@ def test_qqq_h006_resume_requires_matching_output_checksum(tmp_path):
 def test_qqq_h006_resume_rejects_row_count_or_schema_mismatch(tmp_path):
     path = tmp_path / "shard.parquet"
     _, summary = _write_shard(path, [_row()])
+    summary["year"] = 2023
     assert not _valid_shard_output(path, {**summary, "rows": 2})
     assert not _valid_shard_output(path, {**summary, "output_sha256": "wrong"})
 
+
+def test_qqq_h006_resume_rejects_wrong_ticker_or_year(tmp_path):
+    path = tmp_path / "shard.parquet"
+    row = _row()
+    row["ticker"] = "MSFT"
+    _, summary = _write_shard(path, [row])
+    assert not _valid_shard_output(path, {**summary, "year": 2023})
+
+    row["ticker"] = "QQQ"
+    row["trade_date"] = pd.Timestamp("2022-01-03")
+    _, summary = _write_shard(path, [row])
+    assert not _valid_shard_output(path, {**summary, "year": 2023})

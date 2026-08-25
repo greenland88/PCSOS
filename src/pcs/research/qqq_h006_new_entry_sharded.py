@@ -51,7 +51,15 @@ def _valid_shard_output(path: Path, summary: dict) -> bool:
         frame = pd.read_parquet(path)
     except Exception:
         return False
-    return len(frame) == summary["rows"] and _SHARD_COLUMNS.issubset(frame.columns)
+    if len(frame) != summary["rows"] or not _SHARD_COLUMNS.issubset(frame.columns):
+        return False
+    dates = pd.to_datetime(frame["trade_date"], errors="coerce")
+    return (
+        frame["ticker"].astype(str).eq("QQQ").all()
+        and dates.notna().all()
+        and dates.dt.year.eq(int(summary.get("year", -1))).all()
+        and not frame.duplicated(["trade_date", "ticker"]).any()
+    )
 
 def _shard_identity(year: int) -> dict:
     access = PCSDataAccess()
