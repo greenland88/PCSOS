@@ -335,6 +335,7 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
     stock["atr14"] = _atr14(stock)
     calendar = _load_replay_calendar(calendar_path)
     pending = []
+    stock_sessions = pd.DatetimeIndex(stock.date).normalize()
     # One bounded Parquet scan for all entry dates in this run.  The index is
     # immutable and local to the replay invocation; semantics are unchanged.
     entry_index, entry_meta = load_quotes_canonical_index(ticker, min(dates), max(dates)) if dates else ({}, {"scan_count": 0})
@@ -375,7 +376,8 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
                 subgroup = "VARIANT_B_MODERATE_SUPPORT"
             else:
                 subgroup = group
-            days_to_event = len(pd.bdate_range(day, event_date, inclusive="right")) if event_date is not None else None
+            days_to_event = (int(((stock_sessions > day) & (stock_sessions <= event_date)).sum())
+                             if event_date is not None else None)
             pending.append({**candidate, "population": group, "subgroup": subgroup,
                             "baseline_pullback": a, "variant_pullback": b,
                             "event_crosses_earnings": crosses, "earnings_date": event_date,
