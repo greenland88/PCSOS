@@ -59,6 +59,7 @@ portfolio:
 scoring:
   open_threshold: 75
   highest_quality_threshold: 85
+  top_quality_threshold: 92
   weights:
     market_regime: 0.15
     underlying_quality: 0.12
