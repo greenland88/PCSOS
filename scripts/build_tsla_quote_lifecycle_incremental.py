@@ -5,20 +5,20 @@ from pathlib import Path
 import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"src"))
 from pcs.data.access import PCSDataAccess
-from pcs.data.daily_provider import DailyDataProvider
 
-ROOT=Path("research_outputs/tsla_specialized_pcs_20260820")
+REPO_ROOT=Path(__file__).resolve().parents[1]
+ROOT=REPO_ROOT/"research_outputs/tsla_specialized_pcs_20260820"
 PARTS=ROOT/"quote_partitions"
 VAR=ROOT/"tsla_specialized_candidate_variants.parquet"
-FROZEN=Path("data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet")
+FROZEN=REPO_ROOT/"data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet"
 
 def cid(r):
     return hashlib.sha256("|".join(str(r.get(x,"")) for x in ("ticker","date","expiration","short_strike","long_strike")).encode()).hexdigest()[:24]
 
 def build():
     PARTS.mkdir(parents=True,exist_ok=True); v=pd.read_parquet(VAR); v=v[v.status.eq("VALID")].copy(); base=pd.read_parquet(FROZEN); base["base_candidate_id"]=base.apply(cid,axis=1)
-    daily=DailyDataProvider().build_daily_series("TSLA",as_of_date=v.expiration.max(),start_date=v.decision_date.min()); daily.date=pd.to_datetime(daily.date)
-    v["entry_month"]=pd.to_datetime(v.decision_date).dt.strftime("%Y-%m"); manifest=[]; access=PCSDataAccess()
+    access=PCSDataAccess(); daily=access.read_prices("TSLA", start_date=v.decision_date.min(), end_date=v.expiration.max()); daily.date=pd.to_datetime(daily.date)
+    v["entry_month"]=pd.to_datetime(v.decision_date).dt.strftime("%Y-%m"); manifest=[]
     for month,g in v.groupby("entry_month",sort=True):
         qpath=PARTS/f"quotes_{month}.parquet"; mpath=PARTS/f"marks_{month}.parquet"; done=PARTS/f"manifest_{month}.json"
         if qpath.exists() and mpath.exists() and done.exists():
