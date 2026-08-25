@@ -46,8 +46,10 @@ class CorporateAction:
 
 class CorporateActionRegistry:
     """Date-level registry; no per-option lookup is required."""
-    def __init__(self, actions: Iterable[CorporateAction] = ()):
+    def __init__(self, actions: Iterable[CorporateAction] = (), *, covered_symbols: Iterable[str] | None = None):
         self._actions = tuple(sorted(actions, key=lambda x: (x.symbol.upper(), pd.Timestamp(x.effective_date))))
+        self._covered_symbols = (None if covered_symbols is None
+                                 else frozenset(str(x).upper() for x in covered_symbols))
 
     def actions_for(self, symbol: str) -> tuple[CorporateAction, ...]:
         return tuple(x for x in self._actions if x.symbol.upper() == str(symbol).upper())
@@ -60,6 +62,8 @@ class CorporateActionRegistry:
         if (from_basis, to_basis) != (PriceBasis.MARKET_RAW, PriceBasis.ANALYTIC_ADJUSTED):
             raise PriceBasisError(f"unsupported price-basis conversion: {from_basis}->{to_basis}")
         day = pd.Timestamp(date).normalize()
+        if self._covered_symbols is not None and str(symbol).upper() not in self._covered_symbols:
+            raise PriceBasisError("CORPORATE_ACTION_COVERAGE_UNPROVEN")
         actions = self.actions_for(symbol)
         if any(not x.verified for x in actions):
             raise PriceBasisError("CORPORATE_ACTION_UNVERIFIED")
@@ -99,7 +103,14 @@ def load_corporate_actions(path: str | Path = "config/data/corporate_actions.csv
                 action_type=CorporateActionType(row["action_type"]), ratio=float(row["ratio"]),
                 source=row["source"], verified=verified,
             ))
-    return CorporateActionRegistry(actions)
+    # A registry loaded from a finite file cannot prove absence for symbols
+    # omitted from that file.  Optional coverage_symbols makes that boundary
+    # explicit; absent coverage defaults to the symbols actually declared.
+    declared = set()
+    with target.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            declared.add(str(row["symbol"]).upper())
+    return CorporateActionRegistry(actions, covered_symbols=declared)
 
 
 def comparison_strike(symbol: str, date, raw_strike: float, registry: CorporateActionRegistry = EMPTY_REGISTRY) -> float:
