@@ -10,8 +10,9 @@ import pandas as pd
 from pcs.data.access import PCSDataAccess
 from pcs.data.readiness import canonical_route_evidence, discover_lifecycle_smoke_case, execute_lifecycle_smoke
 from pcs.research.underlying_state import evaluate_as_of
+from pcs.data.universe import load_market_universe
 
-TICKERS = ("SPY", "QQQ", "NVDA", "AMD", "AMZN", "TSLA", "COST", "MU", "JPM")
+TICKERS = tuple(load_market_universe(["benchmarks", "pcs_universe"]))
 FEATURES = ("sma20", "sma50", "sma200", "atr", "returns", "drawdown", "support", "predictability", "regime", "state")
 
 @dataclass

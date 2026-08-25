@@ -16,6 +16,7 @@ import pandas as pd
 from .annualized_metrics import annualized_performance_metrics
 import duckdb
 from pcs.data.access import PCSDataAccess, DataAccessError
+from pcs.data.ticker_registry import get_ticker_state
 
 from pcs.research.credit_stop import (load_entry_chain, load_entry_chain_duckdb_view,
     load_quotes, load_quotes_canonical, load_quotes_canonical_index, load_spread_quotes, load_spread_quotes_duckdb_view,
@@ -149,6 +150,7 @@ def _replay_lifecycle(candidate: dict[str, Any], quotes: pd.DataFrame,
         debit = float(s["Ask Price"] - l["Bid Price"])
         mid = float((s["Bid Price"] + s["Ask Price"]) / 2 - (l["Bid Price"] + l["Ask Price"]) / 2)
         marks.append((pd.Timestamp(day), debit, mid))
+    marks = marks[:policy.max_quote_days]
     if not marks:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES"}
     initial = candidate["credit"]
@@ -171,19 +173,44 @@ def _replay_lifecycle(candidate: dict[str, Any], quotes: pd.DataFrame,
             "time_exit": reason == "TIME_EXIT"}
 
 
-def build_targeted_quote_index(symbol: str, requests: list[dict[str, Any]], db_path: str = "data/duckdb/pcs.duckdb") -> tuple[dict[tuple[pd.Timestamp, float], pd.DataFrame], dict[str, Any]]:
+def build_targeted_quote_index(symbol: str, requests: list[dict[str, Any]], db_path: str = "data/duckdb/pcs.duckdb", max_quote_days: int = 20) -> tuple[dict[tuple[pd.Timestamp, float], pd.DataFrame], dict[str, Any]]:
     """Load requested contracts through PCSDataAccess, with legacy fallback."""
     if not requests:
         return {}, {"source": "parquet", "partitions_requested": 0, "rows_retained": 0}
     access = PCSDataAccess()
-    frames = []
+    contracts = {}
+    windows = []
+    for req in requests:
+        expiration = pd.Timestamp(req["expiration"]).normalize()
+        for strike_key in ("short_strike", "long_strike"):
+            strike = float(req[strike_key])
+            contracts[(str(symbol).upper(), expiration, "p", strike)] = None
+        # max_quote_days is a quote/trading-day horizon.  Request a bounded
+        # calendar superset, then lifecycle marks are limited to the first
+        # valid canonical quote days.  Expiration remains the hard bound.
+        end = min(expiration, pd.Timestamp(req["start"]).normalize() + pd.Timedelta(days=3 * max_quote_days))
+        windows.append((req["start"], end))
     try:
-        for req in requests:
-            frame = access.read_quotes(symbol, req["start"], req["end"], expirations=[req["expiration"]], strikes=[req["short_strike"], req["long_strike"]])
-            if not frame.empty:
-                frame = frame.rename(columns={"trade_date":"Trade Date", "expiration_date":"Expiry Date", "call_put":"Call/Put", "strike":"Strike", "bid":"Bid Price", "ask":"Ask Price", "open_interest":"Open Interest", "volume":"Volume", "delta":"Delta"})
-                frames.append(frame)
-        quotes = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["Trade Date", "Expiry Date", "Call/Put", "Strike", "Bid Price", "Ask Price", "Open Interest", "Volume", "Delta"])
+        normalized = sorted({(pd.Timestamp(a).normalize(), pd.Timestamp(b).normalize()) for a, b in windows})
+        # Coalesce overlapping windows before the single canonical read.
+        merged_windows = []
+        for start, end in normalized:
+            if merged_windows and start <= merged_windows[-1][1] + pd.Timedelta(days=1):
+                merged_windows[-1] = (merged_windows[-1][0], max(merged_windows[-1][1], end))
+            else:
+                merged_windows.append((start, end))
+        frame = access.read_quotes_for_windows(symbol, merged_windows)
+        if not frame.empty:
+            frame = frame.rename(columns={"trade_date":"Trade Date", "expiration_date":"Expiry Date", "call_put":"Call/Put", "strike":"Strike", "bid":"Bid Price", "ask":"Ask Price", "open_interest":"Open Interest", "volume":"Volume", "delta":"Delta"})
+            frame["Trade Date"] = pd.to_datetime(frame["Trade Date"]).dt.normalize()
+            frame["Expiry Date"] = pd.to_datetime(frame["Expiry Date"]).dt.normalize()
+            wanted = pd.MultiIndex.from_tuples(contracts, names=["symbol", "expiration", "call_put", "strike"])
+            actual = pd.MultiIndex.from_frame(pd.DataFrame({"symbol": frame["symbol"].astype(str).str.upper(), "expiration": frame["Expiry Date"], "call_put": frame["Call/Put"].astype(str).str.lower(), "strike": frame["Strike"].astype(float)}))
+            frame = frame[actual.isin(wanted)]
+            key = ["symbol", "Trade Date", "Expiry Date", "Call/Put", "Strike"]
+            if frame.duplicated(key, keep=False).any():
+                raise DataAccessError("conflicting or duplicate canonical contract/date quotes")
+        quotes = frame if not frame.empty else pd.DataFrame(columns=["symbol", "Trade Date", "Expiry Date", "Call/Put", "Strike", "Bid Price", "Ask Price", "Open Interest", "Volume", "Delta"])
         meta_source = "pcs_data_access"
         partitions = set()
     except (DataAccessError, FileNotFoundError, ValueError) as exc:
@@ -196,13 +223,6 @@ def build_targeted_quote_index(symbol: str, requests: list[dict[str, Any]], db_p
     return index, {"source": meta_source, "partitions_requested": len(partitions), "rows_retained": len(quotes), "contracts_indexed": len(index)}
 
 
-def build_batch_quote_index(option_root: str | Path, start: object, end: object) -> tuple[dict[tuple[pd.Timestamp, float], pd.DataFrame], dict[str, Any]]:
-    """Compatibility wrapper; broad ranges are retained only for old callers."""
-    quotes, meta = load_quotes_canonical(symbol, pd.Timestamp(start), pd.Timestamp(end))
-    index = {(pd.Timestamp(exp).normalize(), float(strike)): group.sort_values("Trade Date").copy() for (exp, strike), group in quotes.groupby(["Expiry Date", "Strike"], sort=False)}
-    return index, {**dict(meta), "source": "legacy_csv", "batch_index_contracts": len(index), "batch_index_rows": len(quotes)}
-
-
 def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, pd.DataFrame],
                             policy: ReplayPolicy) -> dict[str, Any]:
     """Replay using cached leg histories; semantics match _replay_lifecycle."""
@@ -210,7 +230,7 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
     long = quote_index.get((pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["long_strike"])))
     if short is None or long is None:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES"}
-    merged = short.merge(long, on="Trade Date", how="outer", suffixes=("_short", "_long")).sort_values("Trade Date")
+    merged = short.merge(long, on="Trade Date", how="outer", suffixes=("_short", "_long"), validate="one_to_one").sort_values("Trade Date")
     marks = []
     missing = 0
     for _, row in merged[merged["Trade Date"] >= candidate["date"]].iterrows():
@@ -231,6 +251,7 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
         marks.append((pd.Timestamp(row["Trade Date"]), debit, mid))
     if not marks:
         return {"status": "UNAVAILABLE", "exit_reason": "INSUFFICIENT_QUOTES", "missing_mark_count": missing}
+    marks = marks[:policy.max_quote_days]
     initial = candidate["credit"]
     profits = [x for x in marks if x[1] <= initial * policy.profit_capture_multiple]
     stops = [x for x in marks if x[1] >= initial * policy.stop_cost_multiple]
@@ -284,11 +305,19 @@ def compare_lifecycle_loaders(candidate: dict[str, Any], quotes: pd.DataFrame,
 def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
                  dates: list[str] | pd.Series, benchmark_path: str | Path,
                  calendar_path: str | Path, baseline_contexts: dict[str, dict[str, Any]] | None = None,
+                 benchmark_symbol: str | None = None,
             policy: ReplayPolicy | None = None) -> pd.DataFrame:
     """Replay all A/B candidates for explicit dates; never selects one spread."""
     policy = policy or ReplayPolicy()
+    if not benchmark_symbol:
+        raise ValueError("benchmark_symbol is required and must match benchmark_path")
+    for symbol in (ticker, benchmark_symbol):
+        state = get_ticker_state(symbol)
+        if state.PCS_RESEARCH_READY != "YES":
+            raise DataAccessError(f"ticker readiness blocked replay for {symbol}: {state.PRIMARY_BLOCKER}")
     dates = [value for value in dates if pd.Timestamp(value).year >= 2020]
-    stock = _daily(daily_path); benchmark = _daily(benchmark_path)
+    access = PCSDataAccess()
+    stock = _daily(daily_path, ticker, access); benchmark = _daily(benchmark_path, benchmark_symbol, access)
     stock["atr14"] = _atr14(stock)
     calendar = _load_replay_calendar(calendar_path)
     pending = []
@@ -302,19 +331,14 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
             continue
         context = (baseline_contexts or {}).get(str(day.date()))
         if context is None:
-            context = build_historical_setup_context(stock, benchmark, day, ticker, "QQQ")
+            context = build_historical_setup_context(stock, benchmark, day, ticker, benchmark_symbol)
         variant = evaluate_intended_pullback_variant(context)
         baseline = context.get("pullback_gate_result")
         a = getattr(baseline, "pullback_gate_result", None)
         b = variant["result"]
         if b != "PASS" and a != "PASS":
             continue
-        try:
-            chain = entry_index.get(day, pd.DataFrame()).copy()
-        except (FileNotFoundError, ValueError):
-            # Some covered symbols are stored only in the canonical DuckDB
-            # options view, not in legacy quarterly CSV directories.
-            chain, _ = load_entry_chain_duckdb_view("data/duckdb/pcs.duckdb", ticker, day)
+        chain = entry_index.get(day, pd.DataFrame()).copy()
         if chain.empty:
             continue
         close = float(row.iloc[0].close); atr = float(row.iloc[0].atr14)
@@ -343,9 +367,9 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
                             "event_crosses_earnings": crosses, "earnings_date": event_date,
                             "days_to_earnings": days_to_event,
                             "expected_management_window": policy.max_quote_days})
-    requests = [{"start": row["date"], "end": row["date"] + pd.Timedelta(days=policy.max_quote_days),
+    requests = [{"start": row["date"], "end": row["date"] + pd.Timedelta(days=3 * policy.max_quote_days),
                  "expiration": row["expiration"], "short_strike": row["short_strike"], "long_strike": row["long_strike"]} for row in pending]
-    quote_index, quote_meta = build_targeted_quote_index(ticker, requests)
+    quote_index, quote_meta = build_targeted_quote_index(ticker, requests, max_quote_days=policy.max_quote_days)
     quote_meta["entry_scan_count"] = entry_meta.get("scan_count", 0)
     quote_meta["entry_rows_returned"] = entry_meta.get("rows_returned", 0)
     records = []
@@ -386,4 +410,4 @@ def summarize_replay(frame: pd.DataFrame, by: str | None = None, *, starting_equ
     return pd.DataFrame(rows)
 
 
-__all__ = ["ReplayPolicy", "build_batch_quote_index", "compare_lifecycle_loaders", "replay_dates", "summarize_replay", "annualized_performance_metrics"]
+__all__ = ["ReplayPolicy", "build_targeted_quote_index", "compare_lifecycle_loaders", "replay_dates", "summarize_replay", "annualized_performance_metrics"]

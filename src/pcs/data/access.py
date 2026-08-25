@@ -305,6 +305,14 @@ class PCSDataAccess:
         schema = rows.schema_version.iloc[0] if "schema_version" in rows else "1"
         return SourceSpec(resolved_dataset, symbol, "partitioned_parquet", str(path).replace("\\", "/"), str(lo.date()), str(hi.date()), int(rows.row_count.sum()), f"storage_manifest_v1:{manifest_path}", str(schema))
 
+    def source_data_identity(self, dataset: str, symbol: str) -> str:
+        """Return a deterministic identity for the active canonical input."""
+        spec = self.resolve_source(dataset, symbol)
+        manifest = self._manifest if self.manifest_path == Path("data/manifests/storage_manifest.csv") else self._read_manifest(self.manifest_path)
+        rows = manifest[(manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == str(symbol).upper())]
+        payload = {"spec": spec.to_dict(), "manifest": rows.sort_index(axis=1).to_dict("records")}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+
     def validate_schema(self, frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
         is_options = dataset == "options" or dataset.startswith("options")
         required = OPTIONS_REQUIRED_FIELDS if is_options else DAILY_FIELDS if dataset == "daily" else list(frame.columns)
@@ -331,7 +339,11 @@ class PCSDataAccess:
                 conflicting = dup.groupby(key, dropna=False)[quote].nunique(dropna=False).max(axis=1).gt(1)
                 if conflicting.any():
                     raise DataQualityError(f"ambiguous option quote keys: {int(conflicting.sum())}")
-                raise DataQualityError(f"duplicate option keys: {int(len(dup))}")
+                # Identical rows can arise when overlapping canonical
+                # partitions are read during an incremental refresh.  They
+                # are safe to coalesce deterministically; conflicting
+                # payloads remain a hard failure above.
+                out = out.drop_duplicates(key, keep="first").reset_index(drop=True)
         return out
 
     def validate_coverage(self, frame: pd.DataFrame, symbol: str, start_date=None, end_date=None, date_column="trade_date") -> None:

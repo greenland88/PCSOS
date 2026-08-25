@@ -29,7 +29,7 @@ FROZEN_SAFE_STRIKE_ATR = 2.3
 FROZEN_DTE_MIN = 30
 FROZEN_DTE_MAX = 45
 FROZEN_CREDIT_WIDTH_MIN = 0.10
-_CHAIN_CACHE: dict[tuple[str, str, str], dict[pd.Timestamp, pd.DataFrame]] = {}
+_CHAIN_CACHE: dict[tuple[str, str, str, str], dict[pd.Timestamp, pd.DataFrame]] = {}
 
 
 @dataclass(frozen=True)
@@ -52,8 +52,10 @@ class DryRunSummary:
     timestamp_validation: str = "UNAVAILABLE: source has trade dates but no quote timestamps"
 
 
-def _daily(path: str | Path) -> pd.DataFrame:
+def _daily(path: str | Path, symbol: str | None = None, access: PCSDataAccess | None = None) -> pd.DataFrame:
     path = Path(path)
+    if symbol is not None:
+        return (access or PCSDataAccess()).read_prices(symbol).copy()
     # Known repository daily paths are compatibility inputs only. Resolve
     # their ticker through the canonical access boundary so candidate
     # discovery cannot silently consume a raw export. Temporary fixture paths
@@ -268,14 +270,16 @@ def setup_only_validation(tickers: dict[str, tuple[str | Path, str | Path]], sta
     return outputs
 
 
-def _cached_chains(option_root: str | Path, start: str, end: str) -> tuple[dict[pd.Timestamp, pd.DataFrame], dict[str, Any]]:
+def _cached_chains(ticker: str, option_root: str | Path, start: str, end: str, access: PCSDataAccess | None = None) -> tuple[dict[pd.Timestamp, pd.DataFrame], dict[str, Any]]:
     """Load and clean a ticker's active canonical route once, then index by trade date."""
-    key = (str(option_root), str(start), str(end))
+    access = access or PCSDataAccess()
+    spec = access.resolve_source("options", ticker, start, end)
+    source_identity = access.source_data_identity("options", ticker)
+    key = (str(ticker).upper(), str(start), str(end), source_identity)
     if key in _CHAIN_CACHE:
         return _CHAIN_CACHE[key], {"cache_hit": True, "files_opened": 0, "rows_loaded": sum(map(len, _CHAIN_CACHE[key].values()))}
-    ticker = Path(option_root).name.upper()
     from .credit_stop import load_quotes_canonical
-    cleaned, meta = load_quotes_canonical(ticker, pd.Timestamp(start), pd.Timestamp(end))
+    cleaned, meta = load_quotes_canonical(str(ticker).upper(), pd.Timestamp(start), pd.Timestamp(end))
     indexed = {day: frame.copy() for day, frame in cleaned.groupby("Trade Date")}
     _CHAIN_CACHE[key] = indexed
     return indexed, {"cache_hit": False, "files_opened": meta.get("quarter_files_opened", 0), "rows_loaded": meta.get("option_rows_loaded", len(cleaned)), "duplicates_removed": meta.get("duplicate_rows_deduped", 0), "ambiguous_excluded": meta.get("ambiguous_quote_rows_excluded", 0)}
@@ -291,10 +295,13 @@ def generate_observable_candidates(ticker: str, daily_path: str | Path, option_r
     # and may not run against an unready ticker.
     from .ticker_readiness import assert_research_ready
     assert_research_ready(ticker)
-    daily = _daily(daily_path)
+    if not benchmark_symbol:
+        raise ValueError("benchmark_symbol is required")
+    assert_research_ready(benchmark_symbol)
+    daily = _daily(daily_path, ticker)
     daily["atr14_point_in_time"] = _atr14(daily)
     dates = daily.loc[daily.date.between(start, end), "date"]
-    benchmark = _daily(benchmark_path) if benchmark_path is not None else None
+    benchmark = _daily(benchmark_path, benchmark_symbol) if benchmark_path is not None else None
     records: list[dict[str, Any]] = []
     raw_dates = 0; usable_dates = 0; setup_dates = 0; expirations = 0
     before_safe = after_safe = after_long = after_liq = after_credit = 0
@@ -355,7 +362,7 @@ def dry_run(tickers: dict[str, tuple[str | Path, str | Path]], start: str, end: 
             benchmark_paths: dict[str, str | Path] | None = None) -> dict[str, Any]:
     outputs = {}
     for ticker, (daily_path, option_root) in tickers.items():
-        chains, load_meta = _cached_chains(option_root, start, end)
+        chains, load_meta = _cached_chains(ticker, option_root, start, end)
         benchmark_path = (benchmark_paths or {}).get(ticker)
         if benchmark_path is None:
             candidate = Path(daily_path).with_name("QQQ_daily_qfq.csv")

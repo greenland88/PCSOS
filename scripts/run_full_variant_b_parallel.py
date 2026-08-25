@@ -26,6 +26,7 @@ def run_ticker(ticker: str) -> dict:
     frame = replay_dates(
         ticker, daily, f"data/raw/options/{ticker}", dates,
         ROOT / "QQQ_daily_qfq.csv", CAL,
+        benchmark_symbol="QQQ",
         policy=ReplayPolicy(reject_expiration_crossing=False,
                             pre_earnings_exit_days=2),
     )
