@@ -65,3 +65,10 @@ def test_date_range_daily_identity_and_research_config_invalidate():
         changed = dict(i, **{key: value})
         changed["identity_sha256"] = "recomputed-not-needed-for-mismatch"
         assert not cache_identity_matches(frame_for(i), changed), key
+
+
+def test_identity_is_independent_of_current_working_directory(tmp_path, monkeypatch):
+    first = identity()
+    monkeypatch.chdir(tmp_path)
+    second = identity()
+    assert first == second

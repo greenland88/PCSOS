@@ -20,10 +20,20 @@ FEATURE_IMPLEMENTATION_FILES = (
     "src/pcs/trend/market_structure.py",
     "src/pcs/trend/relative_strength.py",
     "src/pcs/research/entry_candidate_universe.py",
+    "src/pcs/research/underlying_state.py",
+    "src/pcs/trend/snapshot.py",
+    "src/pcs/entry/gates.py",
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _resolve_dependency(path: str | Path) -> Path:
+    value = Path(path)
+    return value if value.is_absolute() else REPO_ROOT / value
+
 def file_digest(path: str | Path) -> str:
-    p = Path(path)
+    p = _resolve_dependency(path)
     if not p.exists():
         return "MISSING"
     return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -31,7 +41,7 @@ def file_digest(path: str | Path) -> str:
 def feature_implementation_digest() -> str:
     h = hashlib.sha256()
     for path in FEATURE_IMPLEMENTATION_FILES:
-        h.update(path.encode())
+        h.update(str(_resolve_dependency(path)).encode())
         h.update(file_digest(path).encode())
     return h.hexdigest()
 
