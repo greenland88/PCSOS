@@ -9,6 +9,7 @@ from uuid import uuid4
 import pandas as pd
 
 from pcs.data.daily_provider import DailyDataProvider, normalize_daily_frame
+from pcs.data.access import PCSDataAccess
 
 
 class TickerBearState(StrEnum):
@@ -74,8 +75,12 @@ def calculate_ticker_bear_states(ohlcv: pd.DataFrame, symbol: str) -> pd.DataFra
 
 
 def build_ticker_bear_state_history(symbol: str, as_of_date=None, provider: DailyDataProvider | None = None, request_id: str | None = None) -> TickerBearStateResult:
-    provider = provider or DailyDataProvider()
-    bars = provider.build_daily_series(symbol, as_of_date=as_of_date)
+    if provider is None:
+        # Production/default research access must resolve the active canonical
+        # route.  The legacy provider remains injectable for isolated fixtures.
+        bars = PCSDataAccess().read_prices(symbol, end_date=as_of_date)
+    else:
+        bars = provider.build_daily_series(symbol, as_of_date=as_of_date)
     states = calculate_ticker_bear_states(bars, symbol)
     last = states.iloc[-1] if len(states) else None
     return TickerBearStateResult(
