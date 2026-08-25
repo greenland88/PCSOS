@@ -200,6 +200,10 @@ def tag_entry_dates(trades: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFram
                 event_rows = event_rows[(event_rows.symbol.isna()) | (event_rows.symbol.astype(str).str.upper() == row.symbol)]
             if knowledge_column is not None:
                 event_rows = event_rows[event_rows[knowledge_column].map(_known_at_entry)]
+            elif bool(calendar.attrs.get("historical_pit_required", False)):
+                # A PIT calendar without explicit knowledge evidence cannot
+                # contribute historical event features.
+                event_rows = event_rows.iloc[0:0]
             dates = (pd.DatetimeIndex(event_rows.event_date)
                      if not event_rows.empty else pd.DatetimeIndex([]))
             future = dates[dates >= row.entry_date]
