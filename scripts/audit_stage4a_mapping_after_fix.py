@@ -1,6 +1,6 @@
 """Entry-only Stage 4A mapping/context audit; never runs lifecycle replay."""
 from __future__ import annotations
-import json
+import json, os
 from pathlib import Path
 import pandas as pd
 from pcs.engine.decision_engine import DecisionEngine, load_rules
@@ -11,6 +11,14 @@ from pcs.research.scheduled_event_calendar import load_calendar
 
 REPO_ROOT=Path(__file__).resolve().parents[1]
 ROOT=REPO_ROOT / "research_outputs/safe_strike_stage4a"
+
+def atomic_json(value, path):
+    temp=path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(value,indent=2,default=str),encoding="utf-8")
+        os.replace(temp,path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 def main():
     paths={"NVDA":ROOT/"candidate_inputs/NVDA.parquet","AMD":ROOT/"candidate_inputs/AMD.parquet","TSLA":ROOT/"candidate_inputs/TSLA.parquet","AMZN":ROOT/"authoritative_amzn_794_entry_contract_v2.parquet"}
@@ -36,8 +44,8 @@ def main():
     out=pd.DataFrame(rows); result=[]
     for t,g in out.groupby("ticker"):
         result.append({"ticker":t,"evaluated":len(g),"mapping_failures":int(g.status.eq("MAPPING_FAILURE").sum()),"context_failures":int(g.status.eq("CONTEXT_FAILURE").sum()),"legitimate_gate_rejects":int(g.status.eq("EVALUATED").sum()-g.accepted.sum()),"accepted":int(g.accepted.sum())})
-    (ROOT/"stage4a_entry_context_audit.json").write_text(json.dumps(context,indent=2),encoding="utf-8")
-    (ROOT/"stage4a_decision_funnel_after_mapping_fix.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
+    atomic_json(context,ROOT/"stage4a_entry_context_audit.json")
+    atomic_json(result,ROOT/"stage4a_decision_funnel_after_mapping_fix.json")
     print(json.dumps(result,indent=2))
 
 if __name__=="__main__": main()
