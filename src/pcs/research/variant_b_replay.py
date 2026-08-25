@@ -70,22 +70,15 @@ def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
 
 
 def _load_replay_calendar(path: str | Path) -> pd.DataFrame:
-    """Load either the canonical calendar or the repository's raw export."""
-    try:
-        out = load_calendar(path)
-        out.attrs["historical_pit_required"] = True
-        return out
-    except ValueError:
-        d = pd.read_csv(path)
-        d = d.rename(columns={"source_name": "source", "source_url": "source_id"})
-        d["event_type"] = d["event_type"].replace({
-            "FOMC_POLICY_DECISION": "FOMC",
-            "CPI_RELEASE": "CPI",
-            "EMPLOYMENT_SITUATION": "NFP_EMPLOYMENT",
-        })
-        d["event_date"] = pd.to_datetime(d["event_date"], errors="raise").dt.normalize()
-        d.attrs["historical_pit_required"] = True
-        return d
+    """Load the canonical calendar and preserve its PIT contract.
+
+    A malformed or legacy export must not be upgraded in memory by guessing
+    column names or provenance.  Callers then receive the loader's empty
+    unavailable-calendar result (or its validation error) and fail closed.
+    """
+    out = load_calendar(path)
+    out.attrs["historical_pit_required"] = True
+    return out
 
 
 def _spread_candidates(chain: pd.DataFrame, day: pd.Timestamp, close: float,
