@@ -37,13 +37,22 @@ def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
 
 
 def _config_hash(symbol: str, start: str, end: str, daily_path: str | Path, benchmark_path: str | Path) -> str:
-    options_identity = PCSDataAccess().source_data_identity("options", symbol)
+    access = PCSDataAccess()
+    def input_identity(dataset: str, name: str, path: str | Path) -> str:
+        normalized = str(path).replace("\\", "/")
+        if normalized.startswith("data/") or "data/raw/" in normalized:
+            return access.source_data_identity(dataset, name)
+        p = Path(path)
+        return _sha(p) if p.exists() else "MISSING"
+
     payload = {"symbol": symbol.upper(), "start": start, "end": end,
                "producer": "pcs.research.entry_candidate_universe.generate_observable_candidates",
-               "daily_identity": _sha(Path(daily_path)) if Path(daily_path).exists() else "MISSING",
-               "benchmark_identity": _sha(Path(benchmark_path)) if Path(benchmark_path).exists() else "MISSING",
-               "options_identity": options_identity,
-               "code_identity": {str(p): _sha(p) for p in (Path(__file__), Path(__file__).with_name("entry_candidate_universe.py"))}}
+               "daily_identity": input_identity("daily", symbol, daily_path),
+               "benchmark_identity": input_identity("daily", "QQQ", benchmark_path),
+               "options_identity": access.source_data_identity("options", symbol),
+               "code_identity": {str(p): _sha(p) for p in (
+                   Path(__file__), Path(__file__).with_name("entry_candidate_universe.py"),
+                   Path(__file__).with_name("credit_stop.py"))}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
