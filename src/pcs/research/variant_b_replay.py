@@ -14,12 +14,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from .annualized_metrics import annualized_performance_metrics
-import duckdb
 from pcs.data.access import PCSDataAccess, DataAccessError
 from pcs.data.ticker_registry import get_ticker_state
 
-from pcs.research.credit_stop import (load_entry_chain, load_entry_chain_duckdb_view,
-    load_quotes, load_quotes_canonical, load_quotes_canonical_index, load_spread_quotes, load_spread_quotes_duckdb_view,
+from pcs.research.credit_stop import (load_quotes_canonical, load_quotes_canonical_index,
     valid_entry, valid_exit)
 from pcs.research.entry_candidate_universe import (
     FROZEN_CREDIT_WIDTH_MIN, FROZEN_DTE_MAX, FROZEN_DTE_MIN,
@@ -27,7 +25,6 @@ from pcs.research.entry_candidate_universe import (
     evaluate_intended_pullback_variant,
 )
 from pcs.research.scheduled_event_calendar import load_calendar
-from pcs.data.duckdb_store import connect as connect_duckdb
 
 
 @dataclass(frozen=True)
