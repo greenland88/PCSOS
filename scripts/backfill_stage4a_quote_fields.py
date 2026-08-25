@@ -14,7 +14,8 @@ def backfill(path: Path, ticker: str) -> dict:
     d = pd.read_parquet(path).copy(); d["date"] = pd.to_datetime(d.date).dt.normalize(); d["expiration"] = pd.to_datetime(d.expiration).dt.normalize()
     q = PCSDataAccess().read_quotes(ticker, d.date.min(), d.date.max())
     q.trade_date = pd.to_datetime(q.trade_date).dt.normalize(); q.expiration = pd.to_datetime(q.expiration).dt.normalize(); q.strike = pd.to_numeric(q.strike)
-    q = q.drop_duplicates(["trade_date", "expiration", "strike"], keep="first")
+    q = q[q.call_put.astype(str).str.lower().eq("p")].copy()
+    q = q.drop_duplicates(["symbol", "trade_date", "expiration", "call_put", "strike"], keep="first")
     sm = q.rename(columns={"strike":"short_strike", "bid":"short_bid", "ask":"short_ask", "volume":"option_volume", "open_interest":"open_interest"})
     lg = q.rename(columns={"strike":"long_strike", "bid":"long_bid", "ask":"long_ask", "volume":"long_volume", "open_interest":"long_open_interest"})
     keys=["trade_date","expiration"]
