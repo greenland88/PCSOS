@@ -367,14 +367,27 @@ class ResearchRunner:
         replay lifecycle, tune thresholds, or read any candidate ledger.
         """
         access = data_access or PCSDataAccess()
+        split_end_raw = self.spec.split_policy.get("train_end")
+        split_end = pd.Timestamp(split_end_raw).normalize() if split_end_raw else None
+        requested_end = pd.Timestamp(end_date).normalize() if end_date is not None else None
+        final_oos_read = bool(split_end is not None and requested_end is not None and requested_end > split_end)
+        if final_oos_read and not self.spec.final_oos_access:
+            return {"module": "pcs.research.runner", "version": "1.0", "ticker": self.spec.ticker,
+                    "research_mode": self.spec.research_mode.value, "status": "FINAL_OOS_BLOCKED",
+                    "data_source": "PCS_CANONICAL_DATA", "exact_reason": "requested end_date exceeds TRAIN split",
+                    "final_oos_read": False, "production_changes_allowed": False,
+                    "reason_codes": ["FINAL_OOS_ACCESS_NOT_AUTHORIZED"]}
+        effective_end = requested_end
+        if split_end is not None and not final_oos_read:
+            effective_end = split_end if effective_end is None else min(effective_end, split_end)
         try:
-            daily = access.read_prices(self.spec.ticker, start_date, end_date)
+            daily = access.read_prices(self.spec.ticker, start_date, effective_end)
             daily_status = "PASS" if len(daily) else "MISSING"
         except (FileNotFoundError, DataAccessError, ValueError) as exc:
             return {"module": "pcs.research.runner", "version": "1.0", "ticker": self.spec.ticker,
                     "research_mode": self.spec.research_mode.value, "status": ResearchStatus.DAILY_DATA_MISSING.value,
                     "data_source": "PCS_CANONICAL_DATA", "exact_reason": str(exc),
-                    "final_oos_read": False, "production_changes_allowed": False}
+                    "final_oos_read": final_oos_read, "production_changes_allowed": False}
         options_status = "PASS"
         try:
             option_source = access.resolve_source("options", self.spec.ticker)
@@ -384,7 +397,7 @@ class ResearchRunner:
         # with a local indicator calculation; dependency failures must remain
         # explicit rather than becoming UNKNOWN precursor results.
         timeline_path = self.output_dir / "pit_state_timeline.parquet"
-        daily_source = access.resolve_source("daily", self.spec.ticker, start_date, end_date)
+        daily_source = access.resolve_source("daily", self.spec.ticker, start_date, effective_end)
         cache_meta = build_pit_cache_identity(
             symbol=self.spec.ticker,
             daily_data_identity=access.source_data_identity("daily", self.spec.ticker),
@@ -472,7 +485,8 @@ class ResearchRunner:
         result.update({"data_source": "PCS_CANONICAL_DATA", "daily_source": "PCSDataAccess",
                        "daily_rows": len(daily), "daily_first_date": str(daily.date.min().date()),
                        "daily_last_date": str(daily.date.max().date()),
-                       "options_source": option_source.to_dict() if hasattr(option_source, "to_dict") else option_source})
+                       "options_source": option_source.to_dict() if hasattr(option_source, "to_dict") else option_source,
+                       "final_oos_read": final_oos_read})
         result["state_timeline_rows"] = len(states)
         result["state_ready_rows"] = state_ready
         result["pit_cache_action"] = cache_action
