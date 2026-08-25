@@ -13,6 +13,7 @@ def freeze_universe():
     q="""select symbol ticker, min(date)::date first_date, max(date)::date last_date,
     count(*) trading_days from read_parquet('data/parquet/daily/**/*.parquet', union_by_name=true, hive_partitioning=true)
     where symbol not in ('NVDA','QQQ','AMZN','TSLA') group by symbol having count(*) >= 750"""
+    q = q.replace("data/parquet/daily/**/*.parquet", str((STORE / "**/*.parquet").as_posix()).replace("\\", "/"))
     d=c.execute(q).fetchdf(); c.close(); d["eligibility_status"]="ELIGIBLE"; d["eligibility_reason"]="successful daily migration; >=750 rows; development symbols excluded"; d["universe_version"]=UNIVERSE_VERSION; d=d.sort_values("ticker").reset_index(drop=True)
     d.to_csv(OUT/"r1_external_validation_universe_v1.csv",index=False); h=hashlib.sha256("\n".join(d.ticker).encode()).hexdigest(); (OUT/"r1_external_validation_universe_v1.sha256").write_text(h+"  r1_external_validation_universe_v1.csv\n",encoding="utf-8"); return d,h
 
