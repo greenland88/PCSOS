@@ -43,8 +43,16 @@ class Stage4ALifecycleReplayAdapter:
         if rows.empty:
             raise LifecycleAdapterError("CANDIDATE_LIFECYCLE_IDENTITY_MISSING")
         expected = (str(candidate["ticker"]), pd.Timestamp(candidate["expiration"]).normalize(), float(candidate["short_strike"]), float(candidate["long_strike"]))
-        actual = (str(rows.iloc[0].ticker), pd.Timestamp(rows.iloc[0].expiration).normalize(), float(rows.iloc[0].short_strike), float(rows.iloc[0].long_strike))
-        if actual != expected:
+        identity_rows = pd.DataFrame({
+            "ticker": rows.ticker.astype(str),
+            "expiration": pd.to_datetime(rows.expiration).dt.normalize(),
+            "short_strike": pd.to_numeric(rows.short_strike),
+            "long_strike": pd.to_numeric(rows.long_strike),
+        })
+        if not (identity_rows.ticker.eq(expected[0]).all()
+                and identity_rows.expiration.eq(expected[1]).all()
+                and identity_rows.short_strike.eq(expected[2]).all()
+                and identity_rows.long_strike.eq(expected[3]).all()):
             raise LifecycleAdapterError("CANDIDATE_LIFECYCLE_IDENTITY_MISSING")
         short = rows[["mark_date", "short_bid", "short_ask"]].rename(columns={"mark_date":"Trade Date", "short_bid":"Bid Price", "short_ask":"Ask Price"})
         long = rows[["mark_date", "long_bid", "long_ask"]].rename(columns={"mark_date":"Trade Date", "long_bid":"Bid Price", "long_ask":"Ask Price"})

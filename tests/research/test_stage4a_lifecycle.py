@@ -31,3 +31,13 @@ def test_missing_candidate_lifecycle_fails_closed():
 def test_duplicate_mark_identity_fails_closed():
     with pytest.raises(LifecycleAdapterError, match="LIFECYCLE_DUPLICATE_IDENTITY"):
         Stage4ALifecycleReplayAdapter(pd.DataFrame([lifecycle_row(), lifecycle_row()]))
+
+
+def test_mixed_contract_rows_fail_closed_even_when_first_row_matches():
+    adapter = Stage4ALifecycleReplayAdapter(pd.DataFrame([
+        lifecycle_row(), lifecycle_row(mark_date="2025-01-03", expiration="2025-02-12")
+    ]))
+    with pytest.raises(LifecycleAdapterError, match="CANDIDATE_LIFECYCLE_IDENTITY_MISSING"):
+        adapter({"ticker": "NVDA", "candidate_id": "c1", "date": "2025-01-01",
+                 "expiration": "2025-02-05", "short_strike": 100.0,
+                 "long_strike": 95.0, "initial_credit": 1.0})
