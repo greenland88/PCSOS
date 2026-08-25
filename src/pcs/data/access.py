@@ -138,6 +138,11 @@ class PCSDataAccess:
                 f"canonical route unavailable: requested_dataset={dataset} "
                 f"symbol={self._symbol(symbol)} legacy_fallback_used=NO"
             )
+        if dataset in {"options_v2", "options_v3"} and str(route.get("dataset", "")).strip() != dataset:
+            raise DataAccessError(
+                f"canonical route dataset mismatch: requested_dataset={dataset} "
+                f"resolved_dataset={route.get('dataset')} symbol={self._symbol(symbol)}"
+            )
         return (
             str(route.get("dataset", dataset)),
             self._storage_path(route.get("manifest_path", self.manifest_path)),

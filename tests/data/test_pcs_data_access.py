@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 from pcs.data.storage_schema import OPTION_FIELDS
 
-from pcs.data.access import PCSDataAccess, DataQualityError
+from pcs.data.access import PCSDataAccess, DataAccessError, DataQualityError
 
 
 def test_data_root_is_explicit_and_does_not_depend_on_current_directory(tmp_path, monkeypatch):
@@ -42,6 +42,17 @@ def test_relative_configured_routes_follow_data_root(tmp_path):
 
     assert manifest == data_root / "manifests" / "options_v2.csv"
     assert parquet == data_root / "parquet"
+
+
+def test_explicit_options_route_cannot_silently_change_dataset(tmp_path):
+    access = PCSDataAccess(
+        data_root=tmp_path / "canonical-data",
+        source_routes={"options": {"by_symbol": {
+            "ZZZ": {"dataset": "options_v3"}
+        }}},
+    )
+    with pytest.raises(DataAccessError, match="canonical route dataset mismatch"):
+        access.resolve_source("options_v2", "ZZZ")
 
 
 def test_routed_source_identity_uses_resolved_dataset_rows_only(tmp_path):
