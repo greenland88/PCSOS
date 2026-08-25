@@ -31,7 +31,7 @@ for ticker,(lo,hi) in WINDOWS.items():
   t=time.time(); emit({'event':'month_start','atr':atr,'ticker':ticker,'year':start.year,'month':start.month})
   rec={'atr':atr,'ticker':ticker,'year':start.year,'month':start.month,'status':'FAILED','rows_processed':0,'qualified_count':0,'elapsed_seconds':0,'rss_mb':None,'timestamp':datetime.now().isoformat()}
   try:
-   r=run_backtest(stock(ticker,hi),stock('QQQ',hi),option_root=f'data/parquet/options_monthly/{ticker}',start=start.strftime('%Y-%m-%d'),end=end.strftime('%Y-%m-%d'),backend='duckdb',duckdb_path=':memory:',safe_strike_atr=atr)
+   r=run_backtest(stock(ticker,hi),stock('QQQ',hi),option_root=f'data/parquet/options_monthly/{ticker}',start=start.strftime('%Y-%m-%d'),end=end.strftime('%Y-%m-%d'),backend='canonical',safe_strike_atr=atr)
    ts=[{**{k:v for k,v in z.items() if k!='events'},'ticker':ticker,'target_buffer_atr':atr,'candidate_status':'TRADE_QUALIFIED'} for z in r['trades'] if z.get('trend_gate')=='PASS']
    out=pd.DataFrame(ts); part=root/'chunks'/f'{ticker}_{start:%Y-%m}.parquet'; tmp=part.with_suffix('.parquet.tmp'); out.to_parquet(tmp,index=False); pd.read_parquet(tmp); tmp.replace(part)
    rec.update(status='COMPLETE',rows_processed=len(ts),qualified_count=len(ts),elapsed_seconds=time.time()-t)
