@@ -34,11 +34,12 @@ from pcs.research.stage4a_production_evaluation import (
     evaluate_partition, write_completed_partition,
 )
 
-OUT = Path("research_outputs/stage4a_production_rebase_20260820")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+OUT = REPO_ROOT / "research_outputs/stage4a_production_rebase_20260820"
 PARTS = OUT / "production_universe_partitions"
 DEC = OUT / "production_decision_partitions"
-EVENT = Path(__file__).resolve().parents[1] / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
-DEFAULT_MARKET_STATES = Path("data/derived/canonical_pit_market_states.parquet")
+EVENT = REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
+DEFAULT_MARKET_STATES = REPO_ROOT / "data/derived/canonical_pit_market_states.parquet"
 
 
 def _file_digest(path: Path) -> str:
@@ -237,7 +238,7 @@ def main() -> None:
         source_identity.append((symbol, access.source_data_identity("daily", symbol),
                                 access.source_data_identity("options", symbol)))
     calculation_version = "|".join(("stage4a-production-evaluation-v3",
-                                    f"rules={_file_digest(Path('config/pcs_rules.yaml'))}",
+                                    f"rules={_file_digest(REPO_ROOT / 'config/pcs_rules.yaml')}",
                                     f"events={_file_digest(EVENT)}",
                                     f"market_states={_file_digest(args.market_state_artifact)}",
                                     f"evaluator={_file_digest(Path(__file__))}",
