@@ -1,5 +1,7 @@
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
+import os
+import uuid
 from pathlib import Path
 import json
 import pandas as pd
@@ -57,7 +59,12 @@ def run_ticker(ticker: str) -> dict:
     tmp = output.with_name(f".{output.name}.tmp")
     frame.to_parquet(tmp, index=False)
     tmp.replace(output)
-    receipt.write_text(json.dumps({"identity": identity, "inputs": identity_payload}, indent=2), encoding="utf-8")
+    receipt_tmp = receipt.with_name(f".{receipt.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        receipt_tmp.write_text(json.dumps({"identity": identity, "inputs": identity_payload}, indent=2), encoding="utf-8")
+        os.replace(receipt_tmp, receipt)
+    finally:
+        receipt_tmp.unlink(missing_ok=True)
     return {
         "ticker": ticker,
         "reused": False,
