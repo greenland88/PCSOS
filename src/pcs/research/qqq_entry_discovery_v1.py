@@ -57,7 +57,7 @@ def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1"
     rows=[]; lifecycle=[]; registry=load_corporate_actions()
     for s in ready.to_dict("records"):
         day=pd.Timestamp(s["date"]).normalize(); chain=options_by_trade_date.get(day, pd.DataFrame()).copy()
-        rec={"trade_date":day,"ticker":ticker,"pit_feature_ready":True,"option_chain_available":(not options_load_error and bool(len(chain))),"valid_dte_available":False,"safe_strike_candidates":False,"liquidity_pass":False,"credit_pass":False,"contract_selected":False,"lifecycle_completed":False,"reason_code":""}
+        rec={"trade_date":day,"ticker":ticker,"pit_feature_ready":True,"option_chain_available":(not options_load_error and bool(len(chain))),"valid_dte_available":False,"safe_strike_candidates":False,"liquidity_pass":False,"credit_pass":False,"contract_selected":False,"lifecycle_quotes_adapted":False,"lifecycle_completed":False,"reason_code":""}
         if options_load_error:
             rec["reason_code"]="CONTRACT_FAIL"; rec["data_quality_error"]=options_load_error; rows.append(rec); continue
         if chain.empty: rec["reason_code"]="NO_OPTION_DATA"; rows.append(rec); continue
@@ -79,7 +79,7 @@ def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1"
         if not rec["credit_pass"]: rec["reason_code"]="CREDIT_FAIL"; rows.append(rec); continue
         rec["contract_selected"]=True; cand={"candidate_id":_identity(ticker,day,exp,float(short.strike),float(long.strike)),"ticker":ticker,"date":day,"expiration":exp,"short_strike":float(short.strike),"long_strike":float(long.strike),"initial_credit":credit,"contract_mapping_available":True}
         try:
-            q=options_by_expiration.get(pd.Timestamp(exp), pd.DataFrame()).copy(); q=q[(q.trade_date >= day) & (q.trade_date <= pd.Timestamp(exp)) & q.strike.isin([float(short.strike),float(long.strike)])]; validate_lifecycle_corporate_action(cand,registry); lifecycle.extend(build_lifecycle_quote_rows(q,cand)); rec["lifecycle_completed"]=True; rec["reason_code"]="EXECUTABLE_PCS"
+            q=options_by_expiration.get(pd.Timestamp(exp), pd.DataFrame()).copy(); q=q[(q.trade_date >= day) & (q.trade_date <= pd.Timestamp(exp)) & q.strike.isin([float(short.strike),float(long.strike)])]; validate_lifecycle_corporate_action(cand,registry); lifecycle.extend(build_lifecycle_quote_rows(q,cand)); rec["lifecycle_quotes_adapted"]=True; rec["reason_code"]="QUOTES_ADAPTED_LIFECYCLE_NOT_REPLAYED"
         except Exception as exc:
             # Preserve every authoritative replay failure in the date-level
             # funnel; a bad quote partition must not abort the shard.
@@ -87,6 +87,6 @@ def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1"
             rec["lifecycle_error"] = str(exc)[:500]
         rows.append(rec)
     outcome=pd.DataFrame(rows); _parquet_safe(outcome).to_parquet(out/"broad_pcs_outcome_map.parquet",index=False); _parquet_safe(states).to_parquet(out/"pit_feature_ready_calendar.parquet",index=False)
-    summary={"module":"pcs.research.qqq_entry_discovery_v1","version":VERSION,"symbol":ticker,"as_of":end,"status":"COMPLETED","data_source":"PCS_CANONICAL_DATA","TRAIN_TRADING_DAYS":int(target_dates.sum()),"PIT_FEATURE_READY_DAYS":len(ready),"OPTION_DATA_AVAILABLE_DAYS":int(outcome.option_chain_available.sum()),"CONTRACT_SELECTED_DAYS":int(outcome.contract_selected.sum()),"LIFECYCLE_COMPLETED_DAYS":int(outcome.lifecycle_completed.sum()),"population_corrected":True,"global_warmup":True,"final_oos_read":False,"validation_read":False,"production_changes":False,"reason_codes":["FROM_SCRATCH_V1","NO_ENTRY_GATES","AUTHORITATIVE_LIFECYCLE"]}
+    summary={"module":"pcs.research.qqq_entry_discovery_v1","version":VERSION,"symbol":ticker,"as_of":end,"status":"COMPLETED","data_source":"PCS_CANONICAL_DATA","TRAIN_TRADING_DAYS":int(target_dates.sum()),"PIT_FEATURE_READY_DAYS":len(ready),"OPTION_DATA_AVAILABLE_DAYS":int(outcome.option_chain_available.sum()),"CONTRACT_SELECTED_DAYS":int(outcome.contract_selected.sum()),"LIFECYCLE_QUOTES_ADAPTED_DAYS":int(outcome.lifecycle_quotes_adapted.sum()),"LIFECYCLE_COMPLETED_DAYS":0,"population_corrected":True,"global_warmup":True,"final_oos_read":False,"validation_read":False,"production_changes":False,"reason_codes":["FROM_SCRATCH_V1","NO_ENTRY_GATES","LIFECYCLE_QUOTES_ADAPTED_ONLY","NO_EXIT_OR_PNL_REPLAY"]}
     (out/"broad_outcome_map_summary.json").write_text(json.dumps(summary,indent=2,default=str)); (out/"agent_state.json").write_text(json.dumps({"AGENT_STATUS":"RUNNING","CURRENT_STAGE":"OUTCOME_MAP","LAST_COMPLETED_ROUND":1,"FINAL_OOS_TOUCHED":"NO","VALIDATION_TOUCHED":"NO","NEXT_PLANNED_ACTION":"Compare PIT feature distributions across outcome classes"},indent=2)); (out/"research_log.csv").write_text("round,status,artifact,next_action\n1,COMPLETED,broad_outcome_map.parquet,feature-outcome comparison\n")
     return summary
