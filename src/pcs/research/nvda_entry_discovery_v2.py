@@ -19,6 +19,19 @@ from pcs.research.entry_candidate_universe import _atr14
 
 V2_VERSION = "nvda-entry-discovery-v2-broad-outcome-map-v1"
 
+def _strict_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes"}:
+            return True
+        if value in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
 def _parquet_safe(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     for column in out.columns:
@@ -38,7 +51,7 @@ def build_broad_outcome_map(output_dir: str | Path = "research_outputs/nvda_entr
     daily["atr_14"] = _atr14(daily)
     states = [evaluate_as_of(daily, ticker, day) for day in daily.date]
     state_df = pd.DataFrame(states)
-    ready = state_df[(state_df.available_data.astype(bool)) &
+    ready = state_df[(state_df.available_data.map(_strict_bool)) &
                      state_df.final_underlying_state.ne(UnderlyingState.UNKNOWN.value)].copy()
     registry = load_corporate_actions()
     rows = []
