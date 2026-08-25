@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import csv
+import glob
 import os
 import uuid
 import json
@@ -343,7 +344,7 @@ class PCSDataAccess:
             # caller's current working directory.
             raw_path = self._storage_path(raw)
             if any(ch in raw for ch in "*?["):
-                matches = list(raw_path.parent.glob(raw_path.name))
+                matches = [Path(value) for value in glob.glob(str(raw_path), recursive=True)]
             else:
                 matches = [raw_path]
             for path in sorted(matches):
