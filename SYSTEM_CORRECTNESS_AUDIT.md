@@ -1,8 +1,13 @@
 # PCS OS System Correctness Audit
 
-Audit baseline: `origin/codex/msft-replay-clean` at `fd168a2`, followed by
-the current uncommitted system-correctness fixes. This audit does not run a
-full MSFT replay and does not read FINAL OOS.
+> Audit snapshot, not live status. Use `PROJECT_STATUS.md` and
+> `docs/PCS_CAPABILITY_ROADMAP.md` for the current repository summary.
+
+Audit baseline: `origin/codex/msft-replay-clean` at `fd168a2`, plus the
+system-correctness fixes present in that audit workspace. Later commits may
+change the implementation or close findings; re-run the listed tests before
+updating a status. This audit did not run a full MSFT replay and did not read
+FINAL OOS.
 
 | SUBSYSTEM | INVARIANT | STATUS | EVIDENCE | TEST | REMAINING_RISK |
 |---|---|---|---|---|---|
