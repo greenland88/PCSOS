@@ -8,6 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 import json
+import os
+import uuid
 from typing import Any
 import pandas as pd
 
@@ -29,10 +31,23 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def _atomic_parquet(frame: pd.DataFrame, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_suffix(target.suffix + ".tmp")
-    frame.to_parquet(temp, index=False)
-    pd.read_parquet(temp, columns=list(frame.columns))
-    temp.replace(target)
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        frame.to_parquet(temp, index=False)
+        pd.read_parquet(temp, columns=list(frame.columns))
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _atomic_json(value: Any, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _identity(ticker, day, expiry, short, long):
@@ -318,11 +333,11 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                 "win_rate": float((pnl > 0).mean()) if len(pnl) else None,
                 "stop_rate": float(group["stop_triggered"].fillna(False).astype(bool).mean()),
             })
-    (out / "yearly_metrics.json").write_text(json.dumps(yearly_metrics, indent=2), encoding="utf-8")
+    _atomic_json(yearly_metrics, out / "yearly_metrics.json")
     completed_lifecycles = int(result_frame.status.astype(str).eq("COMPLETE").sum()) if "status" in result_frame else 0
     decision_days = int(pd.to_datetime(train.date).dt.normalize().ge(requested_start.normalize()).sum())
     report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":decision_days,"WARMUP_DAYS":len(train)-decision_days,"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":int(len(candidates)),"LIFECYCLE_RESULT_ROWS":len(result_frame),"LIFECYCLES_COMPLETED":completed_lifecycles, **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "final_oos_read": bool(horizon == "ALLOW_CROSS_SPLIT"),"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
     report["outcome_horizon_policy"] = {"mode": horizon, "cutoff": str(train_end.date()) if horizon == "SPLIT_CUTOFF" else None}
     report["benchmark_symbol"] = benchmark_symbol
-    (out / "replay_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    _atomic_json(report, out / "replay_report.json")
     return report
