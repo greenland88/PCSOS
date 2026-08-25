@@ -1,6 +1,6 @@
 """Command-line wrapper for the existing lazy-loading PCS research backtest."""
 from __future__ import annotations
-import argparse, csv, json, time
+import argparse, csv, json, time, os, uuid
 from pathlib import Path
 import pandas as pd
 from pcs.data.access import PCSDataAccess
@@ -73,7 +73,13 @@ def main(argv=None):
         periods=[("2010-2014",2010,2014),("2015-2019",2015,2019),("2020-2022",2020,2022),("2023-2026",2023,2026)]
         _write(run_dir / "period_stability.csv", [{"period":label,"sample_count":sum(first<=pd.Timestamp(r["date"]).year<=last for r in trades), **{f"{gate}_count":sum(first<=pd.Timestamp(r["date"]).year<=last and r.get("current_state")==gate for r in trades) for gate in ("PASS","WATCH","REJECT")}} for label,first,last in periods])
         years=sorted({pd.Timestamp(r["date"]).year for r in trades}); _write(run_dir / "yearly_summary.csv", [{"year":y,"sample_count":sum(pd.Timestamp(r["date"]).year==y for r in trades)} for y in years])
-    (run_dir/"run_metadata.json").write_text(json.dumps({"symbol":args.symbol.upper(),"benchmark":args.benchmark.upper(),"start_date":str(start.date()),"end_date":str(end.date()),"backend":backend,"backend_requested":args.backend,"quality":result["quality"],"exclusions":result["exclusions"],"elapsed_seconds":time.perf_counter()-started},default=str,indent=2),encoding="utf-8")
+    metadata = run_dir / "run_metadata.json"
+    metadata_tmp = run_dir / f".{metadata.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        metadata_tmp.write_text(json.dumps({"symbol":args.symbol.upper(),"benchmark":args.benchmark.upper(),"start_date":str(start.date()),"end_date":str(end.date()),"backend":backend,"backend_requested":args.backend,"quality":result["quality"],"exclusions":result["exclusions"],"elapsed_seconds":time.perf_counter()-started},default=str,indent=2),encoding="utf-8")
+        os.replace(metadata_tmp, metadata)
+    finally:
+        metadata_tmp.unlink(missing_ok=True)
     print(json.dumps({"run_label":args.run_label,"candidate_days":result["quality"]["candidate_days"],"usable_trades":len(trades),"output_dir":str(run_dir)}))
 
 
