@@ -60,10 +60,13 @@ def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
             continue
         if entry <= event <= expiry:
             return "EVENT_EARNINGS_CROSSING"
-        # Existing EventGate uses business-day distance rather than calendar days.
-        sessions = pd.DatetimeIndex(trading_sessions).normalize() if trading_sessions is not None else None
-        distance = (int(((sessions > entry) & (sessions <= event)).sum())
-                    if sessions is not None else len(pd.bdate_range(entry, event, inclusive="right")))
+        # Event distance is a market-session concept.  A weekday range is not
+        # an exchange calendar (US holidays would be counted incorrectly), so
+        # missing sessions must block the decision rather than approximate it.
+        if trading_sessions is None:
+            return "EVENT_TRADING_CALENDAR_UNAVAILABLE"
+        sessions = pd.DatetimeIndex(trading_sessions).normalize()
+        distance = int(((sessions > entry) & (sessions <= event)).sum())
         if 0 <= distance <= 3:
             return "EVENT_PRE_EARNINGS_BLACKOUT"
     return None
