@@ -91,11 +91,14 @@ class CorporateActionRegistry:
 
 
 EMPTY_REGISTRY = CorporateActionRegistry()
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def load_corporate_actions(path: str | Path = "config/data/corporate_actions.csv") -> CorporateActionRegistry:
     """Load all declared actions; unverified rows remain fail-closed inputs."""
     target = Path(path)
+    if str(path).replace("\\", "/") == "config/data/corporate_actions.csv":
+        target = _REPO_ROOT / path
     if not target.exists():
         # Absence of the registry is not evidence that no corporate actions
         # occurred.  Keep the unloaded default for legacy pure unit callers,
