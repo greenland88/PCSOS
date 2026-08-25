@@ -20,6 +20,7 @@ from .research_framework import (
     ResearchMode, ResearchSpec, ResearchStatus, ResearchSpecError,
     FunnelStage, build_funnel, onboarding_report, validate_population_routing,
     load_spec, spec_hash, assert_research_output, validate_rule_set,
+    effective_research_rules,
 )
 from pcs.data.access import PCSDataAccess, DataAccessError
 from .underlying_state import evaluate_as_of, UnderlyingState
@@ -158,11 +159,7 @@ class ResearchRunner:
         if self.spec.research_mode.value != "CURRENT_STRATEGY_REPLAY":
             return {}
         from .research_framework import CURRENT_RULE_DEFAULTS
-        out = dict(CURRENT_RULE_DEFAULTS)
-        out.update(self.spec.rules)
-        out["allowed_widths"] = [float(x) for x in out["allowed_widths"]]
-        out["width_mode"] = str(out["width_mode"]).upper()
-        return out
+        return effective_research_rules(self.spec)
 
     def rule_set_plumbing(self, counts: Mapping[str, int] | None = None) -> dict[str, Any]:
         """Return an isolated rule-set funnel contract for adapter execution.

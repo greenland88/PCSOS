@@ -23,7 +23,7 @@ def load_rules(path: str | Path = "config/pcs_rules.yaml") -> dict:
 
 
 class DecisionEngine:
-    def __init__(self, rules: dict):
+    def __init__(self, rules: dict, *, trading_sessions=None):
         self.rules = rules
         self.regime = MarketRegimeEngine(rules)
         self.liquidity = LiquidityScorer(rules)
@@ -31,7 +31,7 @@ class DecisionEngine:
         self.capacity = PortfolioCapacityScorer(rules)
         self.opportunity = OpportunityScorer(rules)
         self.sizer = PositionSizer(rules)
-        self.gates = HardGatePipeline(rules)
+        self.gates = HardGatePipeline(rules, trading_sessions=trading_sessions)
         self.risk = PortfolioRiskAggregator()
         self.rolls = RollEngine(rules)
         self.profits = ProfitEngine(rules)
@@ -39,7 +39,9 @@ class DecisionEngine:
     def evaluate_candidate(self, c, market_state, portfolio, event_calendar=None, entry_context=None) -> Decision:
         regime, regime_score, regime_flags = self.regime.classify(market_state)
         risk_snapshot = portfolio if isinstance(portfolio, PortfolioRiskSnapshot) else self.risk.from_portfolio(portfolio)
-        built_context = build_production_entry_context(c)
+        built_context = entry_context if entry_context is not None else build_production_entry_context(c)
+        if built_context is not None and not hasattr(built_context, "entry_context_state"):
+            raise ValueError("INVALID_ENTRY_CONTEXT")
         gate_results = self.gates.evaluate(c, risk_snapshot, regime=regime, event_calendar=event_calendar, entry_context=built_context)
         gate_codes = [code for result in gate_results if result.status == GateStatus.FAIL for code in result.reason_codes]
         if gate_codes:

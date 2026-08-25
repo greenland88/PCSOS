@@ -15,11 +15,25 @@ CORPORATE_ACTION_REGISTRY_VERSION = "corporate_actions.registry.v1"
 PIT_FEATURE_IMPLEMENTATION_VERSION = "pit_features.v2"
 PIT_CONTEXT_SCHEMA_VERSION = "pit_context.schema.v1"
 
+FEATURE_IMPLEMENTATION_FILES = (
+    "src/pcs/trend/indicators.py",
+    "src/pcs/trend/market_structure.py",
+    "src/pcs/trend/relative_strength.py",
+    "src/pcs/research/entry_candidate_universe.py",
+)
+
 def file_digest(path: str | Path) -> str:
     p = Path(path)
     if not p.exists():
         return "MISSING"
     return hashlib.sha256(p.read_bytes()).hexdigest()
+
+def feature_implementation_digest() -> str:
+    h = hashlib.sha256()
+    for path in FEATURE_IMPLEMENTATION_FILES:
+        h.update(path.encode())
+        h.update(file_digest(path).encode())
+    return h.hexdigest()
 
 def build_pit_cache_identity(*, symbol: str, date_range: dict[str, str], daily_data_identity: str,
                              feature_config: Any, research_config: Any = None,
@@ -33,6 +47,7 @@ def build_pit_cache_identity(*, symbol: str, date_range: dict[str, str], daily_d
         "corporate_action_registry_version": CORPORATE_ACTION_REGISTRY_VERSION,
         "corporate_action_registry_digest": action_digest,
         "feature_implementation_version": PIT_FEATURE_IMPLEMENTATION_VERSION,
+        "feature_implementation_digest": feature_implementation_digest(),
         "feature_config_hash": config_hash, "research_config_hash": research_hash,
         "pit_context_schema_version": PIT_CONTEXT_SCHEMA_VERSION,
     }

@@ -88,13 +88,32 @@ def run_daily_paper_trading(
     if "bucket_risk" not in portfolio:
         portfolio = portfolio | {"bucket_risk": {}}
 
-    engine = DecisionEngine(rules)
+    sessions = provider.get_trading_sessions() if hasattr(provider, "get_trading_sessions") else None
+    engine = DecisionEngine(rules, trading_sessions=sessions)
     event_calendar = provider.get_event_calendar() if hasattr(provider, "get_event_calendar") else None
     snapshots: list[PaperTradeSnapshot] = []
 
-    for candidate in provider.get_candidates():
+    candidates = sorted(
+        list(provider.get_candidates()),
+        key=lambda c: (str(c.ticker).upper(), str(c.expiration), float(c.short_strike), float(c.long_strike)),
+    )
+    portfolio.setdefault("planned_loss", portfolio.get("planned_risk", 0.0))
+    portfolio.setdefault("ticker_risk", {})
+    portfolio.setdefault("bucket_risk", {})
+    for candidate in candidates:
         decision = engine.evaluate_candidate(candidate, market, portfolio, event_calendar=event_calendar)
         snapshots.append(_snapshot_from_decision(decision, source="candidate"))
+        if decision.action == Action.OPEN:
+            # Older engine adapters populate planned_risk only.  Reserve the
+            # same value used by the sizing result, while preferring the
+            # explicit planned_loss field when available.
+            reserved = float(decision.planned_loss or decision.planned_risk or 0.0)
+            portfolio["planned_loss"] += reserved
+            portfolio["planned_risk"] = portfolio["planned_loss"]
+            bucket = str(candidate.correlation_bucket)
+            portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
+            ticker = str(candidate.ticker).upper()
+            portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
 
     for position in provider.get_positions():
         decision = engine.evaluate_position(position, market)

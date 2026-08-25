@@ -72,7 +72,9 @@ def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
 def _load_replay_calendar(path: str | Path) -> pd.DataFrame:
     """Load either the canonical calendar or the repository's raw export."""
     try:
-        return load_calendar(path)
+        out = load_calendar(path)
+        out.attrs["historical_pit_required"] = True
+        return out
     except ValueError:
         d = pd.read_csv(path)
         d = d.rename(columns={"source_name": "source", "source_url": "source_id"})
@@ -82,6 +84,7 @@ def _load_replay_calendar(path: str | Path) -> pd.DataFrame:
             "EMPLOYMENT_SITUATION": "NFP_EMPLOYMENT",
         })
         d["event_date"] = pd.to_datetime(d["event_date"], errors="raise").dt.normalize()
+        d.attrs["historical_pit_required"] = True
         return d
 
 
@@ -167,7 +170,12 @@ def _replay_lifecycle(candidate: dict[str, Any], quotes: pd.DataFrame,
     elif stop:
         exit_mark, reason = stop, "STOP"
     else:
-        exit_mark, reason = marks[min(len(marks), policy.max_quote_days) - 1], "TIME_EXIT"
+        exit_mark = marks[-1]
+        if len(marks) < policy.max_quote_days and exit_mark[0] < pd.Timestamp(candidate["expiration"]).normalize():
+            return {"status": "RIGHT_CENSORED", "exit_date": exit_mark[0], "exit_reason": "RIGHT_CENSORED",
+                    "realized_pnl": None, "premium_capture": None, "mae": None, "mfe": None,
+                    "mark_count": len(marks), "right_censored": True, "time_exit": False}
+        reason = "TIME_EXIT" if len(marks) >= policy.max_quote_days else "EXPIRATION"
     costs = [x[1] for x in marks]
     pnl = (initial - exit_mark[1]) * 100
     return {"status": "COMPLETE", "exit_date": exit_mark[0], "exit_reason": reason,
@@ -275,7 +283,13 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
     elif stop:
         exit_mark, reason = stop, "STOP"
     else:
-        exit_mark, reason = marks[min(len(marks), policy.max_quote_days) - 1], "TIME_EXIT"
+        exit_mark = marks[-1]
+        if len(marks) < policy.max_quote_days and exit_mark[0] < pd.Timestamp(candidate["expiration"]).normalize():
+            return {"status": "RIGHT_CENSORED", "exit_date": exit_mark[0], "exit_reason": "RIGHT_CENSORED",
+                    "realized_pnl": None, "premium_capture": None, "mae": None, "mfe": None,
+                    "mark_count": len(marks), "missing_mark_count": missing,
+                    "right_censored": True, "time_exit": False}
+        reason = "TIME_EXIT" if len(marks) >= policy.max_quote_days else "EXPIRATION"
     costs = [x[1] for x in marks]
     return {"status": "COMPLETE", "exit_date": exit_mark[0], "exit_reason": reason,
             "realized_pnl": (initial - exit_mark[1]) * 100,

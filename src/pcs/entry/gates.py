@@ -27,6 +27,11 @@ class EventGate:
         risk = int(getattr(candidate, "event_risk", 0))
         if calendar is None:
             return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_UNAVAILABLE",))
+        pit_required = bool(getattr(calendar, "attrs", {}).get("historical_pit_required", False))
+        if pit_required:
+            known_column = next((c for c in ("event_date_known_at_entry", "known_at_entry") if c in calendar.columns), None)
+            if known_column is None:
+                return GateResult("event", GateStatus.FAIL, ("EVENT_PIT_METADATA_UNAVAILABLE",))
         if risk > 0:
             return GateResult("event", GateStatus.FAIL, ("EVENT_RISK_PRESENT",))
         try:
@@ -34,6 +39,9 @@ class EventGate:
             entry = pd.Timestamp(getattr(candidate, "entry_date", None))
             expiry = pd.Timestamp(candidate.expiration)
             rows = calendar[(calendar.event_type == "EARNINGS") & ((calendar.symbol == candidate.ticker) | calendar.symbol.isna())]
+            if pit_required:
+                if rows[known_column].isna().any() or not rows[known_column].astype(bool).all():
+                    return GateResult("event", GateStatus.FAIL, ("EVENT_PIT_KNOWLEDGE_UNPROVEN",))
             for date in pd.to_datetime(rows.event_date).dt.normalize():
                 # Historical events strictly before entry cannot create either
                 # expiration exposure or a new-entry blackout.
@@ -139,8 +147,8 @@ class PortfolioRiskGate:
 
 
 class HardGatePipeline:
-    def __init__(self, rules):
-        self.regime = RegimeGate(rules); self.event = EventGate(); self.dte = DTEGate(rules); self.liquidity = LiquidityGate(rules)
+    def __init__(self, rules, trading_sessions=None):
+        self.regime = RegimeGate(rules); self.event = EventGate(trading_sessions=trading_sessions); self.dte = DTEGate(rules); self.liquidity = LiquidityGate(rules)
         self.safe_strike = SafeStrikeGate(rules); self.credit = CreditEfficiencyGate(rules); self.portfolio = PortfolioRiskGate(rules)
     def evaluate(self, candidate, portfolio_snapshot, regime=None, event_calendar=None, entry_context=None) -> tuple[GateResult, ...]:
         results = ([] if regime is None else [self.regime.evaluate(regime, entry_context)]) + [self.event.evaluate(candidate, event_calendar), self.safe_strike.evaluate(candidate), self.dte.evaluate(candidate), self.liquidity.evaluate(candidate), self.credit.evaluate(candidate), self.portfolio.evaluate(portfolio_snapshot)]

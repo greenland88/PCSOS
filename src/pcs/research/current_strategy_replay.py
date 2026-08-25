@@ -128,8 +128,10 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     # Keep the canonical feature warm-up, but do not load pre-scope history
     # into the replay process. The clean population remains the sole signal
     # population; this is only an I/O boundary for the requested period.
-    train_start = max(pd.Timestamp(daily.date.min()), pd.Timestamp(option_source.first_date),
-                      requested_start - pd.Timedelta(days=300))
+    # Option coverage is an execution-data boundary, not a feature warm-up
+    # boundary.  Never truncate daily history merely because options begin
+    # later; doing so changes rolling indicators at the first eligible date.
+    train_start = max(pd.Timestamp(daily.date.min()), requested_start - pd.Timedelta(days=300))
     train = daily[daily.date.between(train_start, train_end)].copy()
     execution_dates = spec.signal_definition.get("execution_dates")
     if execution_dates:

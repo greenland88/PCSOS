@@ -265,10 +265,23 @@ def assert_final_oos_access(spec: ResearchSpec) -> None:
 
 
 def run_spec(path: str | Path, *, dry_run: bool = True) -> dict[str, Any]:
-    spec = validate_population_routing(load_spec(path))
+    spec = validate_rule_set(validate_population_routing(load_spec(path)))
+    effective = effective_research_rules(spec)
     return {"research_id": spec.research_id, "ticker": spec.ticker, "research_mode": spec.research_mode.value,
             "population_source": dict(spec.population_source), "entry_date_rule": dict(spec.entry_date_rule),
             "scenario_hash": spec_hash(spec), "final_oos_access": spec.final_oos_access,
+            "effective_research_rules": effective,
             "production_changes_allowed": spec.production_changes_allowed, "execution": "DRY_RUN_ONLY" if dry_run else "VALIDATED_RUN",
             "status": ResearchStatus.COMPUTABLE.value, "hypothesis_executed": False,
             "reason_codes": ["RESEARCH_SPEC_VALIDATED", "FINAL_OOS_NOT_READ", "PRODUCTION_WRITE_BLOCKED"]}
+
+
+def effective_research_rules(spec: ResearchSpec) -> dict[str, Any]:
+    """Return the single effective research-local rule set."""
+    if spec.research_mode != ResearchMode.CURRENT_STRATEGY_REPLAY:
+        return dict(spec.rules)
+    out = dict(CURRENT_RULE_DEFAULTS)
+    out.update(spec.rules)
+    out["allowed_widths"] = [float(x) for x in out["allowed_widths"]]
+    out["width_mode"] = str(out["width_mode"]).upper()
+    return out

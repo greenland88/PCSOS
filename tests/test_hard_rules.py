@@ -44,6 +44,19 @@ def test_capacity_exceeded_restricts_new_positions():
     assert "PORTFOLIO_PLANNED_LOSS_LIMIT" in d.reason_codes
 
 
+def test_post_trade_capacity_never_exceeds_total_cap():
+    d = engine().evaluate_candidate(candidate(), MarketState(vix=18), {"planned_risk": 9500, "bucket_risk": {}, "ticker_risk": {}})
+    assert d.planned_risk <= 500
+    assert d.planned_risk + 9500 <= 10000
+
+
+def test_post_trade_bucket_and_ticker_capacity_are_hard_limits():
+    d = engine().evaluate_candidate(candidate(), MarketState(vix=18), {
+        "planned_risk": 0, "bucket_risk": {"nasdaq_mega": 3900}, "ticker_risk": {"QQQ": 2900},
+    })
+    assert d.planned_risk <= 100
+
+
 def test_broken_thesis_closes_not_rolls():
     p = PCSPosition(ticker="NVDA", expiration="2026-08-28", short_strike=160, long_strike=155,
                     underlying_price=158, credit_opened=1, current_mark=2, contracts=1, dte=10,
