@@ -21,7 +21,6 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pcs.data.access import PCSDataAccess, DataAccessError, DataQualityError
-from pcs.data.daily_provider import DailyDataProvider
 from pcs.engine.decision_engine import DecisionEngine, load_rules
 from pcs.entry.contract_v2 import normalize_price_confirmation
 from pcs.features.expected_move import calculate_expected_move
@@ -74,11 +73,12 @@ def _blocked(row: dict, status: DecisionRowStatus, *codes: str) -> dict:
 def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_calendar: pd.DataFrame):
     """Build a cached exact-input evaluator.  It owns no raw-file access."""
     contexts: dict[str, HistoricalTrendContextProvider] = {}
-    daily_provider = DailyDataProvider()
     daily: dict[str, pd.DataFrame] = {}
     confirmation: dict[tuple[str, pd.Timestamp], float] = {}
     breadth: dict[tuple[str, pd.Timestamp, pd.Timestamp, float], tuple[int, int, dict]] = {}
     engine = DecisionEngine(load_rules())
+    portfolio = {"planned_risk": 0.0, "planned_loss": 0.0,
+                 "bucket_risk": {}, "ticker_risk": {}}
 
     def evaluate(row: dict) -> dict:
         ticker = str(row["ticker"]).upper()
@@ -106,7 +106,10 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
             if support is None:
                 return _blocked(row, DecisionRowStatus.BLOCKED_SUPPORT_UNAVAILABLE, "NO_SUPPORT")
             if ticker not in daily:
-                daily[ticker] = daily_provider.build_daily_series(ticker, as_of_date=day)
+                # Load the canonical series once; slice it at each decision
+                # date so later rows never reuse an early as-of snapshot.
+                daily[ticker] = access.read_prices(ticker)
+                daily[ticker].date = pd.to_datetime(daily[ticker].date).dt.normalize()
             day_rows = daily[ticker][daily[ticker].date.eq(day)]
             if len(day_rows) != 1:
                 return _blocked(row, DecisionRowStatus.BLOCKED_SOURCE_UNAVAILABLE, "UNDERLYING_PRICE_UNAVAILABLE")
@@ -128,8 +131,15 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
             long_option_volume=int(row["long_volume"]), long_open_interest=int(row["long_oi"]), entry_date=str(day.date()),
             trend_snapshot=snapshot, trend_interpretation=context["interpretation"], trend_score_result=context["trend_score"],
         )
-        decision = engine.evaluate_candidate(candidate, market, {"planned_risk": 0, "bucket_risk": {}}, event_calendar=event_calendar)
+        decision = engine.evaluate_candidate(candidate, market, portfolio, event_calendar=event_calendar)
         accepted = decision.action.value == "OPEN"
+        if accepted:
+            reserved = float(decision.planned_loss or decision.planned_risk or 0.0)
+            portfolio["planned_loss"] += reserved
+            portfolio["planned_risk"] = portfolio["planned_loss"]
+            bucket = str(row.get("correlation_bucket", "UNKNOWN"))
+            portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
+            portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
         return {**row, "status": (DecisionRowStatus.EVALUATED_ACCEPTED if accepted else DecisionRowStatus.EVALUATED_REJECTED).value,
                 "accepted": accepted, "reason_codes": list(decision.reason_codes),
                 "primary_reason": decision.reason_codes[0] if decision.reason_codes else decision.reason,
@@ -147,6 +157,9 @@ def main() -> None:
     args = parser.parse_args()
     run_id = f"stage4a-production-{uuid.uuid4().hex}"
     access, calendar = PCSDataAccess(), pd.read_csv(EVENT)
+    calendar.attrs["historical_pit_required"] = True
+    if "event_date_known_at_entry" not in calendar.columns and "known_at_entry" not in calendar.columns:
+        raise RuntimeError("EVENT_CALENDAR_PIT_METADATA_MISSING")
     calculation_version = "|".join(("stage4a-production-evaluation-v2", f"rules={_file_digest(Path('config/pcs_rules.yaml'))}",
                                     f"events={_file_digest(EVENT)}", f"market_states={_file_digest(args.market_state_artifact)}"))
     evaluator = build_row_evaluator(access=access, market_states=_load_market_states(args.market_state_artifact), event_calendar=calendar)
