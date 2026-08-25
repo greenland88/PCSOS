@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from pcs.data.access import PCSDataAccess
 from pcs.research.credit_stop import (
     load_spread_quotes_duckdb,
     run_backtest,
@@ -23,8 +24,7 @@ SYMBOLS = ("SPY", "QQQ")
 
 
 def _daily(symbol: str) -> pd.DataFrame:
-    paths = sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))
-    frame = pd.concat((pd.read_parquet(p) for p in paths), ignore_index=True)
+    frame = PCSDataAccess().read_prices(symbol)
     frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
     return frame.sort_values("date").drop_duplicates("date").reset_index(drop=True)
 
