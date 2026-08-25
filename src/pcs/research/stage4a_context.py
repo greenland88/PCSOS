@@ -34,9 +34,12 @@ def _jsonable(value: Any):
 
 
 class HistoricalTrendContextProvider:
-    def __init__(self, ticker: str, daily_root: str | Path = "data/raw/daily_forward_adjusted", benchmark: str = "QQQ"):
+    def __init__(self, ticker: str, daily_root: str | Path | None = None, benchmark: str = "QQQ",
+                 *, allow_test_source: bool = False):
         self.ticker = ticker; self.benchmark = benchmark
-        if Path(daily_root) == Path("data/raw/daily_forward_adjusted"):
+        if daily_root is not None and not allow_test_source:
+            raise ValueError("NONCANONICAL_DAILY_SOURCE_REQUIRES_EXPLICIT_TEST_OPT_IN")
+        if daily_root is None or Path(daily_root) == Path("data/raw/daily_forward_adjusted"):
             access = PCSDataAccess()
             self.stock = access.read_prices(ticker)
             self.bench = access.read_prices(benchmark)

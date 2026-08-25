@@ -16,7 +16,7 @@ def test_historical_context_provider_is_pit_and_cached(monkeypatch, tmp_path):
         return {"available": True, "snapshot": {"as_of": day}, "interpretation": {"state": "SETUP_PASS"}, "trend_score": {"score": 80}, "reason_codes": []}
 
     monkeypatch.setattr(context_module, "build_historical_setup_context", producer)
-    provider = HistoricalTrendContextProvider("NVDA", root)
+    provider = HistoricalTrendContextProvider("NVDA", root, allow_test_source=True)
     row = {"candidate_id": "c1", "date": "2025-01-01"}
     first = provider(row)
     second = provider(row)
