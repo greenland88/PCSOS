@@ -4,7 +4,7 @@ import argparse, hashlib, json, os, time
 import pandas as pd
 import yaml
 from pcs.data.access import PCSDataAccess
-from pcs.research.credit_stop import load_quotes_duckdb,load_spread_quotes_duckdb,track_trade
+from pcs.research.credit_stop import load_quotes_canonical,load_spread_quotes_canonical,track_trade
 from pcs.research.rules.core import evaluate_chain,resolve_scenario,RuleStatus,canonical_hash
 from pcs.research.rules.registry import RULE_REGISTRY
 ROOT=Path(__file__).resolve().parents[1]; OUT=ROOT/"research_outputs/spy_qqq_modular_rule_research_20260821"
@@ -25,7 +25,7 @@ def context(t,row,s,l,w):
 def one(t,month,scenario,boundary):
  c=yaml.safe_load((ROOT/"research_configs/pcs_rule_scenarios"/scenario).read_text());sc=resolve_scenario(c); ds=daily(t);lo=pd.Timestamp(month+"-01");hi=lo+pd.offsets.MonthEnd();ds=ds[ds.date.between(lo,hi)];led=[];cand=[];trades=[];totalrows=0
  for r in ds.itertuples():
-  q,meta=load_quotes_duckdb(":memory:",t,r.date,r.date);totalrows+=meta["option_rows_loaded"];choices=select(q,r);selected=False
+  q,meta=load_quotes_canonical(t,r.date,r.date);totalrows+=meta["option_rows_loaded"];choices=select(q,r);selected=False
   for s,l,w in choices:
    cx=context(t,r,s,l,w)
    for mode in ("FULL_AUDIT","PRODUCTION_SHORT_CIRCUIT"):
@@ -35,7 +35,7 @@ def one(t,month,scenario,boundary):
    available=[x for x in evaluate_chain(sc["entry_rule_chain"],RULE_REGISTRY,cx,"FULL_AUDIT") if x[0].rule_id not in {"liquidity_gate"}]
    ok=all(res.status==RuleStatus.PASS for _,res in available)
    if ok and not selected:
-    selected=True;rec=cand[-2];rec["selected"]=True; end=min(pd.Timestamp(s["Expiry Date"]),boundary);marks=load_spread_quotes_duckdb(":memory:",t,r.date,end,s["Expiry Date"],[s.Strike,l.Strike]);path=track_trade({"date":r.date,"expiration":s["Expiry Date"],"short_strike":s.Strike,"long_strike":l.Strike},marks,s,l,cx["credit"]); events=[v for v in path["events"].values() if v is not None]; exit_date=min(events) if events else (marks["Trade Date"].max() if not marks.empty else pd.NaT);blocked=pd.Timestamp(s["Expiry Date"])>boundary and (pd.isna(exit_date) or exit_date>=boundary);trades.append({**cx,"candidate_id":canonical_hash([t,str(r.date),str(s["Expiry Date"]),float(s.Strike),float(l.Strike)])[:24],"exit_date":exit_date,"stop":path["exit_reason"]=="STOP","exit_reason":"FINAL_OOS_BOUNDARY_BLOCKED" if blocked else path["exit_reason"],"pnl":None if blocked else path["realized_pnl"],"planned_loss":cx["credit"]*100})
+    selected=True;rec=cand[-2];rec["selected"]=True; end=min(pd.Timestamp(s["Expiry Date"]),boundary);marks,_=load_spread_quotes_canonical(t,r.date,end,s["Expiry Date"],[s.Strike,l.Strike]);path=track_trade({"date":r.date,"expiration":s["Expiry Date"],"short_strike":s.Strike,"long_strike":l.Strike},marks,s,l,cx["credit"]); events=[v for v in path["events"].values() if v is not None]; exit_date=min(events) if events else (marks["Trade Date"].max() if not marks.empty else pd.NaT);blocked=pd.Timestamp(s["Expiry Date"])>boundary and (pd.isna(exit_date) or exit_date>=boundary);trades.append({**cx,"candidate_id":canonical_hash([t,str(r.date),str(s["Expiry Date"]),float(s.Strike),float(l.Strike)])[:24],"exit_date":exit_date,"stop":path["exit_reason"]=="STOP","exit_reason":"FINAL_OOS_BOUNDARY_BLOCKED" if blocked else path["exit_reason"],"pnl":None if blocked else path["realized_pnl"],"planned_loss":cx["credit"]*100})
   led.append({"ticker":t,"date":r.date,"scenario_id":sc["scenario_id"],"option_rows":meta["option_rows_loaded"],"generated":len(choices),"selected":selected})
  return led,cand,trades,{"scenario":sc,"option_rows":totalrows}
 def main():
