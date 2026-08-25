@@ -6,7 +6,6 @@ from .models import response
 from pcs.data.duckdb_store import connect, refresh_views, query_daily, query_option_chain
 from pcs.data.access import PCSDataAccess, DataAccessError
 from pcs.data.derived_store import read_derived, read_backtest_trades
-from pcs.research.compatibility import compatibility
 
 def _con(symbols=None):
     con=connect(":memory:"); refresh_views(con, symbols=symbols); return con
@@ -46,5 +45,26 @@ def get_trend_snapshot(symbol, as_of, benchmark=None):
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "CALCULATION_UNAVAILABLE", df.to_dict("records"), symbol, as_of=as_of)
 
 def get_data_compatibility(symbol, as_of):
-    c=compatibility(symbol,as_of)
-    return response("AVAILABLE" if c["data_available"] else "UNAVAILABLE",c["reason_code"],c,symbol,as_of=as_of)
+    # Agent compatibility must reflect the active canonical route, not a
+    # hand-maintained ticker/date table that can drift from onboarding.
+    ticker = str(symbol).upper()
+    try:
+        access = PCSDataAccess()
+        source = access.resolve_source("daily", ticker)
+        date = pd.Timestamp(as_of).normalize()
+        start, end = pd.Timestamp(source.first_date), pd.Timestamp(source.last_date)
+        available = start <= date <= end
+        c = {"symbol": ticker, "as_of": str(date.date()), "data_available": available,
+             "pcs_research_compatible": available, "compatibility_status": "COMPATIBLE" if available else "DATA_NOT_FOUND",
+             "reliable_start": str(start.date()), "reliable_end": str(end.date()),
+             "reason_code": "DATA_AVAILABLE" if available else "DATA_NOT_FOUND",
+             "canonical_dataset": source.dataset, "canonical_source_version": source.source_version,
+             "canonical_route": "AVAILABLE"}
+        status = "AVAILABLE" if c["data_available"] else "UNAVAILABLE"
+    except Exception as exc:
+        c = {"symbol": ticker, "as_of": str(pd.Timestamp(as_of).date()),
+             "data_available": False, "pcs_research_compatible": False,
+             "compatibility_status": "DATA_NOT_FOUND", "reason_code": "CANONICAL_ROUTE_UNAVAILABLE",
+             "error_type": type(exc).__name__}
+        status = "UNAVAILABLE"
+    return response(status, c["reason_code"], c, ticker, as_of=as_of)
