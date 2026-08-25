@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 from pcs.research.credit_stop import run_backtest
 
 WINDOWS = {
@@ -11,8 +12,7 @@ WINDOWS = {
 }
 
 def daily(symbol, end):
-    frames = [pd.read_parquet(p) for p in sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))]
-    x = pd.concat(frames, ignore_index=True).sort_values("date").drop_duplicates("date")
+    x = PCSDataAccess().read_prices(symbol, None, end).sort_values("date").drop_duplicates("date")
     x["date"] = pd.to_datetime(x["date"]).dt.normalize()
     return x[x.date <= pd.Timestamp(end)].copy()
 
