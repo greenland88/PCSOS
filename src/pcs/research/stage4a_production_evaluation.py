@@ -46,6 +46,11 @@ def _identity_digest(values: pd.Series) -> str:
     return sha256("\n".join(sorted(values.astype(str))).encode("utf-8")).hexdigest()
 
 
+def _frame_digest(frame: pd.DataFrame) -> str:
+    normalized = frame.sort_index(axis=1).sort_values(list(frame.columns), kind="mergesort").reset_index(drop=True)
+    return sha256(pd.util.hash_pandas_object(normalized, index=True).values.tobytes()).hexdigest()
+
+
 @dataclass(frozen=True)
 class PartitionReceipt:
     """Stable completion proof for one source-partition evaluation."""
@@ -63,6 +68,7 @@ class PartitionReceipt:
     data_timestamp: str
     calculation_version: str
     reason_codes: tuple[str, ...] = ()
+    source_content_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self) | {"reason_codes": list(self.reason_codes)}
@@ -129,6 +135,7 @@ def completion_is_valid(source: pd.DataFrame, result_path: str | Path, *, calcul
             and receipt.get("source_rows") == len(source)
             and receipt.get("result_rows") == len(result)
             and receipt.get("source_identity_sha256") == _identity_digest(source.opportunity_id)
+            and receipt.get("source_content_sha256") == _frame_digest(source)
             and receipt.get("result_identity_sha256") == _identity_digest(result.opportunity_id)
             and len(result) == len(source)
             and set(result.opportunity_id.astype(str)) == set(source.opportunity_id.astype(str))
@@ -167,6 +174,7 @@ def write_completed_partition(
         source_rows=len(source), source_identity_sha256=_identity_digest(source.opportunity_id),
         result_rows=len(result), result_identity_sha256=_identity_digest(result.opportunity_id),
         data_timestamp=data_timestamp, calculation_version=calculation_version,
+        source_content_sha256=_frame_digest(source),
     )
     atomic_json(receipt.to_dict(), receipt_path(result_path))
     return receipt
