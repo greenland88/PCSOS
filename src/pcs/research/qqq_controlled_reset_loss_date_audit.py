@@ -1,6 +1,8 @@
 """Individual PIT-safe audit of controlled-reset loss episodes."""
 from pathlib import Path
 import json
+import os
+import uuid
 import pandas as pd
 
 ROOT = Path("research_outputs/qqq_entry_discovery_agent_v1")
@@ -18,7 +20,10 @@ def run():
     d = pd.read_parquet(ART / "qqq_state_transition_features_train_2020_2023.parquet")
     d.trade_date = pd.to_datetime(d.trade_date).dt.normalize()
     family = d[(d.drawdown60 <= -0.02) & (d.ret10 > 0)].copy()
-    family["episode_id"] = (family.trade_date.diff().dt.days.fillna(999) > 4).cumsum()
+    sessions = pd.DatetimeIndex(d.trade_date.drop_duplicates().sort_values())
+    positions = pd.Series(range(len(sessions)), index=sessions)
+    family["session_index"] = family.trade_date.map(positions)
+    family["episode_id"] = family.session_index.diff().fillna(999).ne(1).cumsum()
     entries = family.groupby("episode_id", as_index=False).first()
     losses = entries[entries.outcome_class.isin(["STOP_LOSS", "TAIL_LOSS"])].copy()
     loss_rows = []
@@ -37,7 +42,13 @@ def run():
            "summary": summary, "loss_episodes": loss_rows, "threshold_mining": False,
            "validation_read": False, "final_oos_read": False, "production_changes": False,
            "reason_codes": ["PIT_SAFE_FEATURES", "ONE_ENTRY_PER_EPISODE", "INDIVIDUAL_LOSS_AUDIT", "DESCRIPTIVE_ONLY"]}
-    (ART / "controlled_reset_loss_date_audit.json").write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+    target = ART / "controlled_reset_loss_date_audit.json"
+    temp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     print(json.dumps(out, indent=2, default=str))
     return out
 
