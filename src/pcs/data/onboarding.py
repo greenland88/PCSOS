@@ -282,6 +282,16 @@ def _checkpoint_path(root: Path, symbol: str) -> Path:
 
 def activate_authoritative_route(symbol: str, *, dataset: str, manifest_path: str, parquet_root: str, routes_path: str | Path = "config/data_source_routes.yaml") -> None:
     """Atomically activate a fully finalized generic ticker route."""
+    manifest = Path(manifest_path)
+    if not manifest.exists():
+        raise DataQualityError(f"CANONICAL_MANIFEST_MISSING:{manifest}")
+    rows = pd.read_csv(manifest)
+    required = {"dataset", "symbol", "status"}
+    if not required.issubset(rows.columns):
+        raise DataQualityError("CANONICAL_MANIFEST_SCHEMA_INVALID")
+    selected = rows[(rows.dataset.astype(str) == str(dataset)) & (rows.symbol.astype(str).str.upper() == str(symbol).upper())]
+    if selected.empty or not selected.status.astype(str).str.upper().eq("SUCCESS").all():
+        raise DataQualityError(f"CANONICAL_MANIFEST_NOT_VALIDATED:{str(symbol).upper()}")
     path = Path(routes_path); config = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
     config.setdefault("options", {}).setdefault("by_symbol", {})[str(symbol).upper()] = {"dataset": dataset, "manifest_path": manifest_path, "parquet_root": parquet_root}
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp"); tmp.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8"); os.replace(tmp, path)
@@ -294,7 +304,7 @@ def _atomic_json(path: Path, value: dict) -> None:
     os.replace(tmp, path)
 
 
-def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> OnboardingResult:
+def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, routes_path: str | Path = "config/data_source_routes.yaml", activate_route: bool = True) -> OnboardingResult:
     """Generic partition-checkpointed onboarding with fail-closed activation.
 
     Workers only validate/build physical partitions. Manifest/provenance and route
@@ -346,8 +356,10 @@ def onboard_ticker_incremental(symbol: str, periods: list[tuple[int, int]], clic
         rec = state["partitions"][part]; frame = access.read_partition(dataset, symbol, f"year={required[part][0]}/quarter={required[part][1]}", Path(rec["output_path"]).name)
         access.update_manifest(dataset, symbol, frame, Path(rec["output_path"]), f"historical_txt:{rec['source_identity']}:sha256:{rec['source_hash']}", f"year={required[part][0]}/quarter={required[part][1]}", replace_existing=True)
         access.record_provenance(rec["provenance"]); rows_written += len(frame); records += 1
-    activate_authoritative_route(symbol, dataset=dataset, manifest_path=str(access.manifest_path), parquet_root=str(access.parquet_root), routes_path=routes_path)
-    return OnboardingResult(symbol, "READY", len(required), rows_written, records, [], f"incremental checkpoint finalized and route activated: {cp}")
+    if activate_route:
+        activate_authoritative_route(symbol, dataset=dataset, manifest_path=str(access.manifest_path), parquet_root=str(access.parquet_root), routes_path=routes_path)
+    message = f"incremental checkpoint finalized and {'route activated' if activate_route else 'route pending final activation'}: {cp}"
+    return OnboardingResult(symbol, "READY", len(required), rows_written, records, [], message)
 
 
 def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], clickhouse_loader: Callable[[str, int, int], pd.DataFrame], *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess, dataset: str = "options", workers: int = 8, resume: bool = True, checkpoint_root: str | Path | None = None, daily_frame: pd.DataFrame | None = None, routes_path: str | Path = "config/data_source_routes.yaml") -> GenericOnboardingResult:
@@ -364,4 +376,106 @@ def onboard_ticker_to_readiness(symbol: str, periods: list[tuple[int, int]], cli
     return GenericOnboardingResult(str(symbol).upper(), onboarding.status, readiness.PCS_RESEARCH_READY, onboarding.to_dict(), readiness.to_dict(), readiness.reason_codes)
 
 
-__all__ = ["HistoricalTxtZipAdapter", "ConflictPolicyResult", "OverlapResult", "OnboardingResult", "GenericOnboardingResult", "apply_conflict_policy", "validate_txt_clickhouse_overlap", "replay_onboarded_partition", "onboard_ticker", "onboard_ticker_incremental", "onboard_ticker_to_readiness", "activate_authoritative_route"]
+def discover_source_periods(adapter: HistoricalTxtZipAdapter) -> list[tuple[int, int]]:
+    """Discover all available year/quarter source shards without ticker logic."""
+    periods = []
+    for path in adapter.root.glob("*_q*_option_chain_*.zip"):
+        match = ARCHIVE_RE.match(path.name)
+        if match:
+            periods.append((int(match.group("year")), int(match.group("quarter"))))
+    return sorted(set(periods))
+
+
+def run_system_onboarding(symbol: str, *, adapter: HistoricalTxtZipAdapter, access: PCSDataAccess,
+                          clickhouse_loader: Callable[[str, int, int], pd.DataFrame], periods: list[tuple[int, int]] | None = None,
+                          workers: int = 4, state_root: str | Path = "data/onboarding",
+                          routes_path: str | Path = "config/data_source_routes.yaml", daily_frame: pd.DataFrame | None = None) -> dict[str, Any]:
+    """Run the complete system-owned onboarding workflow for one symbol.
+
+    The normal caller supplies only a symbol and source services.  Periods are
+    discovered from the adapter; the optional argument exists for isolated
+    fixtures and deterministic tests.
+    """
+    from .onboarding_engine import FailureType, OnboardingEngine, StageResult
+    from .incremental_update import update_ticker
+
+    symbol = str(symbol).strip().upper()
+    engine = OnboardingEngine(symbol, state_root)
+    discovered: list[tuple[int, int]] = []
+
+    def source(state):
+        nonlocal discovered
+        discovered = sorted(set(periods if periods is not None else discover_source_periods(adapter)))
+        if not discovered:
+            return StageResult("FAIL", FailureType.NON_RECOVERABLE_EXTERNAL, "no supported source periods discovered", reason_codes=["SOURCE_PERIODS_MISSING"])
+        state.shards_total = len(discovered)
+        state.source_version = "historical_txt_zip"
+        return StageResult("PASS", metrics={"periods": [f"{y}Q{q}" for y, q in discovered]})
+
+    def daily(state):
+        if daily_frame is not None:
+            result = update_ticker(symbol, daily_frame=daily_frame, parquet_root=access.parquet_root,
+                                   manifest_path=access.manifest_path, options_manifest_path=access.manifest_path,
+                                   source_version="onboarding-daily")
+            return StageResult("PASS", metrics=result)
+        return StageResult("PASS", metrics={"status": "REUSED_CANONICAL_DAILY"})
+
+    def options(state):
+        result = onboard_ticker_incremental(symbol, discovered, clickhouse_loader, adapter=adapter, access=access,
+                                             workers=workers, resume=True, checkpoint_root=state_root,
+                                             routes_path=routes_path, activate_route=False)
+        if result.status != "READY":
+            return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, result.explanation, reason_codes=result.reason_codes)
+        state.shards_complete = result.periods
+        state.rows_written = result.rows_written
+        return StageResult("PASS", metrics=result.to_dict())
+
+    def validate(state):
+        return StageResult("PASS", metrics={"validated_shards": state.shards_complete})
+
+    def manifest(state):
+        return StageResult("PASS", metrics={"manifest": str(access.manifest_path)})
+
+    def route(state):
+        activate_authoritative_route(symbol, dataset="options", manifest_path=str(access.manifest_path),
+                                     parquet_root=str(access.parquet_root), routes_path=routes_path)
+        return StageResult("PASS", metrics={"route": symbol})
+
+    def readiness(state):
+        from pcs.research.ticker_readiness import preflight_ticker
+        result = preflight_ticker(symbol, access=PCSDataAccess(manifest_path=access.manifest_path, parquet_root=access.parquet_root))
+        if str(result.PCS_RESEARCH_READY).upper() not in {"YES", "TRUE", "PASS"}:
+            return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, "canonical ticker readiness failed", result.to_dict(), result.reason_codes)
+        return StageResult("PASS", metrics=result.to_dict(), reason_codes=result.reason_codes)
+
+    smoke_case: dict[str, Any] = {}
+
+    def contract_smoke(state):
+        from .readiness import discover_lifecycle_smoke_case
+        case, evidence = discover_lifecycle_smoke_case(access, symbol)
+        if case is None:
+            return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, "contract selection smoke failed",
+                               metrics=evidence, reason_codes=["CONTRACT_SELECTION_SMOKE_FAILED"])
+        smoke_case["case"] = case
+        return StageResult("PASS", metrics={"case": case.to_dict(), "evidence": evidence})
+
+    def lifecycle_smoke(state):
+        from .readiness import execute_lifecycle_smoke
+        case = smoke_case.get("case")
+        if case is None:
+            return StageResult("FAIL", FailureType.INVARIANT_VIOLATION, "lifecycle smoke reached without contract case")
+        evidence = execute_lifecycle_smoke(access, case)
+        if evidence.get("exit_date") is None or evidence.get("realized_pnl") is None:
+            return StageResult("FAIL", FailureType.DATA_QUALITY_FAILURE, "lifecycle smoke did not complete",
+                               metrics=evidence, reason_codes=["LIFECYCLE_SMOKE_INCOMPLETE"])
+        return StageResult("PASS", metrics=evidence)
+
+    handlers = {"SOURCE_DISCOVERY": source, "DAILY_READY": daily, "OPTIONS_INGESTION": options,
+                "OPTIONS_VALIDATION": validate, "MANIFEST_UPDATE": manifest, "ROUTE_ACTIVATION": route,
+                "CANONICAL_READINESS": readiness, "CONTRACT_SMOKE": contract_smoke,
+                "LIFECYCLE_SMOKE": lifecycle_smoke,
+                "RESEARCH_READY": lambda s: StageResult("PASS", metrics={"boundary": "RESEARCH_READY"})}
+    return engine.run(handlers).__dict__
+
+
+__all__ = ["HistoricalTxtZipAdapter", "ConflictPolicyResult", "OverlapResult", "OnboardingResult", "GenericOnboardingResult", "apply_conflict_policy", "validate_txt_clickhouse_overlap", "replay_onboarded_partition", "onboard_ticker", "onboard_ticker_incremental", "onboard_ticker_to_readiness", "discover_source_periods", "run_system_onboarding", "activate_authoritative_route"]

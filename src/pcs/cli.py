@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import pandas as pd
 
 from pcs.collectors.option_chain_snapshot import OptionChainSnapshotCollector
 from pcs.data.storage import ParquetStore
@@ -11,6 +12,7 @@ from pcs.research.youtube_subtitles import DEFAULT_TRANSCRIPT_DIR, download_yout
 from pcs.simulation.paper_trading import run_daily_paper_trading
 from pcs.stress_lab.scenarios import DEFAULT_SYNTHETIC_SCENARIOS, StressLab
 from pcs.data.incremental_update import load_source, update_ticker
+from pcs.data.onboarding_engine import OnboardingEngine
 
 
 def _json_provider(path: str | None):
@@ -86,6 +88,20 @@ def update_data(args):
         print(json.dumps(update_ticker(symbol, daily_frame=daily, options_frame=options, parquet_root=args.parquet_root, manifest_path=args.manifest_path, options_manifest_path=args.options_manifest_path, source_version=args.source_version), sort_keys=True))
 
 
+def onboard(args):
+    """Run the system-owned stage machine using an integration adapter."""
+    from pcs.data.access import PCSDataAccess
+    from pcs.data.onboarding import HistoricalTxtZipAdapter, run_system_onboarding
+    periods = [(int(item.split("-", 1)[0]), int(item.split("-", 1)[1])) for item in args.period] if args.period else None
+    result = run_system_onboarding(
+        args.symbol, periods=periods, clickhouse_loader=lambda *_: pd.DataFrame(),
+        adapter=HistoricalTxtZipAdapter(args.source_root),
+        access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
+        workers=args.workers, state_root=args.state_root, routes_path=args.routes_path,
+    )
+    print(json.dumps(result, sort_keys=True, default=str))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="pcs-lite")
     sub = parser.add_subparsers(required=True)
@@ -133,6 +149,17 @@ def main():
     update.add_argument("--options-manifest-path", default="data/manifests/storage_manifest.csv")
     update.add_argument("--source-version", default="incremental")
     update.set_defaults(func=update_data)
+
+    onboard_cmd = sub.add_parser("onboard", help="automatically onboard one ticker through the canonical workflow")
+    onboard_cmd.add_argument("symbol")
+    onboard_cmd.add_argument("--period", action="append", metavar="YEAR-QUARTER", help="optional fixture override; otherwise periods are discovered")
+    onboard_cmd.add_argument("--source-root", default=r"K:\BaiduNetdiskDownload\USDailyOptions")
+    onboard_cmd.add_argument("--parquet-root", default="data/parquet")
+    onboard_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    onboard_cmd.add_argument("--routes-path", default="config/data_source_routes.yaml")
+    onboard_cmd.add_argument("--state-root", default="data/onboarding")
+    onboard_cmd.add_argument("--workers", type=int, default=4)
+    onboard_cmd.set_defaults(func=onboard)
 
     args = parser.parse_args()
     args.func(args)

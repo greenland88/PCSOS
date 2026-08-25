@@ -90,6 +90,12 @@ class PCSDataAccess:
                 manifest = self._read_manifest(self.manifest_path)
                 if not manifest.empty and "dataset" in manifest and manifest.dataset.astype(str).str.startswith("options_").any():
                     dataset = str(manifest.loc[manifest.dataset.astype(str).str.startswith("options_"), "dataset"].iloc[0])
+                else:
+                    # Explicit isolated option stores use the canonical v2
+                    # physical layout even before their first manifest row is
+                    # written. This keeps incremental onboarding resumable
+                    # without weakening production route resolution.
+                    dataset = "options_v2"
             return dataset, self.manifest_path, self.parquet_root
         # ``options`` is the logical name and resolves through the configured
         # per-ticker route. Physical dataset names are an internal routing

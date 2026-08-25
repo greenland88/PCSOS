@@ -1,0 +1,15 @@
+research_id: xom_entry_structure_discovery_train_20260825
+ticker: XOM
+research_mode: NEW_ENTRY
+hypothesis: Descriptive discovery of XOM PIT-observable entry structures after a zero-trade current-strategy replay.
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition: {precursor: PIT_FEATURE_STATE, confirmation: DESCRIPTIVE_ONLY, creates_new_entry_dates: true}
+entry_date_rule: {rule: descriptive_feature_date_only_no_signal_execution}
+date_range: {start: '2018-01-01', end: '2025-12-31'}
+split_policy: {name: TRAIN_ONLY, train_end: '2025-12-31'}
+contract_selection_policy: {mode: NOT_RUN_UNTIL_SIGNAL_FROZEN, as_of_only: true}
+lifecycle_policy: {source: canonical_lifecycle_adapter, no_future_selection: true}
+frozen_parameters: {}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false
