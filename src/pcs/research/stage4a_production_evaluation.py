@@ -209,7 +209,9 @@ def evaluate_partition(
         out["primary_reason"] = pd.Series(dtype="string")
         return out
     output: list[dict[str, Any]] = []
-    for row in source.to_dict("records"):
+    order_columns = [c for c in ("date", "ticker", "expiration", "short_strike", "long_strike", "opportunity_id") if c in source.columns]
+    ordered = source.sort_values(order_columns, kind="mergesort") if order_columns else source
+    for row in ordered.to_dict("records"):
         try:
             evaluated = row_evaluator(row)
             if evaluated.get("opportunity_id") != row["opportunity_id"]:
