@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pcs.data.daily_provider import DailyDataProvider
+from pcs.data.access import PCSDataAccess
 from pcs.research.credit_stop import run_backtest
 
 WINDOWS = {
@@ -28,9 +28,8 @@ def chunks(start, end):
         yield lo.normalize(), hi.normalize()
         cur += 1
 
-def load_stock(provider, symbol, end):
-    frames = [pd.read_parquet(p) for p in sorted((Path("data/parquet/daily") / f"symbol={symbol}").rglob("*.parquet"))]
-    x = pd.concat(frames, ignore_index=True).sort_values("date").drop_duplicates("date")
+def load_stock(access, symbol, end):
+    x = access.read_prices(symbol, None, end).sort_values("date").drop_duplicates("date")
     x["date"] = pd.to_datetime(x["date"]).dt.normalize()
     return x[x.date <= pd.Timestamp(end)].copy()
 
@@ -54,9 +53,9 @@ def key_frame(df):
     return df[cols].sort_values(cols[:5]).reset_index(drop=True)
 
 def equivalence_test(symbol="QQQ", start="2026-01-02", end="2026-03-31"):
-    provider = DailyDataProvider()
-    stock = provider.build_daily_series(symbol, end)
-    bench = provider.build_daily_series("QQQ", end)
+    access = PCSDataAccess()
+    stock = load_stock(access, symbol, end)
+    bench = load_stock(access, "QQQ", end)
     old = flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=start, end=end, backend="duckdb")["trades"], symbol)
     parts = []
     for lo, hi in chunks(start, end):
@@ -72,9 +71,9 @@ def run_symbol(symbol):
     out = ROOT / "qualified" / symbol
     out.mkdir(parents=True, exist_ok=True)
     checkpoint = ROOT / "checkpoints.jsonl"
-    provider = DailyDataProvider()
-    stock = load_stock(provider, symbol, end)
-    bench = load_stock(provider, "QQQ", end)
+    access = PCSDataAccess()
+    stock = load_stock(access, symbol, end)
+    bench = load_stock(access, "QQQ", end)
     for lo, hi in chunks(start, end):
         name = f"{lo:%Y-%m}.parquet"
         target = out / name
