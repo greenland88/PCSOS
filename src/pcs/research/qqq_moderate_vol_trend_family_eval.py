@@ -1,7 +1,10 @@
 """Four-year descriptive evaluation of the frozen H005 family."""
 from pathlib import Path
 import json
+import os
+import uuid
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 ROOT = Path("research_outputs/qqq_entry_discovery_agent_v1")
 ART = ROOT / "artifacts"
@@ -23,10 +26,21 @@ def run():
     d.trade_date = pd.to_datetime(d.trade_date).dt.normalize()
     # Frozen from the prior TRAIN descriptive screen; no new thresholds.
     family = d[d.close_sma200_atr.between(0.0879, 8.109, inclusive="right") & d.vol_pct_rank.between(0.429, 0.753, inclusive="right")].copy()
-    family["episode_id"] = (family.trade_date.diff().dt.days.fillna(999) > 4).cumsum()
+    sessions = pd.DatetimeIndex(PCSDataAccess().read_prices("QQQ", d.trade_date.min(), d.trade_date.max()).date).normalize()
+    positions = {day: i for i, day in enumerate(sessions)}
+    family["session_index"] = family.trade_date.map(positions)
+    if family["session_index"].isna().any():
+        raise ValueError("EPISODE_SESSION_CALENDAR_MISSING")
+    family["episode_id"] = family.session_index.diff().fillna(999).ne(1).cumsum()
     entries = family.groupby("episode_id", as_index=False).first()
     out = {"module":"pcs.research.qqq_moderate_vol_trend_family_eval", "version":"v1", "status":"DESCRIPTIVE_ONLY", "data_source":"PCS_CANONICAL_DATA", "research_mode":"EXISTING_TRADE", "family":"H005_TREND_CONFIRMED_MODERATE_VOLATILITY", "frozen_rule":"0.0879 < close_sma200_atr <= 8.109 AND 0.429 < vol_pct_rank <= 0.753", "qualifying_dates":int(len(family)), "independent_episodes":int(len(entries)), "all_dates":metric(family), "one_entry_per_episode":metric(entries), "year_metrics":{str(y):metric(g) for y,g in entries.groupby(entries.trade_date.dt.year)}, "threshold_mining":False, "validation_read":False, "final_oos_read":False, "production_changes":False, "reason_codes":["PIT_SAFE_FEATURES","FROZEN_FAMILY","ONE_ENTRY_PER_EPISODE","DESCRIPTIVE_ONLY"]}
-    (ART / "moderate_vol_trend_family_eval.json").write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+    target = ART / "moderate_vol_trend_family_eval.json"
+    temp = ART / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     print(json.dumps(out, indent=2, default=str))
     return out
 
