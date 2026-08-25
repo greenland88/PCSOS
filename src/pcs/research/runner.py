@@ -128,7 +128,10 @@ class ResearchRunner:
 
     def __init__(self, spec: ResearchSpec, *, output_dir: str | Path = "research_outputs"):
         self.spec = validate_rule_set(validate_population_routing(spec))
-        self.output_dir = Path(output_dir) / self.spec.research_id
+        root = Path(output_dir)
+        if not root.is_absolute():
+            root = REPO_ROOT / root
+        self.output_dir = root / self.spec.research_id
         assert_research_output(self.output_dir)
 
     @classmethod
