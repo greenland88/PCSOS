@@ -155,9 +155,10 @@ def audit_ohlcv_coverage(symbol: str, required_dates: Iterable, provider=None) -
                 "route_access": route,
                 "available": not missing}
     except (FileNotFoundError, ValueError) as exc:
+        route = "LEGACY_PROVIDER_INJECTED" if provider is not None else "PCSDataAccess.read_prices"
         return {"ticker": symbol.upper(), "coverage_start": None, "coverage_end": None,
                 "missing_trading_dates": [str(d.date()) for d in dates], "source": None,
-                "route_access": "DailyDataProvider.build_daily_series", "available": False,
+                "route_access": route, "available": False,
                 "error": str(exc)}
 
 
