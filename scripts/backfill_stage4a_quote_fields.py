@@ -1,6 +1,7 @@
 """Backfill exact frozen spread quotes from canonical routed options data."""
 from __future__ import annotations
 import json
+import os
 from pathlib import Path
 import pandas as pd
 from pcs.data.access import PCSDataAccess
@@ -23,7 +24,12 @@ def backfill(path: Path, ticker: str) -> dict:
     out=d.drop(columns=[c for c in drop_fields if c in d.columns]).merge(sm[keys+["short_strike","short_bid","short_ask","option_volume","open_interest"]], left_on=["date","expiration","short_strike"], right_on=["trade_date","expiration","short_strike"], how="left").drop(columns=["trade_date"])
     out=out.merge(lg[keys+["long_strike","long_bid","long_ask","long_volume","long_open_interest"]], left_on=["date","expiration","long_strike"], right_on=["trade_date","expiration","long_strike"], how="left").drop(columns=["trade_date"])
     out["bid_ask_pct"]=(pd.to_numeric(out.short_ask)-pd.to_numeric(out.short_bid))/((pd.to_numeric(out.short_ask)+pd.to_numeric(out.short_bid))/2).clip(lower=1e-12)
-    out.to_parquet(path,index=False)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        out.to_parquet(temp, index=False)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
     fields=["short_bid","short_ask","long_bid","long_ask","long_volume","long_open_interest"]
     return {"ticker":ticker,"rows":len(out),"missing":{f:int(out[f].isna().sum()) for f in fields},"ranges":{f:[float(out[f].min()),float(out[f].max())] for f in fields},"source":"data/parquet/options_v2","exact_identity":True}
 
