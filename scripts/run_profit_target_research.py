@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from pcs.research.annualized_metrics import annualized_performance_metrics
+from pcs.data.access import PCSDataAccess
 
 REPO_ROOT=Path(__file__).resolve().parents[1]
 OUT=REPO_ROOT/"research_outputs/profit_target_research_20260820"; OUT.mkdir(parents=True,exist_ok=True)
@@ -20,7 +21,7 @@ def make_id(r):
 def load_candidates(t):
     source=REPO_ROOT/"research_outputs/nvda_v2_v2_replay.parquet" if t=="NVDA" else CAND/f"{t}_full_post2020_2d.parquet"; x=pd.read_parquet(source).copy(); x["date"]=pd.to_datetime(x.date).dt.normalize(); x["expiration"]=pd.to_datetime(x.expiration).dt.normalize(); x["candidate_id"]=x.apply(make_id,axis=1); return x
 
-def one_trade(c, marks, target):
+def one_trade(c, marks, target, sessions):
     m=marks.sort_values("mark_date"); m=m[m.quote_available.eq(True)&m.spread_mark.notna()]
     initial=float(getattr(c,"initial_credit",getattr(c,"credit",np.nan)))
     if initial<=0 or not np.isfinite(initial): return {"excluded_invalid_credit":True}
@@ -33,7 +34,8 @@ def one_trade(c, marks, target):
         if len(m): chosen=m.iloc[-1]; reason="DATA_END"
         else: return {"excluded_no_marks":True}
     exit_mark=float(chosen.spread_mark); capture=(initial-exit_mark)/initial; entry=pd.Timestamp(c.date); exitd=pd.Timestamp(chosen.mark_date)
-    return {"ticker":c.ticker,"candidate_id":c.candidate_id,"profit_target":target,"entry_date":entry,"expiration_date":c.expiration,"short_strike":c.short_strike,"long_strike":c.long_strike,"initial_credit":initial,"exit_date":exitd,"exit_reason":reason,"exit_spread_mark":exit_mark,"realized_pnl":(initial-exit_mark)*100,"profit_capture_pct_at_exit":capture,"holding_calendar_days":(exitd-entry).days,"holding_trading_days":int(len(pd.bdate_range(entry,exitd))),"profit_target_hit":reason=="PROFIT_TARGET","stopped":reason=="STOP","expired":reason=="EXPIRATION","planned_loss":getattr(c,"planned_loss",np.nan),"collateral":getattr(c,"theoretical_max_loss",np.nan),"mfe":np.nan,"mae":np.nan}
+    trading_days = int(((sessions > entry) & (sessions <= exitd)).sum())
+    return {"ticker":c.ticker,"candidate_id":c.candidate_id,"profit_target":target,"entry_date":entry,"expiration_date":c.expiration,"short_strike":c.short_strike,"long_strike":c.long_strike,"initial_credit":initial,"exit_date":exitd,"exit_reason":reason,"exit_spread_mark":exit_mark,"realized_pnl":(initial-exit_mark)*100,"profit_capture_pct_at_exit":capture,"holding_calendar_days":(exitd-entry).days,"holding_trading_days":trading_days,"profit_target_hit":reason=="PROFIT_TARGET","stopped":reason=="STOP","expired":reason=="EXPIRATION","planned_loss":getattr(c,"planned_loss",np.nan),"collateral":getattr(c,"theoretical_max_loss",np.nan),"mfe":np.nan,"mae":np.nan}
 
 def metrics(g):
     pnl=pd.to_numeric(g.realized_pnl); wins=pnl[pnl>0]; losses=pnl[pnl<0]
@@ -56,10 +58,10 @@ def main():
     allrows=[]; counts={}
     lifecycle=pd.read_parquet(PHASE0/"lifecycle_marks.parquet"); mark_map={k:g for k,g in lifecycle.groupby("candidate_id",sort=False)}
     for t in TICKERS:
-        c=load_candidates(t); counts[t]=len(c)
+        c=load_candidates(t); counts[t]=len(c); sessions=pd.DatetimeIndex(PCSDataAccess().read_prices(t).date).normalize()
         for target in TARGETS:
             for r in c.itertuples(index=False):
-                x=one_trade(r,mark_map.get(r.candidate_id,lifecycle.iloc[0:0]),target)
+                x=one_trade(r,mark_map.get(r.candidate_id,lifecycle.iloc[0:0]),target,sessions)
                 if "ticker" in x: allrows.append(x)
     trades=pd.DataFrame(allrows); trades.to_parquet(OUT/"profit_target_trade_results.parquet",index=False); summary=pd.DataFrame([metrics(g) for _,g in trades.groupby(["ticker","profit_target"])]); summary.to_csv(OUT/"profit_target_summary.csv",index=False); summary.to_json(OUT/"profit_target_summary.json",orient="records",indent=2); yearly=trades.assign(year=pd.to_datetime(trades.entry_date).dt.year).groupby(["ticker","profit_target","year"],as_index=False).agg(annual_pnl=("realized_pnl","sum"),trade_count=("candidate_id","count"),annual_expectancy=("realized_pnl","mean"),profit_factor=("realized_pnl",lambda s: float(s[s>0].sum()/abs(s[s<0].sum())) if (s<0).any() else None),stop_rate=("stopped","mean")); yearly.to_csv(OUT/"profit_target_yearly_summary.csv",index=False)
     stability=[]
