@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import hashlib
+import os
+import uuid
 from typing import Any
 
 import pandas as pd
@@ -33,6 +35,30 @@ class BasePoolConfig:
 
 def _reason_list(*values: str) -> list[str]:
     return sorted({v for v in values if v})
+
+
+def _atomic_frame(frame: pd.DataFrame, path: Path, *, csv: bool = False) -> None:
+    """Publish a pool artifact only after the complete file is written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        if csv:
+            frame.to_csv(tmp, index=False)
+        else:
+            frame.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _atomic_json(payload: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _tier(score: float) -> str:
@@ -132,15 +158,19 @@ def build_base_pool(*, access: PCSDataAccess | None = None, daily_manifest: str 
     pool1["instrument_type"] = "UNKNOWN"; pool1["calculation_version"] = "base-pool-v2"; pool1["last_checked_at"] = datetime.now(timezone.utc).isoformat()
     members = sorted(pool1.loc[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE"), "symbol"].astype(str).str.upper())
     membership_hash = hashlib.sha256("\n".join(members).encode()).hexdigest()
-    pool1.to_parquet(pool1_dir / "all_symbols_status.parquet", index=False); pool1.to_csv(pool1_dir / "all_symbols_status.csv", index=False)
-    pool1[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE")].to_parquet(pool1_dir / "underlying_pool.parquet", index=False); pool1[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE")].to_csv(pool1_dir / "underlying_pool.csv", index=False)
+    _atomic_frame(pool1, pool1_dir / "all_symbols_status.parquet"); _atomic_frame(pool1, pool1_dir / "all_symbols_status.csv", csv=True)
+    eligible_pool1 = pool1[pool1.pool1_status.eq("UNDERLYING_ELIGIBLE")]
+    _atomic_frame(eligible_pool1, pool1_dir / "underlying_pool.parquet"); _atomic_frame(eligible_pool1, pool1_dir / "underlying_pool.csv", csv=True)
     pool1_manifest = {"pool_version":"pool1-v1", "calculation_version":"base-pool-v2", "total_universe":len(pool1), "eligible_count":len(members), "watch_count":int((pool1.pool1_status=="UNDERLYING_WATCH").sum()), "rejected_count":int((pool1.pool1_status=="UNDERLYING_REJECTED").sum()), "blocked_count":int((pool1.pool1_status=="DATA_BLOCKED").sum()), "membership_hash":membership_hash, "membership_symbols":members, "POOL_1_FROZEN":True}
-    (pool1_dir / "manifest.json").write_text(json.dumps(pool1_manifest, indent=2), encoding="utf-8")
-    pool2 = out[out.symbol.isin(members)].copy(); pool2["pool_1_membership_hash"] = membership_hash; pool2.to_parquet(pool2_dir / "all_options_status.parquet", index=False); pool2.to_csv(pool2_dir / "all_options_status.csv", index=False); pool2[pool2.pool_status.eq("PCS_BASE_POOL")].to_parquet(pool2_dir / "pcs_base_pool.parquet", index=False); pool2[pool2.pool_status.eq("PCS_BASE_POOL")].to_csv(pool2_dir / "pcs_base_pool.csv", index=False)
-    (pool2_dir / "manifest.json").write_text(json.dumps({"pool_version":"pool2-v1", "calculation_version":"base-pool-v2", "POOL_1_INPUT_HASH":membership_hash, "pool_1_symbol_count":len(members), "evaluated_count":len(pool2), "base_pool_count":int((pool2.pool_status=="PCS_BASE_POOL").sum())}, indent=2), encoding="utf-8")
-    out.to_parquet(target / "pcs_base_pool.parquet", index=False); out.to_csv(target / "pcs_base_pool.csv", index=False)
+    _atomic_json(pool1_manifest, pool1_dir / "manifest.json")
+    pool2 = out[out.symbol.isin(members)].copy(); pool2["pool_1_membership_hash"] = membership_hash
+    _atomic_frame(pool2, pool2_dir / "all_options_status.parquet"); _atomic_frame(pool2, pool2_dir / "all_options_status.csv", csv=True)
+    eligible_pool2 = pool2[pool2.pool_status.eq("PCS_BASE_POOL")]
+    _atomic_frame(eligible_pool2, pool2_dir / "pcs_base_pool.parquet"); _atomic_frame(eligible_pool2, pool2_dir / "pcs_base_pool.csv", csv=True)
+    _atomic_json({"pool_version":"pool2-v1", "calculation_version":"base-pool-v2", "POOL_1_INPUT_HASH":membership_hash, "pool_1_symbol_count":len(members), "evaluated_count":len(pool2), "base_pool_count":int((pool2.pool_status=="PCS_BASE_POOL").sum())}, pool2_dir / "manifest.json")
+    _atomic_frame(out, target / "pcs_base_pool.parquet"); _atomic_frame(out, target / "pcs_base_pool.csv", csv=True)
     summary = {"module":"pcs.data.base_pool", "version":"1.0", "status":"COMPLETED", "data_source":"PCS_CANONICAL_DATA", "total_symbols_discovered":int(len(out)), "underlying_checked":int(len(out)), "underlying_eligible":int((out.underlying_status == "UNDERLYING_ELIGIBLE").sum()), "underlying_rejected":int(out.underlying_status.eq("UNDERLYING_REJECTED").sum()), "underlying_blocked":int(out.underlying_status.eq("DATA_BLOCKED").sum()), "options_checked":int(out.underlying_status.eq("UNDERLYING_ELIGIBLE").sum()), "options_eligible":int(out.options_status.eq("OPTIONS_ELIGIBLE").sum()), "options_rejected":int(out.options_status.eq("OPTIONS_REJECTED").sum()), "options_blocked":int(out.options_status.eq("OPTIONS_DATA_BLOCKED").sum()), "base_pool_count":int(elig.sum()), "tier_a_count":int((out.tier == "TIER_A").sum()), "tier_b_count":int((out.tier == "TIER_B").sum()), "tier_c_count":int((out.tier == "TIER_C").sum()), "rules_changed":False, "pcs_strategy_tested":False, "profitability_tested":False, "final_oos_read":False, "generated_at":datetime.now(timezone.utc).isoformat()}
-    summary["artifact_sha256"] = hashlib.sha256((target / "pcs_base_pool.parquet").read_bytes()).hexdigest(); (target / "pool_manifest.json").write_text(json.dumps(summary, indent=2), encoding="utf-8"); return summary
+    summary["artifact_sha256"] = hashlib.sha256((target / "pcs_base_pool.parquet").read_bytes()).hexdigest(); _atomic_json(summary, target / "pool_manifest.json"); return summary
 
 
 __all__ = ["BasePoolConfig", "build_base_pool"]
