@@ -38,8 +38,19 @@ def read_derived(dataset, root="data/parquet/derived", filters=None):
     return out.reset_index(drop=True)
 
 def cache_matches(dataset, filters, versions, root="data/parquet/derived"):
+    schema = DERIVED_SCHEMAS.get(dataset)
+    if schema is None:
+        return False
+    required_versions = [field for field in schema["version_fields"] if field != "created_at"]
+    # Cache callers must declare every identity component.  A partial query
+    # is not evidence that the source/configuration used to build the artifact
+    # is still current.
+    if any(field not in versions for field in required_versions):
+        return False
     out=read_derived(dataset,root,filters)
     if out.empty:
+        return False
+    if any(field not in out.columns for field in required_versions + ["created_at"]):
         return False
     for key, value in versions.items():
         if key not in out.columns:
