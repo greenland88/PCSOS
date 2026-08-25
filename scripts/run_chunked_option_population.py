@@ -31,11 +31,17 @@ def shard_identity(symbol, start, end):
                "backtest_sha256": hashlib.sha256((RUNNER.parents[1] / "src/pcs/research/credit_stop.py").read_bytes()).hexdigest()}
     payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
     return payload
+def output_sha(path):
+    h=hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda:f.read(1024*1024), b""): h.update(block)
+    return h.hexdigest()
 
 def valid_shard(path, symbol, start, end):
     try:
         sidecar = path.with_suffix(".identity.json")
-        if not sidecar.exists() or json.loads(sidecar.read_text()) != shard_identity(symbol, start, end):
+        saved=json.loads(sidecar.read_text()) if sidecar.exists() else {}
+        if saved.get("inputs") != shard_identity(symbol, start, end) or saved.get("output_sha256") != output_sha(path):
             return False
         frame = pd.read_parquet(path)
         return len(frame) == 0 or (frame.ticker.astype(str).eq(symbol).all() and
@@ -107,7 +113,7 @@ def run_symbol(symbol):
         result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")
         frame = flatten(result["trades"], symbol)
         frame.to_parquet(target, index=False)
-        target.with_suffix(".identity.json").write_text(json.dumps(shard_identity(symbol, lo, hi), indent=2), encoding="utf-8")
+        target.with_suffix(".identity.json").write_text(json.dumps({"inputs": shard_identity(symbol, lo, hi), "output_sha256": output_sha(target)}, indent=2), encoding="utf-8")
         record = {"ticker": symbol, "chunk_start": str(lo.date()), "chunk_end": str(hi.date()), "status": "COMPLETE", "qualified_trades": len(frame), "elapsed_seconds": round(time.perf_counter() - t0, 3), "source_option_files_touched": result["quality"].get("quarter_files_opened"), "rows_scanned": result["quality"].get("option_rows_loaded")}
         with checkpoint.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
