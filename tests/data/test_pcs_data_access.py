@@ -27,6 +27,23 @@ def test_data_root_can_be_configured_without_changing_callers(tmp_path, monkeypa
     assert access.manifest_path == data_root / "manifests" / "storage_manifest.csv"
 
 
+def test_relative_configured_routes_follow_data_root(tmp_path):
+    data_root = tmp_path / "canonical-data"
+    access = PCSDataAccess(
+        data_root=data_root,
+        source_routes={"options": {"by_symbol": {
+            "ZZZ": {"dataset": "options_v2",
+                    "manifest_path": "data/manifests/options_v2.csv",
+                    "parquet_root": "data/parquet"}
+        }}},
+    )
+
+    _, manifest, parquet = access._resolve_route("options", "ZZZ")
+
+    assert manifest == data_root / "manifests" / "options_v2.csv"
+    assert parquet == data_root / "parquet"
+
+
 def _options(rows):
     return pd.DataFrame(rows, columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "last", "bid", "ask", "bid_iv", "ask_iv", "open_interest", "volume", "delta", "gamma", "vega", "theta", "rho"])
 

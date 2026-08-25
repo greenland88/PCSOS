@@ -90,6 +90,16 @@ class PCSDataAccess:
         with path.open("r", encoding="utf-8") as handle:
             return yaml.safe_load(handle) or {}
 
+    def _storage_path(self, value: str | Path) -> Path:
+        """Resolve configured ``data/...`` routes under the active data root."""
+        path = Path(value)
+        if path.is_absolute() or not self._uses_default_store:
+            return path
+        parts = path.parts
+        if parts and parts[0].lower() == "data":
+            return self.data_root.joinpath(*parts[1:])
+        return path
+
     def _resolve_route(self, dataset: str, symbol: str) -> tuple[str, Path, Path]:
         # Explicit manifests are isolated stores (tests, fixtures, or
         # caller-provided datasets); production per-ticker routes must not
@@ -121,8 +131,8 @@ class PCSDataAccess:
             )
         return (
             str(route.get("dataset", dataset)),
-            Path(route.get("manifest_path", self.manifest_path)),
-            Path(route.get("parquet_root", self.parquet_root)),
+            self._storage_path(route.get("manifest_path", self.manifest_path)),
+            self._storage_path(route.get("parquet_root", self.parquet_root)),
         )
 
     @staticmethod
