@@ -79,11 +79,32 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
     breadth: dict[tuple[str, pd.Timestamp, pd.Timestamp, float], tuple[int, int, dict]] = {}
     engine = DecisionEngine(load_rules())
     portfolio = {"planned_risk": 0.0, "planned_loss": 0.0,
-                 "bucket_risk": {}, "ticker_risk": {}}
+                 "bucket_risk": {}, "ticker_risk": {}, "_reservations": []}
+
+    def release_finished(day: pd.Timestamp) -> None:
+        """Release reservations whose authoritative lifecycle has ended."""
+        active = []
+        for reservation in portfolio["_reservations"]:
+            if reservation["end_date"] < day:
+                amount = reservation["amount"]
+                portfolio["planned_loss"] -= amount
+                portfolio["planned_risk"] = portfolio["planned_loss"]
+                bucket = reservation["bucket"]
+                ticker = reservation["ticker"]
+                portfolio["bucket_risk"][bucket] -= amount
+                portfolio["ticker_risk"][ticker] -= amount
+                if portfolio["bucket_risk"][bucket] <= 0:
+                    portfolio["bucket_risk"].pop(bucket, None)
+                if portfolio["ticker_risk"][ticker] <= 0:
+                    portfolio["ticker_risk"].pop(ticker, None)
+            else:
+                active.append(reservation)
+        portfolio["_reservations"] = active
 
     def evaluate(row: dict) -> dict:
         ticker = str(row["ticker"]).upper()
         day, expiry = pd.Timestamp(row["date"]).normalize(), pd.Timestamp(row["expiration"]).normalize()
+        release_finished(day)
         market = market_states.get((ticker, day)) or market_states.get(("MARKET", day))
         if market is None:
             return _blocked(row, DecisionRowStatus.BLOCKED_CONTEXT_UNAVAILABLE, "CANONICAL_MARKET_STATE_UNAVAILABLE")
@@ -141,6 +162,10 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
             bucket = str(row.get("correlation_bucket", "UNKNOWN"))
             portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
             portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
+            end_value = row.get("exit_date", row.get("expiration"))
+            end_date = pd.Timestamp(end_value).normalize() if pd.notna(end_value) else expiry
+            portfolio["_reservations"].append({"amount": reserved, "bucket": bucket,
+                                                "ticker": ticker, "end_date": end_date})
         return {**row, "status": (DecisionRowStatus.EVALUATED_ACCEPTED if accepted else DecisionRowStatus.EVALUATED_REJECTED).value,
                 "accepted": accepted, "reason_codes": list(decision.reason_codes),
                 "primary_reason": decision.reason_codes[0] if decision.reason_codes else decision.reason,
