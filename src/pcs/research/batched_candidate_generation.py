@@ -35,9 +35,12 @@ def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def _config_hash(symbol: str, start: str, end: str) -> str:
+def _config_hash(symbol: str, start: str, end: str, daily_path: str | Path, benchmark_path: str | Path) -> str:
     payload = {"symbol": symbol.upper(), "start": start, "end": end,
-               "producer": "pcs.research.entry_candidate_universe.generate_observable_candidates"}
+               "producer": "pcs.research.entry_candidate_universe.generate_observable_candidates",
+               "daily_identity": _sha(Path(daily_path)) if Path(daily_path).exists() else "MISSING",
+               "benchmark_identity": _sha(Path(benchmark_path)) if Path(benchmark_path).exists() else "MISSING",
+               "code_identity": {str(p): _sha(p) for p in (Path(__file__), Path(__file__).with_name("entry_candidate_universe.py"))}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -45,7 +48,7 @@ def run_batched_candidates(symbol: str, daily_path: str | Path, benchmark_path: 
                            start: str, end: str, output_root: str | Path,
                            workers: int = 8, resume: bool = True) -> dict[str, Any]:
     symbol = symbol.upper(); out = Path(output_root); batches = out / "batches"
-    state_path = out / "candidate_checkpoint.json"; cfg = _config_hash(symbol, start, end)
+    state_path = out / "candidate_checkpoint.json"; cfg = _config_hash(symbol, start, end, daily_path, benchmark_path)
     periods = [(p.year, p.quarter) for p in pd.period_range(pd.Timestamp(start), pd.Timestamp(end), freq="Q")]
     state = json.loads(state_path.read_text()) if resume and state_path.exists() else {"symbol": symbol, "config_hash": cfg, "batches": {}}
     if state.get("config_hash") != cfg: raise ValueError("CANDIDATE_CONFIG_HASH_CHANGED")
