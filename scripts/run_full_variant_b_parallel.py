@@ -8,10 +8,11 @@ from pcs.research.variant_b_replay import replay_dates, ReplayPolicy
 import pcs.research.entry_candidate_universe as m
 from pcs.data.access import PCSDataAccess
 
-ROOT = Path("data/raw/daily_forward_adjusted")
-OUT = Path("data/parquet/research/variant_b_full")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPO_ROOT / "data/raw/daily_forward_adjusted"
+OUT = REPO_ROOT / "data/parquet/research/variant_b_full"
 OUT.mkdir(parents=True, exist_ok=True)
-CAL = "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"
+CAL = str(REPO_ROOT / "data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv")
 TICKERS = ["AAPL", "AMD", "AMZN", "AVGO", "CRM", "GOOGL", "HOOD", "META",
            "MSFT", "MU", "NFLX", "NVDA", "QQQ", "SPY", "TSLA", "VRT"]
 
@@ -47,7 +48,7 @@ def run_ticker(ticker: str) -> dict:
     start_year = 2021 if ticker == "HOOD" else 2020
     dates = list(stock.loc[stock.date.dt.year.ge(start_year), "date"])
     frame = replay_dates(
-        ticker, daily, f"data/raw/options/{ticker}", dates,
+        ticker, daily, REPO_ROOT / f"data/raw/options/{ticker}", dates,
         benchmark, CAL,
         benchmark_symbol="QQQ",
         policy=ReplayPolicy(reject_expiration_crossing=False,
