@@ -82,7 +82,11 @@ def run_year(year: int) -> dict:
     if marker.exists():
         try:
             saved = json.loads(marker.read_text(encoding="utf-8"))
-            if saved.get("identity") == identity and saved.get("status") == "COMPLETED_QUOTE_ADAPTATION_ONLY":
+            candidate_path = target / "candidates.parquet"
+            if (saved.get("identity") == identity
+                    and saved.get("status") == "COMPLETED_QUOTE_ADAPTATION_ONLY"
+                    and candidate_path.is_file()
+                    and saved.get("candidates_sha256") == _digest(candidate_path)):
                 return saved | {"resumed": True}
         except (OSError, ValueError, TypeError):
             pass
@@ -145,7 +149,7 @@ def run_year(year: int) -> dict:
             quote_rows_adapted += 1
         except LifecycleAdapterError:
             lifecycle_failures += 1
-    summary = {"year":year,"status":"COMPLETED_QUOTE_ADAPTATION_ONLY","identity":identity,"identity_inputs":identity_payload,"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"candidate_spreads":len(candidates),"selected_entries":0,"quote_rows_adapted":quote_rows_adapted,"lifecycles_completed":0,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False,"execution_semantics":"quote_adaptation_only_no_lifecycle_exit_or_pnl"}
+    summary = {"year":year,"status":"COMPLETED_QUOTE_ADAPTATION_ONLY","identity":identity,"identity_inputs":identity_payload,"candidates_sha256":_digest(target / "candidates.parquet"),"trading_days":len(year_dates),"feature_ready_days":feature_ready,"setup_eligible_days":len(setup_dates),"candidate_spreads":len(candidates),"selected_entries":0,"quote_rows_adapted":quote_rows_adapted,"lifecycles_completed":0,"lifecycle_failures":lifecycle_failures,"seconds":round(time.perf_counter()-started,2),"price_basis_version":"price_basis_v1","corporate_action_version":"authoritative_corporate_action_registry_v1","data_source":"PCS_CANONICAL_DATA","resumed":False,"execution_semantics":"quote_adaptation_only_no_lifecycle_exit_or_pnl"}
     _atomic_json(marker, summary)
     return summary
 
