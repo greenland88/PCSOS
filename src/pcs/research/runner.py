@@ -416,7 +416,17 @@ class ResearchRunner:
                     _strict_flag(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
                     for row in cached.to_dict("records")
                 )
-                if cache_valid and len(cached) == len(daily) and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker} and cached_ready > 0:
+                expected_dates = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
+                cached_dates = pd.to_datetime(cached["date"], errors="coerce").dt.normalize() if "date" in cached else pd.Series(dtype="datetime64[ns]")
+                exact_calendar = (
+                    len(cached) == len(daily)
+                    and cached_dates.notna().all()
+                    and not cached_dates.duplicated().any()
+                    and set(cached_dates) == set(expected_dates)
+                )
+                if (cache_valid and exact_calendar
+                        and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker}
+                        and cached_ready > 0):
                     states = cached.to_dict("records")
                     cache_action = "REUSED_COMPATIBLE"
                 else:
