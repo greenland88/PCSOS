@@ -57,11 +57,16 @@ class Stage4ALifecycleReplayAdapter:
             raise LifecycleAdapterError("BASE_REPLAY_FAILURE") from exc
         if result.get("status") == "COMPLETE" and result.get("exit_date") is None:
             raise LifecycleAdapterError("EXIT_RESULT_INVALID")
+        exit_date = pd.Timestamp(result["exit_date"]) if result.get("exit_date") is not None else None
+        observed_dates = pd.DatetimeIndex(pd.to_datetime(rows.mark_date)).normalize().unique()
+        holding_dates = observed_dates[observed_dates <= exit_date] if exit_date is not None else observed_dates[:0]
         result.update({"candidate_id": cid, "ticker": candidate["ticker"], "opened": True,
                        "entry_date": pd.Timestamp(candidate["date"]), "expiration_date": expected[1],
                        "initial_credit": float(candidate["initial_credit"]),
                        "holding_calendar_days": (pd.Timestamp(result["exit_date"]) - pd.Timestamp(candidate["date"])).days if result.get("exit_date") is not None else None,
-                       "holding_trading_days": int(len(pd.DatetimeIndex(pd.to_datetime(rows.mark_date)).unique())) if result.get("exit_date") is not None else None,
-                       "stopped": bool(result.get("stop_triggered", False)), "expired": result.get("exit_reason") == "TIME_EXIT",
+                       "holding_trading_days": int(len(holding_dates)) if exit_date is not None else None,
+                       "stopped": bool(result.get("stop_triggered", False)),
+                       "time_exit": result.get("exit_reason") == "TIME_EXIT",
+                       "expired": bool(exit_date is not None and exit_date >= expected[1]) or result.get("exit_reason") == "EXPIRATION",
                        "mfe": result.get("mfe"), "mae": result.get("mae"), "lifecycle_observation_count": result.get("mark_count")})
         return result

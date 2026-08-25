@@ -7,9 +7,12 @@ class JournalRepository:
         self.conn = conn
 
     def record_decision(self, decision: Decision):
+        payload = decision.model_dump_json()
         self.conn.execute(
-            "INSERT INTO decisions(ticker, action, payload) VALUES (?, ?, ?)",
-            (decision.ticker, decision.action.value, decision.model_dump_json()),
+            """INSERT INTO decisions(ticker, action, payload)
+               SELECT ?, ?, ?
+               WHERE NOT EXISTS (SELECT 1 FROM decisions WHERE payload = ?)""",
+            (decision.ticker, decision.action.value, payload, payload),
         )
         self.conn.commit()
 

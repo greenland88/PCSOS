@@ -125,27 +125,25 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     configured_start = pd.Timestamp(spec.date_range.get("start")) if spec.date_range.get("start") else None
     boundary_start = pd.Timestamp(resolve_executable_start_date(spec.ticker, access.source_routes))
     requested_start = max(configured_start, boundary_start) if configured_start is not None else boundary_start
-    feature_start = requested_start - pd.Timedelta(days=300)
+    daily_source = access.resolve_source("daily", spec.ticker)
+    option_source = access.resolve_source("options", spec.ticker)
+    requested_end = pd.Timestamp(spec.date_range["end"]) if spec.date_range.get("end") else pd.Timestamp(daily_source.last_date)
+    split_train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else requested_end
+    train_end = min(split_train_end, requested_end, pd.Timestamp(daily_source.last_date))
+    execution_dates = spec.signal_definition.get("execution_dates") or []
+    for value in execution_dates:
+        day = pd.Timestamp(value).normalize()
+        if day < requested_start or day > train_end:
+            raise ValueError(f"RESEARCH_BOUNDARY_VIOLATION: execution date {day.date()} outside {requested_start.date()}..{train_end.date()}")
+    feature_start = max(pd.Timestamp(daily_source.first_date), requested_start - pd.Timedelta(days=300))
     daily = access.read_prices(spec.ticker, start_date=feature_start)
     daily["date"] = pd.to_datetime(daily.date).dt.normalize(); daily = daily.sort_values("date").reset_index(drop=True)
-    explicit_scope = bool(
-        spec.split_policy.get("name")
-        or spec.split_policy.get("train_end")
-        or spec.split_policy.get("validation_start")
-        or spec.split_policy.get("validation_end")
-        or spec.date_range.get("split")
-        or spec.date_range.get("start")
-        or spec.date_range.get("end")
-    )
-    train_end = pd.Timestamp(spec.split_policy["train_end"]) if spec.split_policy.get("train_end") else daily.date.max()
-    option_source = access.resolve_source("options", spec.ticker)
     requested_start = requested_start or pd.Timestamp(daily.date.min())
     # Keep the canonical feature warm-up, but do not load pre-scope history
     # into the replay process. The clean population remains the sole signal
     # population; this is only an I/O boundary for the requested period.
     train_start = max(pd.Timestamp(daily.date.min()), requested_start - pd.Timedelta(days=300))
     train = daily[daily.date.between(train_start, train_end)].copy()
-    execution_dates = spec.signal_definition.get("execution_dates")
     if execution_dates:
         allowed = {pd.Timestamp(x).normalize() for x in execution_dates}
         execution_date_set = allowed
@@ -167,7 +165,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
             if opts.duplicated(key, keep=False).any():
                 raise LifecycleAdapterError("CANONICAL_QUOTE_DUPLICATE_IDENTITY")
     else:
-        opts = access.read_quotes(spec.ticker, frame["date"].min(), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
+        opts = access.read_quotes(spec.ticker, max(train.date.min(), pd.Timestamp(option_source.first_date)), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
     # The canonical reader returns the full options schema.  The replay only
     # needs these fields; retaining Greeks and provenance columns through the
     # per-day grouping otherwise multiplies memory use without changing any
