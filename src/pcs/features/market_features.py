@@ -49,8 +49,10 @@ def calculate_market_features(rows: list[dict], predictability_weights: dict | N
             + (crossings <= 4).astype(int) * weights["low_crossings"]
             + (vol_rank >= 0.4).astype(int) * weights["stable_volatility"]
         )
-        g["predictability_score"] = score.clip(0, 100)
-        g["trend_score"] = (score * 0.7 + (close > g["dma50"]).astype(int) * 30).clip(0, 100)
+        feature_ready = g["dma200"].notna() & g["atr14"].notna() & g["realized_vol_20d"].notna()
+        g["feature_ready"] = feature_ready
+        g["predictability_score"] = score.clip(0, 100).where(feature_ready)
+        g["trend_score"] = (score * 0.7 + (close > g["dma50"]).astype(int) * 30).clip(0, 100).where(feature_ready)
         g["symbol"] = symbol
         out.extend(g.where(pd.notnull(g), None).to_dict("records"))
     return out
