@@ -15,7 +15,9 @@ import pandas as pd
 import yaml
 
 from pcs.data.access import PCSDataAccess
-from pcs.research.credit_stop import load_quotes_duckdb, load_spread_quotes_duckdb, track_trade
+from pcs.research.credit_stop import load_quotes_canonical, load_spread_quotes_canonical, track_trade
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 from pcs.research.rules.core import RuleStatus, canonical_hash, evaluate_chain, resolve_scenario
 from pcs.research.rules.registry import RULE_REGISTRY
 from run_spy_qqq_modular_monthly_replay import select, context
@@ -35,9 +37,7 @@ def features(access: PCSDataAccess) -> pd.DataFrame:
     d = access.read_prices("QQQ", "2010-01-01", "2026-05-31").copy()
     d["date"] = pd.to_datetime(d.date).dt.normalize()
     d = d.sort_values("date").reset_index(drop=True)
-    prev = d.close.shift(1)
-    tr = pd.concat([(d.high - d.low), (d.high - prev).abs(), (d.low - prev).abs()], axis=1).max(axis=1)
-    d["atr14"] = tr.rolling(14, min_periods=14).mean()
+    d["atr14"] = calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
     d["ret5"] = d.close.pct_change(5)
     d["ret10"] = d.close.pct_change(10)
     d["drawdown60"] = d.close / d.close.rolling(60, min_periods=60).max() - 1
@@ -51,15 +51,16 @@ def selector_daily(access: PCSDataAccess) -> pd.DataFrame:
     d = access.read_prices("QQQ", "2010-01-01", "2026-05-31").copy()
     d["date"] = pd.to_datetime(d.date).dt.normalize()
     d = d.sort_values("date").drop_duplicates("date")
-    prev = d.close.shift(1)
-    tr = pd.concat([(d.high - d.low), (d.high - prev).abs(), (d.low - prev).abs()], axis=1).max(axis=1)
-    d["atr"] = tr.rolling(14, min_periods=14).mean()
+    d["atr"] = calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
     return d
 
 
 def first_per_episode(d: pd.DataFrame, mask: pd.Series) -> list[pd.Timestamp]:
     x = d.loc[mask].sort_values("date").copy()
-    x["episode_id"] = (x.date.diff().dt.days.fillna(999) > 4).cumsum()
+    sessions = pd.DatetimeIndex(d.date).normalize()
+    session_positions = {day: i for i, day in enumerate(sessions)}
+    positions = x["date"].map(lambda value: session_positions.get(pd.Timestamp(value).normalize(), -1))
+    x["episode_id"] = positions.diff().fillna(999).ne(1).cumsum()
     return [pd.Timestamp(v).normalize() for v in x.groupby("episode_id", as_index=False).first().date]
 
 
@@ -78,7 +79,7 @@ def replay(strategy: str, dates: list[pd.Timestamp], scenario: dict, boundary: p
     for day in dates:
         row = ds.loc[day].copy()
         row["date"] = day
-        q, meta = load_quotes_duckdb(":memory:", "QQQ", day, day)
+        q, meta = load_quotes_canonical("QQQ", day, day)
         choices = select(q, row)
         opened = False
         for short, long, width in choices:
@@ -90,7 +91,7 @@ def replay(strategy: str, dates: list[pd.Timestamp], scenario: dict, boundary: p
             opened = True
             exp = pd.Timestamp(short["Expiry Date"]).normalize()
             end = min(exp, boundary)
-            marks = load_spread_quotes_duckdb(":memory:", "QQQ", day, end, short["Expiry Date"], [short.Strike, long.Strike])
+            marks, _ = load_spread_quotes_canonical("QQQ", day, end, short["Expiry Date"], [short.Strike, long.Strike])
             path = track_trade({"date": day, "expiration": short["Expiry Date"], "short_strike": short.Strike, "long_strike": long.Strike}, marks, short, long, cx["credit"])
             events = [v for v in path["events"].values() if v is not None]
             exit_date = min(events) if events else (marks["Trade Date"].max() if not marks.empty else pd.NaT)
