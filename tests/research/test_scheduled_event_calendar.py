@@ -40,6 +40,11 @@ def test_earnings_symbol_validation():
     assert validate_events(e).iloc[0].validation_status=="FAIL"
 
 
+def test_new_issuer_ticker_is_not_rejected_by_closed_allowlist():
+    e=normalize_source_events(pd.DataFrame({"event_type":["EARNINGS"],"event_date":["2025-01-01"],"symbol":["MSFT"]}),"x","v1","x")
+    assert validate_events(e).iloc[0].validation_status=="PASS"
+
+
 def test_offline_csv_ingestion_requires_provenance(tmp_path):
     raw=tmp_path/"raw"; (raw/"fomc").mkdir(parents=True)
     pd.DataFrame({"event_date":["2025-01-29"],"event_type":["FOMC"],"source_url":["fed://2025"],"source_name":["Fed"],"source_version":["2025"],"provenance_status":["VERIFIED"]}).to_csv(raw/"fomc"/"f.csv",index=False)

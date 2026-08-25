@@ -68,7 +68,12 @@ def validate_events(events: pd.DataFrame) -> pd.DataFrame:
         try: pd.Timestamp(r.event_date)
         except Exception: issues.append("INVALID_DATE")
         if r.event_type not in valid_types: issues.append("INVALID_EVENT_TYPE")
-        if r.event_type == "EARNINGS" and r.symbol not in {"NVDA","AMZN","TSLA"}: issues.append("INVALID_EARNINGS_SYMBOL")
+        # Earnings are ticker-scoped; do not maintain a closed list of three
+        # issuers.  Known broad ETFs are not issuers, while any otherwise
+        # well-formed ticker (including newly onboarded MSFT) is admissible.
+        non_issuer_symbols = {"SPY", "QQQ", "SOXX"}
+        if r.event_type == "EARNINGS" and (pd.isna(r.symbol) or not str(r.symbol).strip() or str(r.symbol).upper() in non_issuer_symbols):
+            issues.append("INVALID_EARNINGS_SYMBOL")
         if r.get("session") not in valid_sessions and pd.notna(r.get("session")): issues.append("INVALID_SESSION")
         findings.append({"row":i,"validation_status":"PASS" if not issues else "FAIL","issues":";".join(issues)})
     out=pd.DataFrame(findings)
