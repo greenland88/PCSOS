@@ -48,8 +48,9 @@ def load_quotes(root="data/raw/options/NVDA", start=START, end=END):
 
 def canonical_option_glob(symbol: str, root: str | Path | None = None) -> str:
     """Resolve one ticker to the canonical partitioned Parquet source."""
-    access = PCSDataAccess(manifest_path="data/manifests/storage_manifest.csv" if root is None else "data/manifests/storage_manifest_options_v2.csv",
-                           parquet_root="data/parquet" if root is None else Path(root).parent)
+    access = (PCSDataAccess() if root is None else
+              PCSDataAccess(manifest_path="data/manifests/storage_manifest_options_v2.csv",
+                            parquet_root=Path(root).parent))
     return access.resolve_source("options", symbol, START, END).path
 
 def load_quotes_canonical(symbol: str, start, end, root: str | Path | None = None):
@@ -59,10 +60,9 @@ def load_quotes_canonical(symbol: str, start, end, root: str | Path | None = Non
     # facade called ``read_quotes(..., dataset='options')`` and could resolve a
     # legacy CSV manifest for a newly onboarded ticker, causing a binary
     # Parquet file to be opened by a text reader downstream.
-    access = PCSDataAccess(
-        manifest_path="data/manifests/storage_manifest.csv" if root is None else "data/manifests/storage_manifest_options_v2.csv",
-        parquet_root="data/parquet" if root is None else Path(root).parent,
-    )
+    access = (PCSDataAccess() if root is None else
+              PCSDataAccess(manifest_path="data/manifests/storage_manifest_options_v2.csv",
+                            parquet_root=Path(root).parent))
     try:
         # Resolve the ticker's configured authoritative dataset first.  This
         # preserves legacy canonical routes for existing symbols while using
