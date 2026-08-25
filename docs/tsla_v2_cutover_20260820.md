@@ -1,5 +1,10 @@
 # TSLA v2 controlled cutover — BLOCKED
 
+> Cutover incident snapshot from 2026-08-20. The counts below describe that
+> attempted source state, not automatic current readiness. Re-check the active
+> route, manifest, duplicate/conflict audit, and `PCSDataAccess.read_quotes`
+> before any new TSLA replay.
+
 TSLA cutover was attempted first and stopped before production route activation.
 
 The target `options_v2` source covered 2010-07-08 through 2026-07-31 and had

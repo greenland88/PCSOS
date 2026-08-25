@@ -36,6 +36,62 @@ Observed causes:
 - Require an authoritative artifact before classifying the strategy. Until
   then the only valid classification is `MSFT_ENGINEERING_BLOCKED`.
 
+## Canonical commands
+
+Run from the repository root with the branch's source tree on `PYTHONPATH`:
+
+```powershell
+$env:PYTHONPATH = "src"
+
+# Validate the ResearchSpec and effective rule set without reading market data.
+python -m pcs.research run `
+  --spec config/research/templates/msft_current_strategy_replay.yaml `
+  --dry-run
+
+# Build or resume the canonical PIT timeline and report data readiness only.
+python -m pcs.research run `
+  --spec config/research/templates/msft_current_strategy_replay.yaml `
+  --real-preflight
+
+# Execute only after readiness and bounded-equivalence checks pass.
+python -m pcs.research run `
+  --spec config/research/templates/msft_current_strategy_replay.yaml `
+  --execute
+```
+
+The canonical spec is TRAIN-only through `2025-12-31`, uses
+`outcome_horizon_policy=SPLIT_CUTOFF`, keeps `final_oos_access=false`, and does
+not allow production changes. Its research replay intentionally sets
+`regime_gate=false`; this is a declared research rule-set choice, not a change
+to the production `DecisionEngine`.
+
+## Resume and cache contract
+
+- The runner evaluates 250-date chunks with at most four shared-cache threads.
+- Chunk checkpoints live beneath
+  `research_outputs/msft_current_strategy_replay_active_options_v2_20260824/pit_chunks/<identity>/`.
+- The identity binds ticker, exact daily source identity, date range, trend
+  feature config, research rule set, and corporate-action input.
+- Valid chunks are reused. Missing chunks are recomputed. Corrupt, short, stale,
+  or identity-mismatched chunks are not accepted.
+- The assembled `pit_state_timeline.parquet` is written through a validated
+  temporary file and atomically replaced.
+- Completion of preflight is not a strategy result. Classification requires the
+  complete replay outputs and a CURRENT, hash-valid artifact manifest.
+
+## Acceptance checks
+
+Before calling the engineering blocker resolved, record all of the following:
+
+1. bounded old-path versus cached-path exact equality;
+2. fresh versus resumed timeline equality;
+3. one-worker versus four-worker deterministic equality;
+4. peak memory and elapsed time;
+5. canonical daily/options route identities;
+6. complete funnel and lifecycle counts;
+7. CURRENT artifact-manifest validation;
+8. confirmation that FINAL OOS and production config were untouched.
+
 ## Future improvement
 
 The next performance step is an incremental/vectorized PIT snapshot builder

@@ -3,6 +3,10 @@
 As of 2026-08-20, AMD has no established robust PCS edge. This is a research
 conclusion only; no production strategy or eligibility rule was changed.
 
+> Dated research snapshot. Later AMD current-strategy or cross-ticker transfer
+> runs do not rewrite these results. Use only a CURRENT, hash-valid artifact
+> with matching spec/code/data identities for present-tense claims.
+
 | Area | Status |
 |---|---|
 | Standard PCS | `RESEARCH — NO ROBUST EDGE CURRENTLY ESTABLISHED` |

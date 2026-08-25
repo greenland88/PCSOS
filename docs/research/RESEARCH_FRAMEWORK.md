@@ -11,6 +11,13 @@ research runner. Research is descriptive and cannot promote itself to production
 | `NEW_ENTRY` | complete ticker point-in-time daily calendar | recovery, reclaim, stabilization, support rejection, any new-entry hypothesis | starting from a frozen ledger |
 | `CONTRACT_VARIANT` | frozen entry dates | strike, delta, ATR, DTE, width, credit, liquidity variants | changing entry dates |
 
+`CURRENT_STRATEGY_REPLAY` is a guarded plumbing/reproduction mode for an
+explicit current rule set over a ticker calendar. It is not a fourth
+hypothesis-discovery mode and must not be used to evade the three population
+routes above. It requires `population_source.type=ticker_daily_calendar`,
+explicit rules, canonical options/lifecycle dependencies, and the same FINAL
+OOS and production-write guards.
+
 Correct: `BREAKDOWN t0 -> RECOVERY t1 -> NEW PCS ENTRY t1` is `NEW_ENTRY`.
 Incorrect: filtering a frozen PCS candidate ledger to test whether recovery at
 t1 created an entry that baseline never generated. A frozen candidate ledger
@@ -21,6 +28,15 @@ break down at t0 and satisfy recovery/confirmation at t1.
 
 Every run uses a validated ResearchSpec. Mode is never inferred from the easiest
 artifact. Missing or contradictory specifications stop as `SPEC_INCOMPLETE`.
+
+## Command phases
+
+- `--dry-run` validates intent, population routing, and effective rules. It
+  does not establish data readiness.
+- `--real-preflight` reads declared canonical dependencies and may build or
+  resume PIT state, but does not execute an unfrozen signal or lifecycle.
+- `--execute` is allowed only after the spec and ticker readiness pass. It
+  still cannot read unauthorized FINAL OOS or write production/frozen state.
 
 ## PIT and split boundaries
 

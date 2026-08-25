@@ -9,5 +9,7 @@ Date: 2026-08-19
 - Scope: Safe Strike multiplier only
 
 No DTE, liquidity, credit, scoring, entry, exit, Planned Loss, portfolio, or
-other PCS rule was changed. Live activation remains a separate controlled
-change.
+other PCS rule was changed by this record. `config/pcs_rules.yaml` now carries
+2.3 as the research-selected default and 2.5 as the conservative alternative.
+External live deployment state is not established by this repository; activation
+and any later change remain separately controlled.

@@ -1,87 +1,139 @@
 # PCS Decision Assistant V1
 
-Deterministic-first Put Credit Spread decision support. V1 reads mock/provider data, evaluates hard rules, scores candidates and current positions, records decisions to SQLite, and displays results in Streamlit.
+PCS OS is a deterministic-first Put Credit Spread decision and research
+system. It provides rule-based entry and position evaluation, canonical
+historical data access, point-in-time trend context, guarded research replay,
+paper-trading snapshots, audit metadata, and local persistence.
 
-It is not an automated trading bot and contains no live trading/write methods.
+It is not an automated trading bot. The repository contains no live order
+placement or broker write path.
 
-## Quick Start
+## Start here
+
+Read these files before changing the system:
+
+1. [`AGENTS.md`](AGENTS.md) — mandatory safety and research boundaries.
+2. [`docs/PCS_CAPABILITY_ROADMAP.md`](docs/PCS_CAPABILITY_ROADMAP.md) — canonical capability registry.
+3. [`PROJECT_STATUS.md`](PROJECT_STATUS.md) — current engineering state and blockers.
+4. [`docs/README.md`](docs/README.md) — documentation map and source-of-truth rules.
+
+## Install and verify
 
 ```powershell
 pip install -e .[dev]
 pytest
-streamlit run dashboard/app.py
 ```
 
-Import downloaded daily CSV files into the per-symbol historical store and
-DuckDB-readable Parquet store:
+The current branch does not ship the former Streamlit dashboard. Use the CLI,
+typed Python APIs, and persisted JSON/CSV/Parquet artifacts described below.
+
+## Local decision and data commands
 
 ```powershell
-python -m pcs.data.import_daily_snapshot
-```
+# Evaluate mock candidates and positions through the deterministic rule engine.
+pcs-lite analyze-mock
 
-The importer keeps `data/manifests/daily_snapshot_import_manifest.csv`, so
-unchanged files that were already imported successfully are skipped automatically.
+# Collect read-only option-chain snapshots from a local Hood JSON export.
+pcs-lite collect-options --hood-json .\hood_snapshot.json QQQ NVDA MSFT
 
-Download one YouTube transcript into the research folder:
+# Run synthetic portfolio stress scenarios.
+pcs-lite stress .\portfolio.json
 
-```powershell
-pcs-lite download-youtube-subtitles "https://www.youtube.com/watch?v=VIDEO_ID"
-```
-
-Run the daily PCS paper-trading simulator:
-
-```powershell
+# Persist a deterministic daily paper-trading snapshot; no orders are placed.
 pcs-lite simulate-daily --as-of 2026-08-18
+
+# Incrementally update canonical daily/options_v2 inputs from local inbound files.
+pcs-lite update-data MSFT
 ```
 
-The simulator uses the deterministic PCS rule engine and writes compact daily
-outputs under `research_outputs/paper_trading/YYYY-MM-DD/`:
+`simulate-daily` writes under `research_outputs/paper_trading/YYYY-MM-DD/`:
 
-- `paper_trading_snapshot.json` for the agent-ready typed result envelope
-- `paper_trading_summary.csv` for daily action and risk totals
-- `paper_trading_snapshots.csv` for one row per candidate or position
+- `paper_trading_snapshot.json` — typed, agent-ready result envelope;
+- `paper_trading_summary.csv` — daily action and risk totals;
+- `paper_trading_snapshots.csv` — one row per candidate or position.
 
-It records simulated decisions only. It does not place orders, does not add live
-trading methods, and keeps planned risk separate from theoretical maximum loss.
+Planned risk is kept separate from theoretical maximum loss.
 
-## Current Scope
+## Canonical data boundary
 
-- Config-driven PCS capital, liquidity, regime, sizing, and roll rules
-- Pydantic models for candidates, positions, market state, options, and decisions
-- Mock provider with QQQ, NVDA, MSFT, and AMZN sample data
-- Market regime, liquidity, strike, opportunity, position sizing, and roll engines
-- Daily paper-trading simulator for reviewing rule behavior over time
-- Trend Engine Phase 1 base indicators through the `pcs.trend` public API
-- SQLite journal schema
-- Streamlit dashboard for V1 demonstration
+Research and replay code must read ticker-aware data through `PCSDataAccess`.
+Routes are defined in `config/data_source_routes.yaml`; manifests and source
+identity are part of artifact validation. Live research readers must not bypass
+this boundary with direct raw CSV or Parquet reads.
 
-## Trend Engine
+New ticker admission is fail-closed and follows:
 
-Phase 1 provides only base technical indicators for standard OHLCV pandas DataFrames:
+`DATA_DISCOVERY -> DAILY_VALIDATION -> OPTIONS_VALIDATION -> PIT_FEATURE_BUILD -> STATE_TIMELINE_BUILD -> CONTRACT_SELECTION_SMOKE_TEST -> LIFECYCLE_SMOKE_TEST -> RESEARCH_READY`
 
-- `sma20`
-- `sma50`
-- `sma200`
-- `atr14`
-- `adx14`
-- `rsi14`
+See [`docs/architecture/ticker_onboarding.md`](docs/architecture/ticker_onboarding.md)
+and [`docs/architecture/pcs_ticker_readiness.md`](docs/architecture/pcs_ticker_readiness.md).
 
-External PCS modules should call `calculate_base_indicators` and `TrendIndicatorConfig` from `pcs.trend`. TA-Lib is isolated inside the Trend Engine indicator implementation so the rest of PCS does not depend on the indicator library directly.
+## Guarded research runner
 
-This phase does not implement Trend Score, A/B/C/D/E trend grades, HH/HL, relative strength, pullback, support, thesis failure, PCS entry logic, roll logic, or backtesting.
+All new research uses a validated `ResearchSpec` through one entry point:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m pcs.research run --spec config/research/templates/new_entry.yaml --dry-run
+python -m pcs.research run --spec config/research/templates/new_entry.yaml --real-preflight
+python -m pcs.research run --spec config/research/templates/new_entry.yaml --execute
+```
+
+Research modes have strict population semantics:
+
+- `EXISTING_TRADE` — frozen trades/candidates; management or filtering only.
+- `NEW_ENTRY` — complete point-in-time ticker calendar; may discover new dates.
+- `CONTRACT_VARIANT` — frozen dates; may reselect contracts only.
+- `CURRENT_STRATEGY_REPLAY` — full-calendar plumbing replay using an explicit rule set.
+
+FINAL OOS and production writes are blocked unless explicitly authorized. A
+research result never promotes itself to production. See
+[`docs/research/UNIFIED_RESEARCH_RUNNER.md`](docs/research/UNIFIED_RESEARCH_RUNNER.md).
+
+## Trend engine
+
+The `pcs.trend` public API now includes the complete deterministic trend-context
+pipeline, not only base indicators:
+
+- base indicators: SMA20/50/200, ATR14, ADX14, RSI14;
+- moving-average structure and slopes;
+- confirmed swing / market structure analysis;
+- relative strength;
+- trend cleanliness and predictability;
+- pullback and support analysis;
+- point-in-time trend snapshots;
+- interpretation and trend scoring.
+
+External modules should import the public functions from `pcs.trend`, including
+`calculate_base_indicators`, `build_trend_snapshot`, `interpret_trend`, and
+`score_trend`. TA-Lib remains isolated behind the indicator implementation.
+
+## Current capability surface
+
+- Config-driven capital, regime, event, DTE, liquidity, Safe Strike, credit,
+  portfolio, sizing, profit, hold, close, and roll rules.
+- Pydantic and typed result models with stable actions and reason codes.
+- Canonical daily/options access, routing, manifests, provenance, corporate
+  action price basis, readiness checks, and incremental updates.
+- Entry Contract v2 and point-in-time trend/support context.
+- Unified research runner, artifact identity/lifecycle checks, strategy-transfer
+  templates, lifecycle replay, and annualized reporting.
+- SQLite journal, Parquet/CSV/JSON artifacts, paper-trading simulation, and
+  synthetic stress tests.
+
+For exact completion and blocker status, use the capability roadmap and project
+status rather than inferring readiness from module existence.
 
 ## Safety
 
-The rule engine is authoritative. AI helpers may classify news or thesis risk as structured JSON, but they cannot override hard stops such as RED market regime, poor liquidity, broken thesis, or portfolio risk limits.
+The deterministic rule engine is authoritative. AI helpers may classify news or
+thesis risk into structured outputs, but cannot override hard gates, portfolio
+risk limits, position sizing, artifact identity, data readiness, or OOS guards.
 
-## Agent-Ready Interfaces
+Decision actions are limited to `OPEN`, `WAIT`, `HOLD`, `CLOSE`, and `ROLL`.
 
-PCS OS is designed to become callable by AI agents without making the AI the
-calculation or risk authority. New core modules and storage interfaces must expose
-typed, JSON-serializable Python APIs with stable enums, reason codes, version
-metadata, and audit/replay identifiers. CSV files and reports remain presentation
-adapters rather than the sole interface.
+## Agent-ready interfaces
 
-See [Agent-Ready Interface Contract](docs/architecture/agent_ready_interfaces.md)
-for the required result envelope, storage boundary, compatibility rules, and
-planned MCP/REST/local-agent tool surface.
+Core modules expose typed, JSON-serializable Python APIs. CSVs, reports, and
+logs are presentation adapters, not the only interface. See
+[`docs/architecture/agent_ready_interfaces.md`](docs/architecture/agent_ready_interfaces.md).

@@ -4,6 +4,11 @@ This is the canonical registry of implemented, in-progress, planned, and
 research-only PCS capabilities. It is an orientation and governance document;
 it does not change production strategy rules.
 
+Repository status summary: `PROJECT_STATUS.md`. Documentation map:
+`docs/README.md`. Dated ticker reports and incident files are evidence
+snapshots and must not override this registry, active routes/manifests, or
+CURRENT artifact identities.
+
 Status values are `COMPLETE`, `IN_PROGRESS`, `BLOCKED`, `PLANNED`, and
 `RESEARCH_ONLY`.
 
@@ -14,6 +19,7 @@ Status values are `COMPLETE`, `IN_PROGRESS`, `BLOCKED`, `PLANNED`, and
 | `PCSDataAccess` | COMPLETE | Canonical ticker-aware access boundary with manifest and bounded Parquet/DuckDB reads. |
 | `options_v2` | IN_PROGRESS | Canonical dataset and reader exist; ticker cutovers and full validation remain incomplete. |
 | Ticker source routing | COMPLETE | Routes are configuration-driven; failed cutovers remain on their prior validated route. |
+| Ticker readiness gate | COMPLETE | Five strategy-neutral readiness flags plus manifest/provenance agreement; readiness is not profitability. |
 | Historical purchased vendor sources | COMPLETE | Ingestion is bounded at the raw-data boundary; provenance and replay metadata are retained. |
 | Batch 1 / Batch 2 source boundary | COMPLETE | Source batches remain distinct and are not silently merged into one unqualified population. |
 | Exact strike identity | COMPLETE | Full option identity, including fractional strikes, is preserved for duplicate and replay checks. |
@@ -23,6 +29,7 @@ Status values are `COMPLETE`, `IN_PROGRESS`, `BLOCKED`, `PLANNED`, and
 | Event readiness | COMPLETE | Strict PIT and ex-post historical modes are explicit and fail closed where evidence is unavailable. |
 | Stage 4A Entry Contract v2 | COMPLETE | All authoritative ticker populations have persisted v2 inputs, support states, PIT metadata, and exact identities. |
 | Stage 4A full replay readiness | COMPLETE | Readiness audit passed; full replay remains not yet run. |
+| Long-history PIT chunk/cache path | IN_PROGRESS | Bounded four-worker, 250-date checkpoint path exists; fresh/resume/parallel full equivalence and authoritative MSFT replay remain required. |
 | Ticker Bear-State Rule | IMPLEMENTED — RESEARCH VALIDATION REQUIRED | PIT-safe daily single-stock state (`NORMAL`, `WEAK_BEAR`, `BEAR_CONFIRMED`); separate from `MarketRegimeEngine` and not a production block. |
 | `breadth_positive` market input | COMPLETE — SEMANTICS VERSIONED | Legacy field name retained; current meaning is `SPY_QQQ_MARKET_CONFIRMATION` using SPY/QQQ close versus SMA50. It is not traditional constituent breadth. |
 

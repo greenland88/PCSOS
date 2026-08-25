@@ -3,6 +3,12 @@
 Status: `RESEARCH_INFRASTRUCTURE_ONLY`  
 Production changes: none.
 
+> Progress snapshot from the original incremental run. The counters below are
+> not a resume authority by themselves. Resume only from the current validated
+> progress artifact and per-batch manifests; if their identities do not match
+> current code/data, report `STALE_ARTIFACT` and rebuild through the canonical
+> path.
+
 ## Current progress
 
 - Total deterministic micro-batches: 5,547

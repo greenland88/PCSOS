@@ -2,6 +2,11 @@
 
 记录日期：2026-08-20
 
+> 历史问题快照，不是实时 blocker 清单。每项状态都必须用当前 active route、
+> manifest、source identity、CURRENT artifact 和回归测试重新验证。当前项目级
+> 状态以 `PROJECT_STATUS.md` 与 `docs/PCS_CAPABILITY_ROADMAP.md` 为准。
+> 不得因为后续代码或数据存在就自动把本文件中的问题标记为已解决。
+
 本文件记录当前 NVDA lifecycle observability 的数据与基础设施问题。不得据此修改生产策略、entry rules、stop rules、profit targets、Safe Strike、candidate population 或数据路由。
 
 ## ERROR-001 — 生命周期期权报价覆盖不足

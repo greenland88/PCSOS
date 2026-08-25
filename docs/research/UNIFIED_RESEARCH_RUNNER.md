@@ -7,6 +7,8 @@ $env:PYTHONPATH = "src"
 python -m pcs.research run --spec config/research/templates/new_entry.yaml --dry-run
 # canonical-data preflight (no signal/lifecycle execution)
 python -m pcs.research run --spec config/research/templates/new_entry.yaml --real-preflight
+# guarded execution after spec and ticker readiness pass
+python -m pcs.research run --spec config/research/templates/new_entry.yaml --execute
 ```
 
 `ResearchSpec` is machine-readable and must declare the mode, population,
@@ -24,11 +26,28 @@ Population routing is strict:
 - `CONTRACT_VARIANT` starts with frozen entry dates and may only reselect
   contracts.
 
+`CURRENT_STRATEGY_REPLAY` is a special full-calendar plumbing/reproduction
+mode with an explicit rule set. It is not a substitute for `NEW_ENTRY`
+discovery, `EXISTING_TRADE` management research, or `CONTRACT_VARIANT`
+contract research.
+
+## Phase semantics
+
+| Flag | Reads canonical data | Executes signal/contracts/lifecycle | Meaning |
+|---|---|---|---|
+| `--dry-run` | No | No | Spec, population, and rule validation only |
+| `--real-preflight` | Yes | No | Dependency/readiness and PIT-state evidence |
+| `--execute` | Yes | Yes, when authorized | Guarded research replay |
+
+A successful dry-run is not ticker readiness. A successful real preflight is
+not a strategy result. Only a complete execution with matching CURRENT artifact
+identity can support a replay claim.
+
 The runner emits the complete NEW_ENTRY funnel and identifies the first zero,
 affected count, exact reason, and remediation. Data adapters should pass
 counts obtained through `PCSDataAccess` and deterministic contract/lifecycle
 engines; the runner never guesses missing counts or substitutes a population.
-Outputs are dry-run research results under `research_outputs/<research_id>`. 
+Outputs are isolated research results under `research_outputs/<research_id>`.
 FINAL OOS access and production/frozen writes are blocked by default.
 
 The count sequence used in unit tests is explicitly synthetic fixture data and

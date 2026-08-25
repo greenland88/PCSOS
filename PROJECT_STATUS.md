@@ -1,6 +1,25 @@
 # Project Status
 
-Updated: 2026-08-19
+Updated: 2026-08-25
+
+This file summarizes repository state on `codex/msft-replay-clean`. The
+canonical capability registry is `docs/PCS_CAPABILITY_ROADMAP.md`; detailed
+audit findings remain in `SYSTEM_CORRECTNESS_AUDIT.md`. Module existence alone
+does not imply data readiness or strategy approval.
+
+## Current engineering state
+
+| Area | Status | Current boundary |
+|---|---|---|
+| Deterministic decision engine | IMPLEMENTED | No live order-placement path. |
+| Trend context pipeline | IMPLEMENTED | Indicators, MA structure, swings, relative strength, cleanliness, pullback, support, snapshots, interpretation, and scoring are exposed through `pcs.trend`. |
+| Canonical data access | IMPLEMENTED | Ticker-aware reads use `PCSDataAccess`, configured routes, manifests, provenance, and source identity. |
+| Ticker readiness | IMPLEMENTED / DATA-DEPENDENT | Research fails closed unless all required daily, options, PIT, contract, and lifecycle inputs are ready. |
+| Unified research runner | IMPLEMENTED | `ResearchSpec` population routing, FINAL OOS guard, isolated outputs, and artifact identity checks are active. |
+| Stage 4A readiness | COMPLETE | Full Stage 4A replay has not been claimed as completed. |
+| MSFT long-history replay | ENGINEERING_BLOCKED | The bounded four-worker PIT path exists; a complete authoritative artifact is still required before strategy classification. |
+| Repository bypass inventory | NOT COMPLETE | Remaining direct readers must be classified as canonical live readers, bounded bulk materialization, tests, or obsolete paths. |
+| Full canonical-data regression | ENVIRONMENT-DEPENDENT | A clean Git clone does not include local canonical data artifacts. |
 
 ## Safe Strike ATR Research
 
@@ -17,9 +36,11 @@ Canonical record: `research_outputs/safe_strike_atr_research_final.md`
 
 ## Current Boundary
 
-The research parameter is finalized at 2.3 ATR, but production/live PCS has not
-been switched. Any future production change must follow the approved rules
-configuration, documentation, and regression-test process.
+`config/pcs_rules.yaml` contains 2.3 ATR as the research-selected default and
+2.5 ATR as the conservative alternative. The configuration explicitly keeps
+live activation under separate control. Any deployment change must still use
+the approved configuration, documentation, and regression-test process; do not
+infer external live deployment state from this repository alone.
 
 ## Support Response / Buying Pressure
 
