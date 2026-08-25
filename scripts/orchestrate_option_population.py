@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json, subprocess, sys, time, threading
+import hashlib, json, os, subprocess, sys, time, threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import pandas as pd
@@ -28,6 +28,13 @@ def output_sha(path):
  with path.open('rb') as f:
   for block in iter(lambda:f.read(1024*1024),b''): h.update(block)
  return h.hexdigest()
+def atomic_json(path, value):
+ tmp=path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+ try:
+  tmp.write_text(json.dumps(value,indent=2,default=str),encoding='utf-8')
+  os.replace(tmp,path)
+ finally:
+  tmp.unlink(missing_ok=True)
 def months(a,b):
  c=pd.Timestamp(a).to_period('M'); z=pd.Timestamp(b).to_period('M')
  while c<=z:
@@ -53,9 +60,9 @@ def main():
     cp=subprocess.run([sys.executable,str(RUNNER),'--ticker',s,'--start',str(lo.date()),'--end',str(hi.date()),'--output',str(p)],capture_output=True,text=True,cwd=REPO_ROOT)
     stdout,stderr,code=cp.stdout,cp.stderr,cp.returncode
     if code==0 and p.exists():
-     p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
+     atomic_json(p.with_suffix('.identity.json'), {'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)})
      if valid(p,s,lo,hi): status='COMPLETE'; break
-   if status=='COMPLETE': p.with_suffix('.identity.json').write_text(json.dumps({'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)},indent=2),encoding='utf-8')
+   if status=='COMPLETE': atomic_json(p.with_suffix('.identity.json'), {'inputs':shard_identity(s,lo,hi),'output_sha256':output_sha(p)})
    rec={'ticker':s,'year_month':f'{lo:%Y-%m}','status':status,'row_count':len(pd.read_parquet(p)) if status=='COMPLETE' else 0,'output_path':str(p),'child_exit_code':code,'stdout':stdout[-2000:],'stderr':stderr[-2000:],'runtime_seconds':time.time()-start}
    with lock:
     with CK.open('a',encoding='utf-8') as f:f.write(json.dumps(rec,default=str)+'\n')
