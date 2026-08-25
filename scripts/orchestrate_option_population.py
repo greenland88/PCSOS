@@ -41,7 +41,9 @@ def main():
    for attempt in (1,2):
     cp=subprocess.run([sys.executable,str(RUNNER),'--ticker',s,'--start',str(lo.date()),'--end',str(hi.date()),'--output',str(p)],capture_output=True,text=True,cwd=REPO_ROOT)
     stdout,stderr,code=cp.stdout,cp.stderr,cp.returncode
-    if code==0 and valid(p,s,lo,hi): status='COMPLETE'; break
+    if code==0 and p.exists():
+     p.with_suffix('.identity.json').write_text(json.dumps(shard_identity(s,lo,hi),indent=2),encoding='utf-8')
+     if valid(p,s,lo,hi): status='COMPLETE'; break
    if status=='COMPLETE': p.with_suffix('.identity.json').write_text(json.dumps(shard_identity(s,lo,hi),indent=2),encoding='utf-8')
    rec={'ticker':s,'year_month':f'{lo:%Y-%m}','status':status,'row_count':len(pd.read_parquet(p)) if status=='COMPLETE' else 0,'output_path':str(p),'child_exit_code':code,'stdout':stdout[-2000:],'stderr':stderr[-2000:],'runtime_seconds':time.time()-start}
    with lock:
