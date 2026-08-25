@@ -90,5 +90,11 @@ def backfill(ticker: str) -> dict:
 
 if __name__ == "__main__":
     results = [backfill(t) for t in TICKERS]
-    (ROOT / "v2_backfill_audit.json").write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+    target = ROOT / "v2_backfill_audit.json"
+    temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     print(json.dumps(results, indent=2, default=str))
