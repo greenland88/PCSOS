@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 import json
 import hashlib
+import os
+import uuid
 import pandas as pd
 
 from pcs.entry.contract_v2 import ENTRY_CONTRACT_V2
@@ -25,6 +27,18 @@ class LifecycleReplay(Protocol):
 
 class MarketStateFactory(Protocol):
     def __call__(self, candidate: dict[str, Any]) -> Any: ...
+
+
+def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        frame.to_parquet(temp, index=False)
+        if len(pd.read_parquet(temp)) != len(frame):
+            raise RuntimeError("STAGE4A_OUTPUT_VALIDATION_FAILED")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def canonical_market_state_factory(path: str | Path = "data/derived/canonical_pit_market_states.parquet") -> MarketStateFactory:
@@ -160,9 +174,9 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
             status = "DATA_FAILURE" if isinstance(exc, LifecycleAdapterError) else "CONTRACT_FAILURE"
             decisions.append(_decision_record(row, status=status, reason=str(exc)))
     decisions_df, opened_df, results_df = map(pd.DataFrame, (decisions, opened, results))
-    decisions_df.to_parquet(config.output_dir / "stage4a_candidate_decisions.parquet", index=False)
-    opened_df.to_parquet(config.output_dir / "stage4a_opened_trades.parquet", index=False)
-    results_df.to_parquet(config.output_dir / "stage4a_trade_results.parquet", index=False)
+    _atomic_parquet(decisions_df, config.output_dir / "stage4a_candidate_decisions.parquet")
+    _atomic_parquet(opened_df, config.output_dir / "stage4a_opened_trades.parquet")
+    _atomic_parquet(results_df, config.output_dir / "stage4a_trade_results.parquet")
     summary = {"rows": len(population), "decisions": len(decisions_df), "opened": len(opened_df), "results": len(results_df), "decision_engine_evaluated": int((decisions_df.status == "REPLAYED").sum()) if len(decisions_df) else 0, "annualized": annualized_performance_metrics(results_df)}
     (config.output_dir / "stage4a_entry_funnel.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     if len(decisions_df):
