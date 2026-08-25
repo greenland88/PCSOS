@@ -16,6 +16,7 @@ from pcs.models.market import MarketState
 from pcs.models.trade import TradeCandidate
 from pcs.research.credit_stop import load_quotes_canonical, load_spread_quotes_canonical, track_trade
 from pcs.research.stage4a_context import HistoricalTrendContextProvider
+from pcs.research.variant_b_replay import _load_replay_calendar
 from scripts.run_spy_qqq_modular_monthly_replay import daily, select
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -39,7 +40,7 @@ def cand(t, day, s, l, width, ctx, n, later):
  credit=float(s['Bid Price'])-float(l['Ask Price']); expiry=pd.Timestamp(s['Expiry Date']).normalize()
  return TradeCandidate(ticker=t,expiration=str(expiry.date()),short_strike=float(s.Strike),long_strike=float(l.Strike),underlying_price=close,credit=credit,dte=int(s.DTE),short_delta=float(s.Delta) if pd.notna(s.Delta) else 0.0,expected_move=0.0,expected_move_1d=0.0,support_level=float(getattr(snap.support,'nearest_support') or 0.0),option_volume=int(s['Volume']),open_interest=int(s['Open Interest']),bid_ask_pct=(float(s['Ask Price'])-float(s['Bid Price']))/max((float(s['Ask Price'])+float(s['Bid Price']))/2,1e-12),nearby_strikes=n,later_expirations=later,business_quality=0,trend_score=float(getattr(ctx['trend_score'],'score',0)),support_score=0,sector_alignment=0,price_confirmation=0,atr=atr,bid=float(s['Bid Price']),ask=float(s['Ask Price']),long_bid=float(l['Bid Price']),long_ask=float(l['Ask Price']),long_option_volume=int(l['Volume']),long_open_interest=int(l['Open Interest']),entry_date=str(day.date()),trend_snapshot=snap,trend_interpretation=ctx['interpretation'],trend_score_result=ctx['trend_score'])
 def run(split, start, end):
- engine=DecisionEngine(load_rules()); calendar=pd.read_csv(EVENT); mkt=states(); rows=[]; trades=[]; providers={t:HistoricalTrendContextProvider(t) for t in ('SPY','QQQ')}
+ engine=DecisionEngine(load_rules()); calendar=_load_replay_calendar(EVENT); mkt=states(); rows=[]; trades=[]; providers={t:HistoricalTrendContextProvider(t) for t in ('SPY','QQQ')}
  for t in ('SPY','QQQ'):
   d=daily(t); d=d[(d.date>=start)&(d.date<=end)]
   for r in d.itertuples():
