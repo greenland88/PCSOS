@@ -25,6 +25,9 @@ def annualized_performance_metrics(
     """Return reporting metrics without modifying or replaying trades."""
     data = frame.copy()
     complete = data[data.get("status", pd.Series("COMPLETE", index=data.index)).eq("COMPLETE")] if len(data) else data
+    if len(complete) and "exit_date" in complete:
+        complete = complete.assign(_realized_date=pd.to_datetime(complete.exit_date, errors="coerce")) \
+            .sort_values(["_realized_date", "date"] if "date" in complete else ["_realized_date"], kind="mergesort")
     pnl = pd.to_numeric(complete.get("realized_pnl", pd.Series(dtype=float)), errors="coerce").dropna()
     if test_start_date is None:
         dates = pd.to_datetime(data.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()

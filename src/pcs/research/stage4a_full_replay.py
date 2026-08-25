@@ -102,10 +102,18 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     if lifecycle_replay is None:
         from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter
         lifecycle_replay = Stage4ALifecycleReplayAdapter.from_phase0()
-    portfolio = portfolio or {"planned_risk": 0, "bucket_risk": {}}
+    portfolio = dict(portfolio or {})
+    portfolio.setdefault("planned_risk", portfolio.get("planned_loss", 0.0))
+    portfolio.setdefault("planned_loss", portfolio.get("planned_risk", 0.0))
+    portfolio.setdefault("bucket_risk", {})
+    portfolio.setdefault("ticker_risk", {})
     market_state_factory = market_state_factory or canonical_market_state_factory()
     decisions, opened, results = [], [], []
-    for row in population.to_dict("records"):
+    ordered = population.sort_values(
+        [c for c in ("date", "ticker", "expiration", "short_strike", "long_strike", "candidate_id") if c in population.columns],
+        kind="mergesort",
+    )
+    for row in ordered.to_dict("records"):
         event_state = str(row.get("event_state", ""))
         if event_state == config.event_unsupported_state or not bool(row.get("historical_replay_eligible", True)):
             decisions.append(_decision_record(row, status="EVENT_WINDOW_UNSUPPORTED", reason=config.event_unsupported_state, historical_replay_eligible=False)); continue
@@ -140,6 +148,13 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
             if lifecycle.get("identity") not in (None, _identity(row)):
                 decisions[-1].update({"status": "IDENTITY_FAILURE", "reason": "STAGE4A_ACCEPTED_SPREAD_IDENTITY_MISMATCH", "accepted": False}); continue
             opened.append(trade); results.append({**trade, **lifecycle})
+            reserved = float(getattr(decision, "planned_loss", 0.0) or getattr(decision, "planned_risk", 0.0) or 0.0)
+            portfolio["planned_loss"] += reserved
+            portfolio["planned_risk"] = portfolio["planned_loss"]
+            bucket = str(row.get("correlation_bucket", "UNKNOWN"))
+            portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
+            ticker = str(row.get("ticker", "UNKNOWN")).upper()
+            portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
         except Exception as exc:
             from pcs.research.stage4a_lifecycle import LifecycleAdapterError
             status = "DATA_FAILURE" if isinstance(exc, LifecycleAdapterError) else "CONTRACT_FAILURE"
