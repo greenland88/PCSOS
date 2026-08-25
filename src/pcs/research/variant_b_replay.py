@@ -231,7 +231,7 @@ def build_targeted_quote_index(symbol: str, requests: list[dict[str, Any]], db_p
 
 
 def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, pd.DataFrame],
-                            policy: ReplayPolicy) -> dict[str, Any]:
+                            policy: ReplayPolicy, trading_sessions=None) -> dict[str, Any]:
     """Replay using cached leg histories; semantics match _replay_lifecycle."""
     identity = pd.Timestamp(candidate["expiration"]).normalize()
     short = quote_index.get((identity, "p", float(candidate["short_strike"])))
@@ -267,7 +267,13 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
     profit = min(profits, default=None, key=lambda x: x[0])
     forced = None
     if policy.pre_earnings_exit_days is not None and candidate.get("earnings_date") is not None:
-        cutoff = pd.Timestamp(candidate["earnings_date"]) - pd.offsets.BDay(policy.pre_earnings_exit_days)
+        if trading_sessions is None:
+            return {"status": "UNAVAILABLE", "exit_reason": "TRADING_CALENDAR_UNAVAILABLE"}
+        sessions = pd.DatetimeIndex(pd.to_datetime(trading_sessions)).normalize()
+        before_event = sessions[sessions < pd.Timestamp(candidate["earnings_date"]).normalize()]
+        if len(before_event) <= policy.pre_earnings_exit_days:
+            return {"status": "UNAVAILABLE", "exit_reason": "TRADING_CALENDAR_UNAVAILABLE"}
+        cutoff = before_event[-(policy.pre_earnings_exit_days + 1)]
         eligible = [x for x in marks if x[0] <= cutoff]
         if eligible:
             forced = eligible[-1]
@@ -390,7 +396,7 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
     quote_meta["entry_rows_returned"] = entry_meta.get("rows_returned", 0)
     records = []
     for row in pending:
-        lifecycle = _replay_lifecycle_batch(row, quote_index, policy)
+        lifecycle = _replay_lifecycle_batch(row, quote_index, policy, stock_sessions)
         records.append({**row, "batch_quote_rows": quote_meta.get("rows_retained", 0), **lifecycle})
     return pd.DataFrame(records)
 
