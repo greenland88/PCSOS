@@ -36,7 +36,10 @@ def _daily_checks(r, daily, expected_dates=None, executable_start_date=None):
     d=daily.copy(); d["date"]=pd.to_datetime(d["date"],errors="coerce").dt.normalize(); d=d.sort_values("date")
     n=d[["open","high","low","close","volume"]].apply(pd.to_numeric,errors="coerce")
     duplicate=int(d.date.duplicated(keep=False).sum()); null_rows=n.isna().any(axis=1); bad=(n.high<n[["open","close","low"]].max(axis=1))|(n.low>n[["open","close","high"]].min(axis=1))|(n.volume<0)
-    if expected_dates is None:
+    if isinstance(expected_dates, tuple) and expected_dates[0] == "SESSION_CALENDAR_UNAVAILABLE":
+        missing=[]
+        _block(r,"DAILY","SESSION_CALENDAR_UNAVAILABLE",expected_dates[1])
+    elif expected_dates is None:
         # The canonical SPY calendar is the repository's session authority;
         # pandas business days incorrectly flag exchange holidays.
         missing=[]
@@ -66,14 +69,15 @@ def _pit_checks(r, daily):
     # by ResearchRunner with its cached PIT path.
     smoke_input = x[["date","open","high","low","close","volume"]].tail(400)
     state_result = evaluate_as_of(smoke_input, r.symbol, fixture.date.iloc[0]) if len(fixture) else {}
-    x["state"] = np.where(x.date.eq(fixture.date.iloc[0]) & bool(state_result), "AVAILABLE", None)
+    state_available = isinstance(state_result, dict) and state_result.get("available_data") is True
+    x["state"] = np.where(x.date.eq(fixture.date.iloc[0]) & state_available, "AVAILABLE", None)
     missing={f:int(x[f].isna().sum()) for f in FEATURES}; missing_reasons={f:[{"date":pd.Timestamp(day).date().isoformat(),"reason_code":"PIT_WARMUP_REQUIRED"} for day in x.loc[x[f].isna(),"date"]] for f in FEATURES}; r.checks["pit"]={"required_features":list(FEATURES),"ready_rows":{f:int(x[f].notna().sum()) for f in FEATURES},"missing_rows":missing,"missing_row_reasons":missing_reasons,"state_ready_rows":int(x.state.notna().sum())}
     # Warm-up rows are expected and are retained with exact counts/reasons;
     # they do not make the ticker PIT-unready when every required field has a
     # non-empty valid population.
     empty=[f for f in FEATURES if int(x[f].notna().sum()) == 0]
     if empty: _block(r,"PIT","PIT_FEATURE_UNAVAILABLE",json.dumps({f:missing[f] for f in empty},sort_keys=True),"rebuild canonical PIT features after source repair")
-    if not state_result: _block(r,"PIT","PIT_STATE_TIMELINE_UNAVAILABLE","state adapter produced no usable legal fixture row")
+    if not state_available: _block(r,"PIT","PIT_STATE_TIMELINE_UNAVAILABLE","state adapter produced no usable legal fixture row")
 
 def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) -> TickerReadiness:
     s=symbol.upper(); r=TickerReadiness(symbol=s,as_of=datetime.now(timezone.utc).isoformat(),run_id=run_id or uuid.uuid4().hex,request_id=request_id or uuid.uuid4().hex); access=access or PCSDataAccess()
@@ -82,10 +86,8 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
             s, getattr(access, "source_routes", {})
         ).isoformat()
         daily=access.read_prices(s, executable_start)
-        expected=None
-        if s != "SPY":
-            try: expected=set(pd.to_datetime(access.read_prices("SPY").date).dt.date)
-            except Exception: expected=None
+        try: expected=set(pd.to_datetime(access.read_prices("SPY").date).dt.date)
+        except Exception as exc: expected=("SESSION_CALENDAR_UNAVAILABLE", str(exc))
         _daily_checks(r,daily,expected,executable_start); _pit_checks(r,daily)
     except Exception as e: _block(r,"DAILY","DAILY_SOURCE_UNAVAILABLE",e)
     r.DATA_READY="YES" if not any(b["stage"]=="DAILY" for b in r.blockers) else "NO"; r.PIT_READY="YES" if not any(b["stage"]=="PIT" for b in r.blockers) else "NO"
@@ -123,7 +125,7 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
         # full-history materialization. Keep the read bounded to the earliest
         # available year plus one year; the quality audit above covers all
         # canonical history through DuckDB aggregation.
-        first = pd.Timestamp(ev["spec"].get("first_date"))
+        first = max(pd.Timestamp(ev["spec"].get("first_date")), pd.Timestamp(executable_start))
         last = min(pd.Timestamp(ev["spec"].get("last_date")), first + pd.Timedelta(days=366))
         case,discovery=discover_lifecycle_smoke_case(access,s,start_date=first,end_date=last); r.checks["contract_selection"]={"status":discovery.get("status"),"reason":discovery.get("reason"),"case":case.to_dict() if case else None}
         if not case: _block(r,"CONTRACT_SELECTION","CONTRACT_SELECTION_SMOKE_FAILED",discovery.get("reason"))

@@ -114,6 +114,7 @@ class PCSDataAccess:
                         Path("data/manifests/storage_manifest_v2.csv"),
                         Path("data/manifests/storage_manifest_options_v3.csv"),
                     ])
+                matches = []
                 for candidate_manifest in candidates:
                     manifest = self._read_manifest(candidate_manifest)
                     if manifest.empty or "dataset" not in manifest.columns:
@@ -124,7 +125,16 @@ class PCSDataAccess:
                         & manifest.status.astype(str).str.upper().eq("SUCCESS")
                     ]
                     if not found.empty:
-                        return str(found.dataset.iloc[0]), candidate_manifest, self.parquet_root
+                        matches.extend((str(row.dataset), candidate_manifest) for _, row in found.iterrows())
+                physical_versions = {name for name, _ in matches if name in {"options_v2", "options_v3"}}
+                if len(physical_versions) > 1:
+                    raise DataAccessError(
+                        f"AMBIGUOUS_CANONICAL_OPTIONS_ROUTE: symbol={self._symbol(symbol)} "
+                        f"datasets={sorted(physical_versions)}"
+                    )
+                if matches:
+                    dataset_name, manifest_name = sorted(matches, key=lambda x: (x[0], str(x[1])))[0]
+                    return dataset_name, manifest_name, self.parquet_root
             raise DataAccessError(
                 f"canonical route unavailable: requested_dataset={dataset} "
                 f"symbol={self._symbol(symbol)} legacy_fallback_used=NO "

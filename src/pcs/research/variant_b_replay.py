@@ -44,6 +44,7 @@ class ReplayPolicy:
     reject_expiration_crossing: bool = True
     allowed_spread_widths: tuple[float, ...] = (5.0, 10.0, 2.0)
     pre_earnings_exit_days: int | None = None
+    trading_sessions: Any = None
 
 
 def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
@@ -255,7 +256,10 @@ def _replay_lifecycle_batch(candidate: dict[str, Any], quote_index: dict[tuple, 
     profit = min(profits, default=None, key=lambda x: x[0])
     forced = None
     if policy.pre_earnings_exit_days is not None and candidate.get("earnings_date") is not None:
-        sessions = pd.DatetimeIndex(sorted(pd.to_datetime(merged["Trade Date"].dropna().unique())))
+        session_source = candidate.get("trading_sessions") or policy.trading_sessions
+        if session_source is None:
+            return {"status": "UNAVAILABLE", "exit_reason": "TRADING_SESSION_CALENDAR_UNAVAILABLE"}
+        sessions = pd.DatetimeIndex(pd.to_datetime(session_source)).normalize().drop_duplicates().sort_values()
         prior_sessions = sessions[sessions < pd.Timestamp(candidate["earnings_date"])]
         cutoff = prior_sessions[-policy.pre_earnings_exit_days] if len(prior_sessions) >= policy.pre_earnings_exit_days else None
         eligible = [x for x in marks if cutoff is not None and x[0] <= cutoff]
@@ -357,6 +361,7 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
             if policy.reject_expiration_crossing and crosses:
                 continue
             expiry = candidate["expiration"]
+            candidate["trading_sessions"] = stock.date
             group = "BASELINE_A" if a == "PASS" and b != "PASS" else "VARIANT_B_ORIGINAL" if a == "PASS" else "VARIANT_B_CONVERTED"
             if group == "VARIANT_B_CONVERTED" and candidate["support_state"] == "weak":
                 subgroup = "VARIANT_B_WEAK_SUPPORT"
