@@ -45,11 +45,17 @@ def build():
     v["entry_month"]=pd.to_datetime(v.decision_date).dt.strftime("%Y-%m"); manifest=[]
     for month,g in v.groupby("entry_month",sort=True):
         qpath=PARTS/f"quotes_{month}.parquet"; mpath=PARTS/f"marks_{month}.parquet"; done=PARTS/f"manifest_{month}.json"
+        candidate_digest = hashlib.sha256(
+            g[["base_candidate_id", "decision_date", "expiration", "short_strike", "long_strike"]]
+            .sort_values(["base_candidate_id", "decision_date"])
+            .to_csv(index=False).encode()
+        ).hexdigest()
         if qpath.exists() and mpath.exists() and done.exists():
             try:
                 q=pd.read_parquet(qpath); m=pd.read_parquet(mpath); expected=int(sum(((daily.date>=pd.Timestamp(r.decision_date))&(daily.date<=pd.Timestamp(r.expiration))).sum() for r in g.itertuples()))
                 old=json.loads(done.read_text())
                 if (old.get("status") in {"COMPLETE", "TRUE_SOURCE_GAPS"}
+                        and old.get("candidate_digest") == candidate_digest
                         and old.get("quotes_sha256") == file_sha(qpath)
                         and old.get("marks_sha256") == file_sha(mpath)
                         and len(q)==len(m)==expected and m.mark_valid.dtype==bool):
@@ -69,7 +75,7 @@ def build():
                 rec={"base_candidate_id":r.base_candidate_id,"research_variant":r.research_variant,"date":dt,"short_bid":s.iloc[0].get("bid") if hs else pd.NA,"short_ask":s.iloc[0].get("ask") if hs else pd.NA,"long_bid":l.iloc[0].get("bid") if hl else pd.NA,"long_ask":l.iloc[0].get("ask") if hl else pd.NA,"availability":"AVAILABLE" if hs and hl else "MARK_UNAVAILABLE","source":"PCSDataAccess","provenance":"exact_date_expiration_put_strike"}; rows.append(rec)
                 mark=((rec["short_bid"]+rec["short_ask"])/2-(rec["long_bid"]+rec["long_ask"])/2) if hs and hl else pd.NA; marks.append({"base_candidate_id":r.base_candidate_id,"research_variant":r.research_variant,"date":dt,"spread_mark":mark,"mark_method":"MIDPOINT_SHORT_MINUS_LONG","mark_valid":bool(hs and hl)})
         qdf=pd.DataFrame(rows); mdf=pd.DataFrame(marks); tmpq=qpath.with_suffix(".tmp.parquet"); tmpm=mpath.with_suffix(".tmp.parquet"); qdf.to_parquet(tmpq,index=False); mdf.to_parquet(tmpm,index=False); pd.read_parquet(tmpq); pd.read_parquet(tmpm); os.replace(tmpq,qpath); os.replace(tmpm,mpath)
-        rec={"partition":month,"candidate_count":len(g),"required_quote_days":required,"short_quotes_found":found_s,"long_quotes_found":found_l,"both_found":both,"missing":required-both,"status":"COMPLETE" if both==required else "TRUE_SOURCE_GAPS","source":"PCSDataAccess","provenance":"canonical_exact_identity","quotes_sha256":file_sha(qpath),"marks_sha256":file_sha(mpath)}; atomic_json(done,rec); manifest.append(rec)
+        rec={"partition":month,"candidate_count":len(g),"candidate_digest":candidate_digest,"required_quote_days":required,"short_quotes_found":found_s,"long_quotes_found":found_l,"both_found":both,"missing":required-both,"status":"COMPLETE" if both==required else "TRUE_SOURCE_GAPS","source":"PCSDataAccess","provenance":"canonical_exact_identity","quotes_sha256":file_sha(qpath),"marks_sha256":file_sha(mpath)}; atomic_json(done,rec); manifest.append(rec)
     atomic_json(ROOT/"tsla_specialized_quote_progress.json",manifest)
     qs=pd.concat([pd.read_parquet(p) for p in sorted(PARTS.glob("quotes_*.parquet"))],ignore_index=True); ms=pd.concat([pd.read_parquet(p) for p in sorted(PARTS.glob("marks_*.parquet"))],ignore_index=True); atomic_parquet(qs,ROOT/"tsla_specialized_daily_quotes.parquet"); atomic_parquet(ms,ROOT/"tsla_specialized_spread_marks.parquet")
     # Parity is intentionally explicit and fail-closed for lifecycle fields.
