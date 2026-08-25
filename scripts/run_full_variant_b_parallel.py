@@ -29,7 +29,6 @@ def run_ticker(ticker: str) -> dict:
     if output.exists() and receipt.exists():
         saved = json.loads(receipt.read_text(encoding="utf-8"))
         if saved.get("identity") == identity:
-            
             frame = pd.read_parquet(output)
             return {"ticker": ticker, "reused": True, "rows": len(frame)}
     stock = m._daily(daily)
