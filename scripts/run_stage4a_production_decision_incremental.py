@@ -101,6 +101,14 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
                 active.append(reservation)
         portfolio["_reservations"] = active
 
+    def reserve(amount: float, bucket: str, ticker: str, end_date: pd.Timestamp) -> None:
+        portfolio["planned_loss"] += amount
+        portfolio["planned_risk"] = portfolio["planned_loss"]
+        portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + amount
+        portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + amount
+        portfolio["_reservations"].append({"amount": amount, "bucket": bucket,
+                                            "ticker": ticker, "end_date": end_date})
+
     def evaluate(row: dict) -> dict:
         ticker = str(row["ticker"]).upper()
         day, expiry = pd.Timestamp(row["date"]).normalize(), pd.Timestamp(row["expiration"]).normalize()
@@ -157,15 +165,10 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
         accepted = decision.action.value == "OPEN"
         if accepted:
             reserved = float(decision.planned_loss or decision.planned_risk or 0.0)
-            portfolio["planned_loss"] += reserved
-            portfolio["planned_risk"] = portfolio["planned_loss"]
             bucket = str(row.get("correlation_bucket", "UNKNOWN"))
-            portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
-            portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
             end_value = row.get("exit_date", row.get("expiration"))
             end_date = pd.Timestamp(end_value).normalize() if pd.notna(end_value) else expiry
-            portfolio["_reservations"].append({"amount": reserved, "bucket": bucket,
-                                                "ticker": ticker, "end_date": end_date})
+            reserve(reserved, bucket, ticker, end_date)
         return {**row, "status": (DecisionRowStatus.EVALUATED_ACCEPTED if accepted else DecisionRowStatus.EVALUATED_REJECTED).value,
                 "accepted": accepted, "reason_codes": list(decision.reason_codes),
                 "primary_reason": decision.reason_codes[0] if decision.reason_codes else decision.reason,
@@ -173,8 +176,26 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
                 "credit_width_ratio": credit / float(row["spread_width"]) if float(row["spread_width"]) else 0.0,
                 "nearby_strikes": n, "later_expirations": later, "support_state": "SUPPORT_FOUND",
                 "breadth_provenance": breadth_provenance,
-                "expected_move": expected_move,
+                "expected_move": expected_move, "planned_loss": float(decision.planned_loss or decision.planned_risk or 0.0),
                 "event_pit_status": "VERIFIED" if event_calendar.attrs.get("historical_pit_required") else "UNVERIFIED"}
+
+    def restore_completed(frame: pd.DataFrame) -> None:
+        """Restore accepted reservations from a previously completed partition."""
+        if frame.empty:
+            return
+        accepted = frame["accepted"].map(bool) if "accepted" in frame else pd.Series(False, index=frame.index)
+        for row in frame[accepted].to_dict("records"):
+            amount = float(row.get("planned_loss", 0.0) or 0.0)
+            if amount <= 0:
+                continue
+            ticker = str(row["ticker"]).upper()
+            bucket = str(row.get("correlation_bucket", "UNKNOWN"))
+            end_value = row.get("exit_date", row.get("expiration"))
+            if pd.isna(end_value):
+                continue
+            reserve(amount, bucket, ticker, pd.Timestamp(end_value).normalize())
+
+    evaluate.restore_completed = restore_completed
     return evaluate
 
 
@@ -210,7 +231,9 @@ def main() -> None:
     for partition in parts:
         source, target = pd.read_parquet(partition), DEC / partition.name
         if completion_is_valid(source, target, calculation_version=calculation_version):
-            results.append(pd.read_parquet(target)); receipts.append(json.loads(target.with_suffix(".receipt.json").read_text(encoding="utf-8"))); continue
+            completed = pd.read_parquet(target)
+            evaluator.restore_completed(completed)
+            results.append(completed); receipts.append(json.loads(target.with_suffix(".receipt.json").read_text(encoding="utf-8"))); continue
         result = evaluate_partition(source, evaluator)
         receipt = write_completed_partition(source, result, target, source_partition=partition.name, run_id=run_id,
                                             request_id=uuid.uuid4().hex, data_timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
