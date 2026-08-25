@@ -21,6 +21,7 @@ def parse_args(argv=None):
 
 
 def _write(path, rows):
+    path = Path(path)
     rows = list(rows)
     if not rows:
         # A reused run label must not retain output from a prior run whose
@@ -28,8 +29,13 @@ def _write(path, rows):
         Path(path).unlink(missing_ok=True)
         return
     keys = sorted({k for r in rows for k in r})
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _load_pit_window(access: PCSDataAccess, symbol: str, start: pd.Timestamp,
