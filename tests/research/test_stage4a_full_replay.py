@@ -32,6 +32,16 @@ class OpenEngine:
                                      "model_dump": lambda self, mode=None: {"action": "OPEN", "reason": "test open", "reason_codes": ["TEST_OPEN"]}})()
 
 
+class CapacityEngine:
+    def __init__(self): self.planned_losses = []
+    def evaluate_candidate(self, candidate, market, portfolio, **kwargs):
+        self.planned_losses.append(float(portfolio["planned_loss"]))
+        action = "OPEN" if portfolio["planned_loss"] < 10 else "WAIT"
+        return type("Decision", (), {"action": action, "reason": "test", "reason_codes": ["TEST"],
+                                     "planned_loss": 10.0 if action == "OPEN" else 0.0,
+                                     "model_dump": lambda self, mode=None: {"action": action}})()
+
+
 def test_rejected_candidates_persist_and_no_support_skips_engine(tmp_path):
     engine = FakeEngine()
     frame = pd.DataFrame([base_row(), base_row(candidate_id="c2", support_state="NO_SUPPORT", support_level=None)])
@@ -76,3 +86,19 @@ def test_lifecycle_failure_replaces_replayed_decision_without_duplicate(tmp_path
     assert out.candidate_id.tolist() == ["c1"]
     assert out.status.tolist() == ["CONTRACT_FAILURE"]
     assert out.accepted.tolist() == [False]
+
+
+def test_completed_lifecycle_releases_capacity_before_later_candidate(tmp_path):
+    engine = CapacityEngine()
+    frame = pd.DataFrame([
+        base_row(candidate_id="c1", date="2025-01-01", expiration="2025-02-05"),
+        base_row(candidate_id="c2", date="2025-01-03", expiration="2025-02-07"),
+    ])
+    result = run_stage4a_full_replay(
+        frame, decision_engine=engine,
+        lifecycle_replay=lambda row: {"exit_date": "2025-01-02"},
+        market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
+        config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path),
+    )
+    assert result["opened"] == 2
+    assert engine.planned_losses == [0.0, 0.0]
