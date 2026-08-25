@@ -15,11 +15,12 @@ RUNNER=REPO_ROOT/'scripts/run_option_qualification_chunk.py'
 def shard_identity(symbol, a, b):
  access=PCSDataAccess()
  code=hashlib.sha256(RUNNER.read_bytes()).hexdigest()
+ backtest=hashlib.sha256((REPO_ROOT/'src/pcs/research/credit_stop.py').read_bytes()).hexdigest()
  payload={'ticker':symbol,'start':str(pd.Timestamp(a).date()),'end':str(pd.Timestamp(b).date()),
           'daily_source_identity':access.source_data_identity('daily',symbol),
           'benchmark_source_identity':access.source_data_identity('daily','QQQ'),
           'options_source_identity':access.source_data_identity('options',symbol),
-          'runner_sha256':code}
+          'runner_sha256':code,'backtest_sha256':backtest}
  payload['identity_sha256']=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
  return payload
 def months(a,b):
