@@ -13,6 +13,8 @@ import json
 import re
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 class ResearchMode(StrEnum):
     EXISTING_TRADE = "EXISTING_TRADE"
@@ -265,7 +267,7 @@ def onboarding_report(stage_status: Mapping[str, str]) -> dict[str, Any]:
 
 def assert_research_output(path: str | Path) -> None:
     target = Path(path).resolve()
-    root = Path("research_outputs").resolve()
+    root = (REPO_ROOT / "research_outputs").resolve()
     try:
         relative = target.relative_to(root)
     except ValueError as exc:
