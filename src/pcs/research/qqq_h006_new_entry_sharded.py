@@ -14,6 +14,8 @@ import pandas as pd
 
 from pcs.data.access import PCSDataAccess
 from pcs.data.price_basis import load_corporate_actions, PriceBasis
+from pcs.trend.config import TrendIndicatorConfig
+from pcs.trend.indicators import calculate_base_indicators
 from pcs.research.current_strategy_replay import build_lifecycle_quote_rows, validate_lifecycle_corporate_action, _identity
 from pcs.research.stage4a_lifecycle import Stage4ALifecycleReplayAdapter, LifecycleAdapterError
 from pcs.research.variant_b_replay import ReplayPolicy
@@ -34,9 +36,9 @@ def _shard_identity(year: int) -> dict:
     return payload
 
 def _atr14(d):
-    prev = d.close.shift(1)
-    tr = pd.concat([(d.high-d.low), (d.high-prev).abs(), (d.low-prev).abs()], axis=1).max(axis=1)
-    return tr.rolling(14, min_periods=14).mean()
+    # Match the canonical production trend ATR (Wilder smoothing).  A plain
+    # rolling TR mean changes the same 2.3-ATR safe-strike rule.
+    return calculate_base_indicators(d, TrendIndicatorConfig())["atr14"]
 
 def _features(d):
     d=d.sort_values("date").copy(); d["atr14"]=_atr14(d)
