@@ -147,7 +147,9 @@ def build_row_evaluator(*, access: PCSDataAccess, market_states: dict, event_cal
                 "dte": dte, "atr": atr, "close": close, "credit": credit,
                 "credit_width_ratio": credit / float(row["spread_width"]) if float(row["spread_width"]) else 0.0,
                 "nearby_strikes": n, "later_expirations": later, "support_state": "SUPPORT_FOUND",
-                "breadth_provenance": breadth_provenance}
+                "breadth_provenance": breadth_provenance,
+                "expected_move": expected_move,
+                "event_pit_status": "VERIFIED" if event_calendar.attrs.get("historical_pit_required") else "UNVERIFIED"}
     return evaluate
 
 
