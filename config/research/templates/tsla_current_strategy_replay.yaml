@@ -3,7 +3,7 @@ ticker: TSLA
 research_mode: CURRENT_STRATEGY_REPLAY
 hypothesis: Plumbing validation of the existing strategy rule set.
 population_source: {type: ticker_daily_calendar, frozen: false}
-signal_definition: {creates_new_entry_dates: true, purpose: current_strategy_replay}
+signal_definition: {creates_new_entry_dates: true, purpose: current_strategy_replay, benchmark_symbol: QQQ}
 entry_date_rule: {rule: current_strategy_entry_date}
 date_range: {split: TRAIN}
 split_policy: {name: TRAIN_ONLY}

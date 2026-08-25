@@ -110,14 +110,14 @@ def discover_lifecycle_smoke_case(
 
 
 def canonical_route_evidence(access: PCSDataAccess, ticker: str) -> dict[str, Any]:
-    spec: SourceSpec = access.resolve_source("options_v2", ticker)
+    spec: SourceSpec = access.resolve_source("options", ticker)
     # SourceSpec.source_version is the authoritative route manifest identity.
     # Do not report PCSDataAccess's default manifest when a ticker-specific
     # route resolves through an isolated options manifest.
     manifest = ""
     if ":" in str(spec.source_version):
         manifest = str(spec.source_version).split(":", 1)[1]
-    return {"requested_dataset": "options_v2", "resolved_dataset": spec.dataset,
+    return {"requested_dataset": "options", "resolved_dataset": spec.dataset,
             "resolved_manifest": manifest, "resolved_root": str(access.parquet_root),
             "source_version": spec.source_version, "legacy_fallback_used": False,
             "spec": spec.to_dict()}
