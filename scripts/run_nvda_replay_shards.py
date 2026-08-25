@@ -4,7 +4,7 @@ Each worker writes only its own year directory.  The script intentionally
 keeps the production rules and canonical data read-only.
 """
 from __future__ import annotations
-import hashlib, json, os, time
+import hashlib, json, os, time, uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import pandas as pd
@@ -38,18 +38,23 @@ def _digest(path: Path) -> str:
 
 
 def _atomic_json(path: Path, value: dict) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
-    os.replace(temp, path)
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    frame.to_parquet(temp, index=False)
-    if len(pd.read_parquet(temp)) != len(frame):
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        frame.to_parquet(temp, index=False)
+        if len(pd.read_parquet(temp)) != len(frame):
+            raise RuntimeError("NVDA_SHARD_PARQUET_VALIDATION_FAILED")
+        os.replace(temp, path)
+    finally:
         temp.unlink(missing_ok=True)
-        raise RuntimeError("NVDA_SHARD_PARQUET_VALIDATION_FAILED")
-    os.replace(temp, path)
 
 
 def run_year(year: int) -> dict:
