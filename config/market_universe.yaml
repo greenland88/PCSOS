@@ -1,0 +1,31 @@
+benchmarks:
+  - QQQ
+  - SPY
+  - SOXX
+  - SMH
+pcs_universe:
+  - NVDA
+  - AMD
+  - MSFT
+  - AMZN
+  - TSLA
+  - META
+  - GOOGL
+  - AVGO
+  - MU
+  - HOOD
+  - PLTR
+  - JPM
+  - BAC
+  - GS
+  - WMT
+  - COST
+  - HD
+  - UNH
+  - ABBV
+  - CAT
+  - RTX
+  - XOM
+  - CVX
+  - COP
+  - MCD

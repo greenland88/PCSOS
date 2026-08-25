@@ -1,0 +1,19 @@
+research_id: amzn_recovery_structure_diagnostic_v1
+ticker: AMZN
+research_mode: NEW_ENTRY
+hypothesis: AMZN may contain an independent weakness-to-stabilization PCS structure.
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition:
+  precursor: BREAKDOWN
+  confirmation: STABILIZING
+  creates_new_entry_dates: true
+  descriptive_only: true
+entry_date_rule: {rule: first_STABILIZING_observation_after_BREAKDOWN_run, entry_date_need_not_remain_breakdown: true}
+date_range: {start: '2022-06-06', end: '2025-12-31'}
+split_policy: {name: TRAIN_ONLY, train_end: '2025-12-31'}
+contract_selection_policy: {mode: NOT_RUN_DESCRIPTIVE_SIGNAL_ONLY, as_of_only: true}
+lifecycle_policy: {source: NOT_RUN_DESCRIPTIVE_SIGNAL_ONLY, no_future_selection: true}
+frozen_parameters: {}
+allowed_parameters: {research_only: true, threshold_changes: false, lifecycle_changes: false}
+final_oos_access: false
+production_changes_allowed: false

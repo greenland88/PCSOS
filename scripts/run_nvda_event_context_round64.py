@@ -1,0 +1,8 @@
+"""Round 64: NVDA executable event-context readiness audit."""
+from pathlib import Path
+import json
+import pandas as pd
+ROOT=Path(__file__).resolve().parents[1]; OUT=ROOT/"research_outputs"/"nvda_entry_discovery_agent_v2"
+def run():
+ d=pd.read_parquet(OUT/"pit_feature_outcome_table.parquet").copy(); d.trade_date=pd.to_datetime(d.trade_date).dt.normalize(); d.date=pd.to_datetime(d.date).dt.normalize(); d=d[(d.ticker=="NVDA")&d.executable_pcs&d.trade_date.between("2020-01-02","2023-12-31")].copy(); out={"module":"pcs.research.nvda_event_context_round64","version":"1.0","symbol":"NVDA","status":"DATA_READINESS_DIAGNOSTIC_ONLY","data_source":"PCS_CANONICAL_DATA","research_mode":"EXISTING_TRADE","input_rows":int(len(d)),"pit_feature_date_equals_trade_date":bool((d.date==d.trade_date).all()),"event_state_distribution":d.event_state.value_counts(dropna=False).to_dict(),"forced_earnings_exit_distribution":d.forced_earnings_exit.value_counts(dropna=False).to_dict(),"event_context_usable_rows":int((d.event_state!="NOT_EVALUATED").sum()),"decision":"EVENT_CONTEXT_UNAVAILABLE_FOR_MODE_DISCOVERY","validation_read":False,"final_oos_read":False,"production_changes":False,"frozen_rule_families_unchanged":["PCS_TREND_CONTINUATION","PCS_CONSTRUCTIVE_RECOVERY"],"reason_codes":["NVDA_ONLY","TRAIN_ONLY","PIT_SAFE","EVENT_STATE_NOT_EVALUATED","NO_FUTURE_EVENT_SUBSTITUTION","NO_VALIDATION","NO_FINAL_OOS","NO_PRODUCTION_CHANGE"]}; (OUT/"v2_round64_event_context.json").write_text(json.dumps(out,indent=2,default=str),encoding="utf-8"); return out
+if __name__=="__main__": print(json.dumps(run(),indent=2,default=str))

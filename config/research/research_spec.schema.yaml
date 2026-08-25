@@ -1,0 +1,20 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+title: PCS ResearchSpec
+type: object
+required: [research_id, ticker, research_mode, hypothesis, population_source, signal_definition, entry_date_rule, date_range, split_policy, contract_selection_policy, lifecycle_policy, frozen_parameters, allowed_parameters, final_oos_access, production_changes_allowed]
+properties:
+  research_id: {type: string, minLength: 1}
+  ticker: {type: string, minLength: 1}
+  research_mode: {type: string, enum: [EXISTING_TRADE, NEW_ENTRY, CONTRACT_VARIANT]}
+  hypothesis: {type: string, minLength: 1}
+  population_source: {type: object}
+  signal_definition: {type: object}
+  entry_date_rule: {type: object}
+  date_range: {type: object}
+  split_policy: {type: object}
+  contract_selection_policy: {type: object}
+  lifecycle_policy: {type: object}
+  frozen_parameters: {type: object}
+  allowed_parameters: {type: object}
+  final_oos_access: {type: boolean, default: false}
+  production_changes_allowed: {type: boolean, default: false}

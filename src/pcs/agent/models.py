@@ -1,0 +1,23 @@
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+import uuid
+
+@dataclass
+class AgentResponse:
+    module: str
+    version: str
+    request_id: str
+    status: str
+    reason_code: str
+    data: object = None
+    symbol: str = None
+    data_timestamp: str = None
+    calculation_version: str = None
+
+    def to_dict(self): return asdict(self)
+    def to_json(self):
+        import json
+        return json.dumps(self.to_dict(), default=str, sort_keys=True)
+
+def response(status, reason_code, data=None, symbol=None, calculation_version=None):
+    return AgentResponse("pcs.agent", "v1", str(uuid.uuid4()), status, reason_code, data, symbol, datetime.now(timezone.utc).isoformat(), calculation_version)

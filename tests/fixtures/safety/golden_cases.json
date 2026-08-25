@@ -1,0 +1,13 @@
+{
+  "fixture_version": "pcs-safety-golden-v1",
+  "strategy_version": "pcs-v1",
+  "cases": [
+    {"ticker": "NVDA", "decision_date": "2025-01-06", "outcome": "ENTRY", "setup_eligible": true, "rejection_reason": null, "safe_strike": 130.0, "short_strike": 130.0, "long_strike": 125.0, "dte": 35, "credit": 1.2, "planned_loss": 380.0, "exit_date": "2025-01-24", "exit_reason": "PROFIT_TARGET", "pnl": 84.0},
+    {"ticker": "TSLA", "decision_date": "2025-02-03", "outcome": "REJECT", "setup_eligible": false, "rejection_reason": "REGIME_HARD_STOP", "safe_strike": null, "short_strike": null, "long_strike": null, "dte": null, "credit": null, "planned_loss": null, "exit_date": null, "exit_reason": null, "pnl": null},
+    {"ticker": "MU", "decision_date": "2025-03-03", "outcome": "ENTRY", "setup_eligible": true, "rejection_reason": null, "safe_strike": 82.5, "short_strike": 82.5, "long_strike": 77.5, "dte": 32, "credit": 1.05, "planned_loss": 395.0, "exit_date": "2025-03-21", "exit_reason": "STOP_LOSS", "pnl": -395.0},
+    {"ticker": "AMZN", "decision_date": "2025-04-01", "outcome": "REJECT", "setup_eligible": false, "rejection_reason": "NO_CHAIN", "safe_strike": null, "short_strike": null, "long_strike": null, "dte": null, "credit": null, "planned_loss": null, "exit_date": null, "exit_reason": null, "pnl": null},
+    {"ticker": "AMD", "decision_date": "2025-05-01", "outcome": "ENTRY", "setup_eligible": true, "rejection_reason": null, "safe_strike": 100.25, "short_strike": 100.25, "long_strike": 95.25, "dte": 40, "credit": 0.9, "planned_loss": 410.0, "exit_date": "2025-05-20", "exit_reason": "EXPIRY_MANAGED", "pnl": 90.0},
+    {"ticker": "META", "decision_date": "2025-06-02", "outcome": "REJECT", "setup_eligible": false, "rejection_reason": "PULLBACK_UNCONFIRMED", "safe_strike": null, "short_strike": null, "long_strike": null, "dte": null, "credit": null, "planned_loss": null, "exit_date": null, "exit_reason": null, "pnl": null},
+    {"ticker": "QQQ", "decision_date": "2025-07-01", "outcome": "ENTRY", "setup_eligible": true, "rejection_reason": null, "safe_strike": 204.78, "short_strike": 204.78, "long_strike": 199.78, "dte": 31, "credit": 1.1, "planned_loss": 390.0, "exit_date": "2025-07-18", "exit_reason": "PROFIT_TARGET", "pnl": 77.0}
+  ]
+}

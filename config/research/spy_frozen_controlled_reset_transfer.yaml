@@ -1,0 +1,19 @@
+research_id: spy_frozen_controlled_reset_transfer
+ticker: SPY
+research_mode: NEW_ENTRY
+hypothesis: Frozen QQQ Controlled Reset transferred to SPY without tuning.
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition:
+  precursor: CONTROLLED_RESET
+  conditions: [drawdown60 <= -0.02, ret10 > 0]
+  creates_new_entry_dates: true
+  timing: first_qualification_within_independent_episode
+entry_date_rule: {rule: first_controlled_reset_qualification_per_episode, entry_date_need_not_remain_baseline_setup: true}
+date_range: {start: '2020-01-01', end: '2025-12-31'}
+split_policy: {train_end: '2025-12-31'}
+contract_selection_policy: {mode: AUTHORITATIVE_CURRENT_STRATEGY_SELECTOR_WITHOUT_ENTRY_GATES, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: AUTHORITATIVE_CURRENT_LIFECYCLE, no_future_selection: true}
+frozen_parameters: {dte_min: 30, dte_max: 45, safe_strike_atr: 2.3, standardized_width: 5}
+allowed_parameters: {research_only: true, contract_parameters_changed: false, lifecycle_parameters_changed: false}
+final_oos_access: false
+production_changes_allowed: false

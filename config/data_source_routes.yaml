@@ -1,0 +1,46 @@
+options:
+  by_symbol:
+    NVDA:
+      dataset: options_v3
+      manifest_path: data/manifests/storage_manifest_options_v3.csv
+      parquet_root: data/parquet
+    QQQ:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_v2.csv
+      parquet_root: data/parquet
+    AMD:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_options_v2.csv
+      parquet_root: data/parquet
+    TSLA:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_options_v2.csv
+      parquet_root: data/parquet
+    AMZN:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_options_v2.csv
+      parquet_root: data/parquet
+    COST:
+      dataset: options_v2
+      manifest_path: data\manifests\storage_manifest_options_v2.csv
+      parquet_root: data\parquet
+    JPM:
+      dataset: options_v2
+      manifest_path: data\manifests\storage_manifest_options_v2.csv
+      parquet_root: data\parquet
+    CAT:
+      dataset: options_v2
+      manifest_path: data\manifests\storage_manifest_options_v2.csv
+      parquet_root: data\parquet
+    MSFT:
+      dataset: options_v2
+      manifest_path: data\manifests\storage_manifest_options_v2.csv
+      parquet_root: data\parquet
+    SPY:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_options_v2.csv
+      parquet_root: data/parquet
+    MU:
+      dataset: options_v2
+      manifest_path: data/manifests/storage_manifest_options_v2.csv
+      parquet_root: data/parquet

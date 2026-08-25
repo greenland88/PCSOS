@@ -1,0 +1,29 @@
+research_id: amzn_current_strategy_replay_active_options_v2_20260824
+ticker: AMZN
+research_mode: CURRENT_STRATEGY_REPLAY
+hypothesis: Plumbing validation of the existing strategy rule set using the active canonical options_v2 route.
+population_source: {type: ticker_daily_calendar, frozen: false}
+signal_definition: {creates_new_entry_dates: true, purpose: current_strategy_replay}
+entry_date_rule: {rule: current_strategy_entry_date}
+date_range: {split: TRAIN}
+split_policy: {name: TRAIN_ONLY, train_end: '2025-12-31'}
+contract_selection_policy: {mode: RULE_SET}
+lifecycle_policy: {source: canonical_lifecycle_adapter}
+frozen_parameters: {}
+allowed_parameters: {rules: true}
+final_oos_access: false
+production_changes_allowed: false
+rules:
+  dte_min: 30
+  dte_max: 45
+  safe_strike_atr: 2.3
+  allowed_widths: [5, 10, 2]
+  width_mode: ALL
+  min_credit_width_ratio: 0.10
+  trend_gate: true
+  pullback_gate: true
+  support_gate: true
+  regime_gate: false
+  event_gate: true
+  liquidity_gate: true
+  predictability_gate: true

@@ -1,0 +1,15 @@
+research_id: amd_early_recovery_new_entry
+ticker: AMD
+research_mode: NEW_ENTRY
+hypothesis: Recovery confirmation after a prior breakdown can create a new PCS entry.
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition: {precursor: BREAKDOWN, confirmation: RECOVERY, creates_new_entry_dates: true}
+entry_date_rule: {rule: confirmation_date_t1, entry_date_need_not_remain_breakdown: true}
+date_range: {start: '2020-02-28', end: '2026-05-31'}
+split_policy: {train_end: '2025-12-31', validation_start: '2026-01-01', validation_end: '2026-05-31'}
+contract_selection_policy: {mode: RESEARCH_LEGACY_COMPATIBLE_SELECTOR, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: research_only_lifecycle, no_future_selection: true}
+frozen_parameters: {}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false

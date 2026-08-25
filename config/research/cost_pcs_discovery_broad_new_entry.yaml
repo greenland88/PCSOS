@@ -1,0 +1,15 @@
+research_id: cost_pcs_discovery_broad_v1
+ticker: COST
+research_mode: NEW_ENTRY
+hypothesis: Every PIT feature-ready clean COST trading day is evaluated for an executable PCS opportunity using the unchanged canonical selector and lifecycle.
+population_source: {type: ticker_daily_calendar, authoritative_clean_dataset: research_outputs/cost_canonical_test_dataset/cost_clean_testable_days.parquet, frozen: false, point_in_time: true}
+signal_definition: {precursor: FEATURE_READY_DAILY_CALENDAR, confirmation: BROAD_EXECUTABLE_PCS, creates_new_entry_dates: true}
+entry_date_rule: {rule: every_feature_ready_clean_calendar_date_with_executable_pcs, entry_date_need_not_remain_baseline_setup: true}
+date_range: {start: '2020-10-15', end: '2026-06-16', split: FULL_CLEAN_AVAILABLE_HISTORY}
+split_policy: {name: FULL_CLEAN_AVAILABLE_HISTORY, train_end: '2026-06-16', 2026_included: true}
+contract_selection_policy: {mode: AUTHORITATIVE_CURRENT_STRATEGY_SELECTOR, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: AUTHORITATIVE_CURRENT_LIFECYCLE, no_future_selection: true}
+frozen_parameters: {dte_min: 30, dte_max: 45, safe_strike_atr: 2.3, canonical_widths: [5, 10, 2], min_credit_width_ratio: 0.10}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false

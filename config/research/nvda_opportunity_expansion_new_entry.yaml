@@ -1,0 +1,15 @@
+research_id: nvda_opportunity_expansion_agent
+ticker: NVDA
+research_mode: NEW_ENTRY
+hypothesis: Additional independent NVDA PCS opportunity families outside the current setup
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition: {precursor: FEATURE_READY_DAILY_CALENDAR, confirmation: FROZEN_PER_HYPOTHESIS, creates_new_entry_dates: true}
+entry_date_rule: {rule: hypothesis_signal_date, entry_date_need_not_remain_baseline_setup: true}
+date_range: {start: '2020-01-01', end: '2026-07-31'}
+split_policy: {train_end: '2023-12-31', validation_start: '2024-01-01', validation_end: '2025-12-31'}
+contract_selection_policy: {mode: AUTHORITATIVE_CURRENT_STRATEGY_SELECTOR, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: AUTHORITATIVE_CURRENT_LIFECYCLE, no_future_selection: true}
+frozen_parameters: {dte_min: 30, dte_max: 45, safe_strike_atr: 2.3}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false

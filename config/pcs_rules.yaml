@@ -1,0 +1,78 @@
+capital:
+  pcs_pool: 20000
+  reserve_cash: 20000
+  normal_planned_risk_min: 5000
+  normal_planned_risk_max: 7000
+  strong_market_risk_max: 10000
+  high_exposure_threshold: 10000
+  single_ticker:
+    comfortable_max: 1500
+    normal_high_quality_max: 2500
+    conviction_ceiling: 3000
+
+data_quality:
+  historical_vendor_conflict_policy: VENDOR_CONFLICT_RESOLVED_BY_FIRST_RAW_ROW
+  incremental_conflict_source: CLICKHOUSE
+
+regime:
+  green_min_score: 70
+  yellow_min_score: 45
+  sharp_selloff_drawdown_pct: 4
+  red_vix: 30
+  yellow_vix: 22
+
+entry:
+  # Research-selected default; live activation is controlled separately.
+  safe_strike_atr: 2.3
+  conservative_safe_strike_atr: 2.5
+  preferred_dte_min: 30
+  preferred_dte_max: 40
+  preferred_delta_min: 0.20
+  preferred_delta_max: 0.30
+  min_buffer_days: 3
+  target_buffer_days: 5
+  # Research parameters remain opt-in until validated.
+  hard_dte_min: 30
+  hard_dte_max: 45
+  min_credit_width_ratio: 0.10
+  planned_loss_multiple: 1.0
+
+liquidity:
+  min_option_volume: 100
+  min_open_interest: 500
+  max_bid_ask_pct: 0.18
+  min_nearby_strikes: 4
+  min_later_expirations: 4
+  long_leg_min_option_volume: null
+  long_leg_min_open_interest: null
+  reject_below: 45
+
+portfolio:
+  max_planned_risk: 10000
+  max_bucket_risk: 4000
+  caution_single_ticker: 3000
+  buckets:
+    semiconductor: [NVDA, AMD, MU, AVGO]
+    nasdaq_mega: [MSFT, AMZN, META, GOOGL, QQQ]
+    broad_index: [SPY, QQQ]
+
+scoring:
+  open_threshold: 75
+  highest_quality_threshold: 85
+  weights:
+    market_regime: 0.15
+    underlying_quality: 0.12
+    trend: 0.12
+    support: 0.12
+    liquidity: 0.12
+    rollability: 0.08
+    strike_buffer: 0.12
+    iv_premium: 0.08
+    portfolio_capacity: 0.06
+    news_risk: 0.03
+
+management:
+  high_profit_capture_pct: 70
+  early_profit_capture_pct: 25
+  min_dte_to_roll: 5
+  roll_watch_buffer_pct: 5

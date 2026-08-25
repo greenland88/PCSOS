@@ -1,0 +1,14 @@
+"""Round 42: direct PIT-safe rare-loss forensic profile for NVDA TRAIN."""
+from pathlib import Path
+import json
+import pandas as pd
+ROOT=Path(__file__).resolve().parents[1]; OUT=ROOT/"research_outputs"/"nvda_entry_discovery_agent_v2"
+def run():
+ d=pd.read_parquet(OUT/"pit_feature_outcome_table.parquet").copy(); d.trade_date=pd.to_datetime(d.trade_date).dt.normalize(); d.date=pd.to_datetime(d.date).dt.normalize(); d=d[(d.ticker=="NVDA")&d.executable_pcs&d.trade_date.between("2020-01-02","2023-12-31")].copy(); bad=d.outcome_class.isin(["NORMAL_LOSS","STOP_LOSS","TAIL_LOSS"]); flags={"NEGATIVE_5D_RETURN":d.nvda_ret5<0,"BELOW_SMA20":d.nvda_close_vs_sma20<=0,"DEEPER_20D_DRAWDOWN":d.nvda_drawdown20<=-.08,"LOW_PARTICIPATION":d.nvda_volume_rel20<1,"MARKET_UNCONFIRMED":d.qqq_close_vs_sma50<=0,"NEGATIVE_RELATIVE_STRENGTH":d.nvda_relative_strength20<=0,"MULTI_DAY_SELLING":d.consecutive_down_days>=2}
+ rows=[]
+ for name,mask in flags.items():
+  x=d[mask]; rows.append({"state_id":name,"rows":int(len(x)),"normal_losses":int((x.outcome_class=="NORMAL_LOSS").sum()),"stop_losses":int((x.outcome_class=="STOP_LOSS").sum()),"tail_losses":int((x.outcome_class=="TAIL_LOSS").sum()),"bad_rate":float(bad[mask].mean()) if len(x) else None,"bad_rate_outside":float(bad[~mask].mean()) if (~mask).sum() else None,"tail_rate":float((x.outcome_class=="TAIL_LOSS").mean()) if len(x) else None,"conclusion":"NO_RELIABLE_FILTER"})
+ rare=d[d.outcome_class.isin(["NORMAL_LOSS","TAIL_LOSS"])][["trade_date","outcome_class","realized_pnl","nvda_ret5","nvda_ret20","nvda_drawdown20","nvda_volume_rel20","nvda_close_vs_sma20","nvda_close_vs_sma50","nvda_close_vs_sma200","qqq_close_vs_sma50","nvda_relative_strength20","consecutive_down_days"]]
+ pd.DataFrame(rows).to_csv(OUT/"v2_round42_rare_loss_state_profiles.csv",index=False); rare.to_csv(OUT/"v2_round42_normal_tail_case_ledger.csv",index=False)
+ out={"module":"pcs.research.nvda_tail_forensics_round42","version":"1.0","symbol":"NVDA","status":"DESCRIPTIVE_ONLY","data_source":"PCS_CANONICAL_DATA","research_mode":"EXISTING_TRADE","input_rows":int(len(d)),"pit_feature_date_equals_trade_date":bool((d.date==d.trade_date).all()),"outcome_counts":d.outcome_class.value_counts().to_dict(),"rare_case_count":int(len(rare)),"decision":"NO_RELIABLE_FILTER","validation_read":False,"final_oos_read":False,"production_changes":False,"frozen_rule_families_unchanged":["PCS_TREND_CONTINUATION","PCS_CONSTRUCTIVE_RECOVERY"],"reason_codes":["NVDA_ONLY","TRAIN_ONLY","PIT_SAFE","DIRECT_NORMAL_AND_TAIL_FORENSICS","TAIL_SAMPLE_TOO_SPARSE_FOR_RULE","NO_FORCED_NO_TRADE","NO_VALIDATION","NO_FINAL_OOS","NO_PRODUCTION_CHANGE"]}; (OUT/"v2_round42_manifest.json").write_text(json.dumps(out,indent=2),encoding="utf-8"); return out
+if __name__=="__main__": print(json.dumps(run(),indent=2))

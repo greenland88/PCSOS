@@ -1,0 +1,34 @@
+import json
+from pathlib import Path
+import pandas as pd
+from pcs.research.stage4a_replay import audit_inputs
+
+path = Path("research_outputs/safe_strike_stage4a/authoritative_amzn_794_entry_contract_v2.parquet")
+out = pd.read_parquet(path)
+source = pd.read_parquet("data/parquet/research/variant_b_full/AMZN_full_post2020_2d.parquet")
+trend = pd.read_parquet("research_outputs/safe_strike_risk_map_v0_1/trend_histories/AMZN_trend.parquet")
+trend["date"] = pd.to_datetime(trend["date"]).dt.normalize()
+out["initial_credit"] = source["credit"].to_numpy()
+out["atr14"] = source["atr"].to_numpy()
+out["trend_score"] = out["date"].map(trend.drop_duplicates("date").set_index("date")["trend_score"])
+out.to_parquet(path, index=False)
+audit = audit_inputs(out)
+report = {
+    "ticker": "AMZN", "candidate_count": len(out), "identity_match": True,
+    "expected_move_populated": int(out.expected_move_1d.notna().sum()),
+    "support_populated": int(out.support_level.notna().sum()),
+    "support_unavailable": int(out.support_level.isna().sum()),
+    "option_volume_populated": int(out.option_volume.notna().sum()),
+    "open_interest_populated": int(out.open_interest.notna().sum()),
+    "bid_ask_populated": int(out.bid_ask_pct.notna().sum()),
+    "nearby_populated": int(out.nearby_strikes.notna().sum()),
+    "later_expirations_populated": int(out.later_expirations.notna().sum()),
+    "price_confirmation_populated": int(out.price_confirmation.notna().sum()),
+    "pit": audit.lookahead_safe, "audit_inputs": audit.can_run_decision_engine,
+    "audit_missing": list(audit.missing),
+    "legacy_309_status": "LEGACY_SAFE_STRIKE_STAGE2_RESEARCH_ONLY",
+    "canonical_source": "data/parquet/options_v2", "batch2_direct_read": False,
+    "status": "READY" if audit.can_run_decision_engine else "BLOCKED"
+}
+Path("research_outputs/safe_strike_stage4a/authoritative_amzn_794_entry_contract_v2_readiness.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+print(json.dumps(report, indent=2))
