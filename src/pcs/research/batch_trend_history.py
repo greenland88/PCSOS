@@ -130,9 +130,15 @@ def build_batch_trend_history_from_provider(
     config: TrendIndicatorConfig | None = None,
     provider: DailyDataProvider | None = None,
 ) -> pd.DataFrame:
-    provider = provider or DailyDataProvider()
-    stock = provider.build_daily_series(symbol)
-    benchmark = provider.build_daily_series(benchmark_symbol)
+    if provider is None:
+        from pcs.data.access import PCSDataAccess
+        access = PCSDataAccess()
+        warm_start = pd.Timestamp(start_date) - pd.Timedelta(days=400)
+        stock = access.read_prices(symbol, warm_start, end_date)
+        benchmark = access.read_prices(benchmark_symbol, warm_start, end_date)
+    else:
+        stock = provider.build_daily_series(symbol)
+        benchmark = provider.build_daily_series(benchmark_symbol)
     return build_batch_trend_history(stock, benchmark, config, start_date, end_date, symbol, benchmark_symbol)
 
 
