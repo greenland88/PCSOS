@@ -41,3 +41,9 @@ def test_past_and_future_events_ignore_past_event():
 
 def test_no_events_is_allowed():
     assert EventGate().evaluate(Candidate(), calendar()).status == GateStatus.PASS
+
+
+def test_missing_calendar_is_ignored():
+    result = EventGate().evaluate(Candidate(), None)
+    assert result.status == GateStatus.PASS
+    assert "EVENT_CALENDAR_UNAVAILABLE_IGNORED" in result.reason_codes

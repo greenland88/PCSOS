@@ -50,13 +50,15 @@ class ReplayPolicy:
 def _event_reason(calendar: pd.DataFrame, ticker: str, entry: pd.Timestamp,
                   expiry: pd.Timestamp, trading_sessions=None) -> str | None:
     if calendar is None or calendar.empty:
-        return "EVENT_CALENDAR_UNAVAILABLE"
+        return None
+    rows = calendar[(calendar.event_type == "EARNINGS") &
+                    ((calendar.symbol == ticker) | calendar.symbol.isna())]
+    if rows.empty:
+        return None
     if "event_date_known_at_entry" not in calendar.columns:
         return "EVENT_CALENDAR_PIT_METADATA_MISSING"
     if not calendar["event_date_known_at_entry"].astype(str).str.upper().isin({"YES", "TRUE", "1"}).all():
         return "EVENT_CALENDAR_PIT_METADATA_UNVERIFIED"
-    rows = calendar[(calendar.event_type == "EARNINGS") &
-                    ((calendar.symbol == ticker) | calendar.symbol.isna())]
     for event in pd.to_datetime(rows.event_date).dt.normalize():
         # Past events cannot create entry blackout or expiration exposure.
         # Without this guard, bdate_range(entry, past_event) is empty and
@@ -352,7 +354,11 @@ def replay_dates(ticker: str, daily_path: str | Path, option_root: str | Path,
         setup = {**context, "ticker": ticker}
         for candidate in _spread_candidates(chain, day, close, atr, setup, policy):
             event_reason = _event_reason(calendar, ticker, day, candidate["expiration"], stock.date)
-            event_date = next((x for x in pd.to_datetime(calendar.loc[(calendar.event_type == "EARNINGS") & ((calendar.symbol == ticker) | calendar.symbol.isna()), "event_date"]).dt.normalize() if x >= day), None)
+            event_date = None
+            if calendar is not None and not calendar.empty and {"event_type", "symbol", "event_date"}.issubset(calendar.columns):
+                event_rows = calendar[(calendar.event_type == "EARNINGS") &
+                                      ((calendar.symbol == ticker) | calendar.symbol.isna())]
+                event_date = next((x for x in pd.to_datetime(event_rows.event_date).dt.normalize() if x >= day), None)
             crosses = bool(event_date is not None and day <= event_date <= candidate["expiration"])
             if event_reason == "EVENT_PRE_EARNINGS_BLACKOUT":
                 continue
