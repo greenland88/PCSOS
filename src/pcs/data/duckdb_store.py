@@ -32,7 +32,10 @@ def refresh_views(con, parquet_root="data/parquet", symbols=None):
         glob = str(derived / name / "*.parquet").replace("\\", "/")
         if list((derived / name).glob("*.parquet")):
             con.execute(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_parquet('{glob}', union_by_name=true)")
-    research = Path(parquet_root).parent / "research"
+    # Research artifacts are stored below the canonical parquet root.  Using
+    # ``parent / research`` silently points at the legacy ``data/research``
+    # directory and leaves the view disconnected from its writer.
+    research = Path(parquet_root) / "research"
     trades = str(research / "pcs_backtest_trades" / "**" / "*.parquet").replace("\\", "/")
     if list((research / "pcs_backtest_trades").glob("**/*.parquet")):
         con.execute(f"CREATE OR REPLACE VIEW pcs_backtest_trades AS SELECT * FROM read_parquet('{trades}', union_by_name=true, hive_partitioning=true)")
