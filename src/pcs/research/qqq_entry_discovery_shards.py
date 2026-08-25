@@ -42,6 +42,8 @@ def main() -> dict:
                 identity = _shard_identity(year)
                 if (prior.get("population_corrected") is True
                         and prior.get("global_warmup") is True
+                        and prior.get("status") == "COMPLETED_QUOTE_ADAPTATION_ONLY"
+                        and prior.get("options_source_valid") is True
                         and prior.get("shard_identity") == identity):
                     return prior, "REUSED"
             except Exception:
