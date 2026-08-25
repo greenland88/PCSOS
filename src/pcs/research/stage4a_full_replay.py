@@ -82,7 +82,7 @@ def canonical_market_state_factory(path: str | Path = "data/derived/canonical_pi
 
 @dataclass(frozen=True)
 class ReplayConfig:
-    output_dir: Path = Path("research_outputs/stage4a_full_replay_20260820")
+    output_dir: Path = REPO_ROOT / "research_outputs/stage4a_full_replay_20260820"
     event_unsupported_state: str = "FUTURE_EVENT_WINDOW_UNSUPPORTED"
 
 
