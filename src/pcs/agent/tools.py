@@ -3,14 +3,10 @@ from pathlib import Path
 import json
 import pandas as pd
 from .models import response
-from pcs.data.duckdb_store import connect, refresh_views, query_daily, query_option_chain
 from pcs.data.access import PCSDataAccess, DataAccessError
 from pcs.data.derived_store import read_derived, read_backtest_trades
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-
-def _con(symbols=None):
-    con=connect(":memory:"); refresh_views(con, symbols=symbols); return con
 
 def get_daily_history(symbol, start_date, end_date):
     df=PCSDataAccess().read_prices(symbol, start_date, end_date)
