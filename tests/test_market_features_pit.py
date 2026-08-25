@@ -1,0 +1,21 @@
+from pcs.features.market_features import calculate_market_features
+import pandas as pd
+
+
+def _rows(start, count):
+    return [{"symbol": "X", "date": (pd.Timestamp("2020-01-01") + pd.Timedelta(days=i-1)).date(), "open": i,
+             "high": i + 1, "low": i - 1, "close": i, "volume": 100}
+            for i in range(start, start + count)]
+
+
+def test_future_rows_do_not_change_historical_market_features():
+    base = calculate_market_features(_rows(1, 30))
+    extended = calculate_market_features(_rows(1, 30) + _rows(31, 10))
+    fields = ("dma20", "dma50", "dma200", "atr5", "atr14",
+              "realized_vol_20d", "predictability_score", "trend_score")
+    for before, after in zip(base, extended[:len(base)]):
+        for field in fields:
+            if pd.isna(before[field]):
+                assert pd.isna(after[field])
+            else:
+                assert before[field] == after[field]

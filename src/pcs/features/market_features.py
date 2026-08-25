@@ -22,19 +22,21 @@ def calculate_market_features(rows: list[dict], predictability_weights: dict | N
         close = g["close"]
         prev_close = close.shift(1)
         tr = pd.concat([(g["high"] - g["low"]), (g["high"] - prev_close).abs(), (g["low"] - prev_close).abs()], axis=1).max(axis=1)
-        g["dma20"] = close.rolling(20, min_periods=1).mean()
-        g["dma50"] = close.rolling(50, min_periods=1).mean()
-        g["dma200"] = close.rolling(200, min_periods=1).mean()
+        g["dma20"] = close.rolling(20, min_periods=20).mean()
+        g["dma50"] = close.rolling(50, min_periods=50).mean()
+        g["dma200"] = close.rolling(200, min_periods=200).mean()
         g["dma20_slope"] = g["dma20"].diff(5) / 5
         g["dma50_slope"] = g["dma50"].diff(10) / 10
-        g["atr5"] = tr.rolling(5, min_periods=1).mean()
-        g["atr14"] = tr.rolling(14, min_periods=1).mean()
+        g["atr5"] = tr.rolling(5, min_periods=5).mean()
+        g["atr14"] = tr.rolling(14, min_periods=14).mean()
         returns = close.pct_change()
         g["realized_vol_20d"] = returns.rolling(20, min_periods=2).std() * math.sqrt(252)
         rolling_high = close.cummax()
         g["drawdown"] = (close / rolling_high - 1) * 100
         crossings = ((close > g["dma20"]) != (close.shift(1) > g["dma20"].shift(1))).rolling(20, min_periods=1).sum()
-        vol_rank = g["realized_vol_20d"].rank(pct=True, ascending=False).fillna(0.5)
+        # Expanding rank is PIT-safe: appending future rows cannot change a
+        # historical percentile.  A full-frame rank leaks future volatility.
+        vol_rank = g["realized_vol_20d"].expanding(min_periods=1).rank(pct=True, ascending=False).fillna(0.5)
         score = (
             (g["dma20_slope"] > 0).astype(int) * weights["positive_dma20_slope"]
             + (g["dma50_slope"] > 0).astype(int) * weights["positive_dma50_slope"]
