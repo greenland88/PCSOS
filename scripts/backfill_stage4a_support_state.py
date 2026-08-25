@@ -50,7 +50,13 @@ def main() -> None:
                (ROOT / "candidate_inputs" / "AMZN.parquet", "AMZN"),
                (ROOT / "authoritative_amzn_794_entry_contract_v2.parquet", "AMZN")]
     results = [backfill(path, ticker) for path, ticker in targets if path.exists()]
-    (ROOT / "support_state_backfill.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    target = ROOT / "support_state_backfill.json"
+    temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(results, indent=2), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     print(json.dumps(results, indent=2))
 
 

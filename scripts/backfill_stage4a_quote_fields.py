@@ -39,6 +39,13 @@ def main():
     for t in TICKERS:
         p=ROOT/"authoritative_amzn_794_entry_contract_v2.parquet" if t=="AMZN" else ROOT/"candidate_inputs"/f"{t}.parquet"
         results.append(backfill(p,t))
-    (ROOT/"stage4a_mapping_audit.json").write_text(json.dumps(results,indent=2,default=str),encoding="utf-8"); print(json.dumps(results,indent=2,default=str))
+    target = ROOT / "stage4a_mapping_audit.json"
+    temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+    print(json.dumps(results,indent=2,default=str))
 
 if __name__=="__main__": main()
