@@ -26,8 +26,15 @@ def annualized_performance_metrics(
     data = frame.copy()
     complete = data[data.get("status", pd.Series("COMPLETE", index=data.index)).eq("COMPLETE")] if len(data) else data
     if len(complete) and "exit_date" in complete:
-        complete = complete.assign(_realized_date=pd.to_datetime(complete.exit_date, errors="coerce")) \
-            .sort_values(["_realized_date", "date"] if "date" in complete else ["_realized_date"], kind="mergesort")
+        complete = complete.assign(_realized_date=pd.to_datetime(complete.exit_date, errors="coerce"))
+        # Exit dates are often shared by several trades.  A stable identity
+        # tie-break keeps the realized curve independent of shard/worker row
+        # order, including when entries share both exit date and entry date.
+        sort_keys = ["_realized_date"]
+        for key in ("date", "candidate_id", "trade_id"):
+            if key in complete:
+                sort_keys.append(key)
+        complete = complete.sort_values(sort_keys, kind="mergesort")
     pnl = pd.to_numeric(complete.get("realized_pnl", pd.Series(dtype=float)), errors="coerce").dropna()
     if test_start_date is None:
         dates = pd.to_datetime(data.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()

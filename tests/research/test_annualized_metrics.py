@@ -29,3 +29,16 @@ def test_no_trade_and_capital_return_is_not_cagr():
     assert result["trade_count"] == 0 and result["CAGR"] == 0
     result = annualized_performance_metrics(rows([100]), starting_equity=1000, test_start_date="2020-01-01", test_end_date="2021-01-01")
     assert result["CAGR"] != result["annualized_return_on_average_capital"]
+
+
+def test_max_drawdown_is_invariant_to_input_order_for_same_exit_date():
+    frame = pd.DataFrame([
+        {"status": "COMPLETE", "candidate_id": "b", "date": "2020-01-02", "exit_date": "2020-01-10", "realized_pnl": -100},
+        {"status": "COMPLETE", "candidate_id": "a", "date": "2020-01-02", "exit_date": "2020-01-10", "realized_pnl": 50},
+        {"status": "COMPLETE", "candidate_id": "c", "date": "2020-01-03", "exit_date": "2020-01-11", "realized_pnl": 20},
+    ])
+    one = annualized_performance_metrics(frame, starting_equity=1000,
+                                         test_start_date="2020-01-01", test_end_date="2020-01-11")
+    two = annualized_performance_metrics(frame.sample(frac=1, random_state=7), starting_equity=1000,
+                                         test_start_date="2020-01-01", test_end_date="2020-01-11")
+    assert one["max_drawdown"] == two["max_drawdown"]
