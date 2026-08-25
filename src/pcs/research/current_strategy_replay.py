@@ -32,6 +32,21 @@ def _identity(ticker, day, expiry, short, long):
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+def _session_horizon_end(start_dates, sessions, count: int) -> pd.Timestamp:
+    """Return the latest date covering ``count`` authoritative sessions."""
+    calendar = pd.DatetimeIndex(pd.to_datetime(sessions)).normalize().drop_duplicates().sort_values()
+    if len(calendar) == 0:
+        raise LifecycleAdapterError("SESSION_CALENDAR_UNAVAILABLE")
+    ends = []
+    for start in pd.to_datetime(start_dates):
+        position = int(calendar.searchsorted(pd.Timestamp(start).normalize(), side="left"))
+        if position < len(calendar):
+            ends.append(calendar[min(position + count, len(calendar) - 1)])
+    if not ends:
+        raise LifecycleAdapterError("SESSION_CALENDAR_HORIZON_UNAVAILABLE")
+    return max(ends)
+
+
 def _candidate(row, ctx, chain, ticker):
     exp = row["expiration"]; typ = chain[chain.call_put.eq("p")]
     return TradeCandidate(ticker=str(ticker).upper(), expiration=str(pd.Timestamp(exp).date()),
@@ -128,8 +143,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     # Keep the canonical feature warm-up, but do not load pre-scope history
     # into the replay process. The clean population remains the sole signal
     # population; this is only an I/O boundary for the requested period.
-    train_start = max(pd.Timestamp(daily.date.min()), pd.Timestamp(option_source.first_date),
-                      requested_start - pd.Timedelta(days=300))
+    train_start = max(pd.Timestamp(daily.date.min()), requested_start - pd.Timedelta(days=300))
     train = daily[daily.date.between(train_start, train_end)].copy()
     execution_dates = spec.signal_definition.get("execution_dates")
     if execution_dates:
@@ -153,7 +167,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
             if opts.duplicated(key, keep=False).any():
                 raise LifecycleAdapterError("CANONICAL_QUOTE_DUPLICATE_IDENTITY")
     else:
-        opts = access.read_quotes(spec.ticker, train.date.min(), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
+        opts = access.read_quotes(spec.ticker, frame["date"].min(), min(train.date.max() + pd.Timedelta(days=50), option_last_date))
     # The canonical reader returns the full options schema.  The replay only
     # needs these fields; retaining Greeks and provenance columns through the
     # per-day grouping otherwise multiplies memory use without changing any
@@ -173,6 +187,8 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     feature_ready = 0; setup_eligible = 0; market_state_missing = 0
     context_table = build_historical_setup_context_table(train, benchmark, train.date, spec.ticker, benchmark_symbol)
     for day in train.date:
+        if pd.Timestamp(day) < requested_start:
+            continue
         if execution_dates and pd.Timestamp(day).normalize() not in execution_date_set:
             continue
         ctx = context_table[pd.Timestamp(day).normalize()]
@@ -256,10 +272,14 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     life_rows = []
     lifecycle_quotes = pd.DataFrame()
     if len(frame):
+        lifecycle_quote_end = min(
+            _session_horizon_end(frame["date"], train.date, ReplayPolicy().max_quote_days),
+            option_last_date,
+        )
         lifecycle_quotes = access.read_quotes(
             spec.ticker,
             frame["date"].min(),
-            min((pd.to_datetime(frame["date"]) + pd.Timedelta(days=20)).max(), option_last_date),
+            lifecycle_quote_end,
         )
         key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
         if lifecycle_quotes.duplicated(key, keep=False).any():
@@ -268,14 +288,20 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                                              "strike", "call_put", "bid", "ask"]]
         lifecycle_quotes["trade_date"] = pd.to_datetime(lifecycle_quotes["trade_date"]).dt.normalize()
         lifecycle_quotes["expiration_date"] = pd.to_datetime(lifecycle_quotes["expiration_date"]).dt.normalize()
+    eligible_candidate_ids = set()
     for r in frame.to_dict("records"):
+        quote_end = min(
+            _session_horizon_end([r["date"]], train.date, ReplayPolicy().max_quote_days),
+            pd.Timestamp(r["expiration"]),
+        )
         q = lifecycle_quotes[(lifecycle_quotes.trade_date >= pd.Timestamp(r["date"])) &
-                             (lifecycle_quotes.trade_date <= min(pd.Timestamp(r["expiration"]), pd.Timestamp(r["date"])+pd.Timedelta(days=20))) &
+                             (lifecycle_quotes.trade_date <= quote_end) &
                              (lifecycle_quotes.expiration_date == pd.Timestamp(r["expiration"])) &
                              (lifecycle_quotes.strike.isin([r["short_strike"], r["long_strike"]]))]
         try:
             validate_lifecycle_corporate_action(r, price_basis_service)
             life_rows.extend(build_lifecycle_quote_rows(q, r))
+            eligible_candidate_ids.add(str(r["candidate_id"]))
         except LifecycleAdapterError as exc:
             if str(exc) == "CORPORATE_ACTION_CONTRACT_MAPPING_UNAVAILABLE":
                 continue
@@ -283,7 +309,7 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     adapter = Stage4ALifecycleReplayAdapter(pd.DataFrame(life_rows), ReplayPolicy()) if life_rows else None
     results = []
     for r in frame.to_dict("records"):
-        if adapter is None: break
+        if adapter is None or str(r["candidate_id"]) not in eligible_candidate_ids: continue
         x = adapter(r); results.append({**r, **x})
     result_frame = pd.DataFrame(results); out = Path(output_dir) / spec.research_id; out.mkdir(parents=True, exist_ok=True)
     if len(frame): frame.to_parquet(out / "candidates.parquet", index=False)
@@ -307,6 +333,10 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
                 "stop_rate": float(group["stop_triggered"].fillna(False).astype(bool).mean()),
             })
     (out / "yearly_metrics.json").write_text(json.dumps(yearly_metrics, indent=2), encoding="utf-8")
-    report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":len(train),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "final_oos_read":False,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
+    decision_days = train[train.date >= requested_start]
+    final_oos_start = spec.split_policy.get("final_oos_start") or spec.split_policy.get("final_oos", {}).get("start")
+    max_read_date = pd.to_datetime(opts.trade_date).max() if len(opts) else None
+    final_oos_read = bool(final_oos_start and max_read_date is not pd.NaT and pd.notna(max_read_date) and max_read_date >= pd.Timestamp(final_oos_start))
+    report = {"module":"pcs.research.current_strategy_replay", "version":"1.1", "ticker":spec.ticker, "research_mode":spec.research_mode.value, "population_semantics":"FULL_PIT_FEATURE_READY_CALENDAR" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_CURRENT_STRATEGY", "old_strategy_reference":"FORBIDDEN_FOR_NEW_ENTRY" if spec.research_mode.value == "NEW_ENTRY" else "LEGACY_RESEARCH_ONLY", "rules":rules, "funnel":{"TRADING_DAYS":len(decision_days),"FEATURE_READY_DAYS":feature_ready,"SETUP_ELIGIBLE_DAYS":setup_eligible,"CONTRACT_CANDIDATES":len(frame),"SELECTED_ENTRIES":len(frame),"LIFECYCLES_COMPLETED":len(result_frame), **{f+"_REJECTED":v for f,v in rejected.items()}}, "market_state_missing_count":market_state_missing, "regime_used_as_blocker":bool(rules["regime_gate"]), "metrics":metrics, "max_options_read_date":str(max_read_date.date()) if pd.notna(max_read_date) else None,"final_oos_read":final_oos_read,"old_474_used_as_input":False,"production_logic_changed":False,"production_config_changed":False,"frozen_artifact_changed":False}
     (out / "replay_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report

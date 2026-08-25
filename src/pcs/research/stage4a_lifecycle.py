@@ -50,9 +50,9 @@ class Stage4ALifecycleReplayAdapter:
         short = rows[["mark_date", "short_bid", "short_ask"]].rename(columns={"mark_date":"Trade Date", "short_bid":"Bid Price", "short_ask":"Ask Price"})
         long = rows[["mark_date", "long_bid", "long_ask"]].rename(columns={"mark_date":"Trade Date", "long_bid":"Bid Price", "long_ask":"Ask Price"})
         short["Trade Date"] = pd.to_datetime(short["Trade Date"]); long["Trade Date"] = pd.to_datetime(long["Trade Date"])
-        quote_index = {(expected[1], expected[2]): short, (expected[1], expected[3]): long}
+        quote_index = {(expected[1], "p", expected[2]): short, (expected[1], "p", expected[3]): long}
         try:
-            result = _replay_lifecycle_batch({"date": pd.Timestamp(candidate["date"]), "expiration": expected[1], "short_strike": expected[2], "long_strike": expected[3], "credit": float(candidate["initial_credit"])}, quote_index, self.policy)
+            result = _replay_lifecycle_batch({"date": pd.Timestamp(candidate["date"]), "expiration": expected[1], "short_strike": expected[2], "long_strike": expected[3], "credit": float(candidate["initial_credit"]), "trading_sessions": pd.DatetimeIndex(pd.to_datetime(rows.mark_date)).unique()}, quote_index, self.policy)
         except Exception as exc:
             raise LifecycleAdapterError("BASE_REPLAY_FAILURE") from exc
         if result.get("status") == "COMPLETE" and result.get("exit_date") is None:
