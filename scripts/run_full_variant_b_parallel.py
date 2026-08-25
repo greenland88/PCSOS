@@ -19,6 +19,22 @@ TICKERS = ["AAPL", "AMD", "AMZN", "AVGO", "CRM", "GOOGL", "HOOD", "META",
            "MSFT", "MU", "NFLX", "NVDA", "QQQ", "SPY", "TSLA", "VRT"]
 
 
+def _valid_replay_output(path: Path, ticker: str) -> tuple[bool, int]:
+    try:
+        frame = pd.read_parquet(path)
+    except Exception:
+        return False, 0
+    if not {"ticker", "date"}.issubset(frame.columns):
+        return False, len(frame)
+    dates = pd.to_datetime(frame["date"], errors="coerce")
+    if not frame["ticker"].astype(str).str.upper().eq(ticker).all() or dates.isna().any():
+        return False, len(frame)
+    if frame.duplicated(["ticker", "date", "expiration", "short_strike", "long_strike"],
+                        keep=False).any() if {"expiration", "short_strike", "long_strike"}.issubset(frame.columns) else False:
+        return False, len(frame)
+    return True, len(frame)
+
+
 def run_ticker(ticker: str) -> dict:
     output = OUT / f"{ticker}_full_post2020_2d.parquet"
     receipt = output.with_suffix(".identity.json")
@@ -46,8 +62,9 @@ def run_ticker(ticker: str) -> dict:
     if output.exists() and receipt.exists():
         saved = json.loads(receipt.read_text(encoding="utf-8"))
         if saved.get("identity") == identity and saved.get("output_sha256") == hashlib.sha256(output.read_bytes()).hexdigest():
-            frame = pd.read_parquet(output)
-            return {"ticker": ticker, "reused": True, "rows": len(frame)}
+            valid, rows = _valid_replay_output(output, ticker)
+            if valid:
+                return {"ticker": ticker, "reused": True, "rows": rows}
     stock = access.read_prices(ticker).copy()
     start_year = 2021 if ticker == "HOOD" else 2020
     dates = list(stock.loc[stock.date.dt.year.ge(start_year), "date"])
