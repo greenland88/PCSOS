@@ -288,7 +288,7 @@ def track_trade(entry, quotes, short, long, initial, max_days=20, quote_index=No
     exit_day=events["profit50"] if reason=="PROFIT50" else events["stop"] if reason=="STOP" else valid_days[-1][0]; exit_cost=next(x[2] for x in valid_days if x[0]==exit_day)
     return {"events":events,"exit_reason":reason,"days_held":len([x for x in valid_days if x[0]<=exit_day]),"exit_cost":exit_cost,"realized_pnl":(initial-exit_cost)*100,"invalid_days":invalid}
 
-def run_backtest(stock, benchmark, config=None, option_root="data/raw/options/NVDA", start=START, end=END, progress_callback=None, backend="canonical", duckdb_path="data/duckdb/pcs.duckdb", safe_strike_atr=DEFAULT_SAFE_STRIKE_ATR):
+def run_backtest(stock, benchmark, config=None, option_root="NVDA", start=START, end=END, progress_callback=None, backend="canonical", duckdb_path="data/duckdb/pcs.duckdb", safe_strike_atr=DEFAULT_SAFE_STRIKE_ATR):
     if backend != "canonical":
         raise DataAccessError("LEGACY_OPTION_BACKEND_DISABLED: use PCSDataAccess canonical route")
     from .ticker_readiness import assert_research_ready
