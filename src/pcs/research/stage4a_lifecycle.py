@@ -61,6 +61,7 @@ class Stage4ALifecycleReplayAdapter:
                        "initial_credit": float(candidate["initial_credit"]),
                        "holding_calendar_days": (pd.Timestamp(result["exit_date"]) - pd.Timestamp(candidate["date"])).days if result.get("exit_date") is not None else None,
                        "holding_trading_days": self._holding_trading_days(candidate["date"], result.get("exit_date")),
+                       "holding_trading_days_status": ("AVAILABLE" if self.trading_sessions is not None else "TRADING_CALENDAR_UNAVAILABLE"),
                        "stopped": bool(result.get("stop_triggered", False)),
                        "expired": bool(result.get("exit_date") is not None and pd.Timestamp(result["exit_date"]).normalize() >= expected[1]),
                        "mfe": result.get("mfe"), "mae": result.get("mae"), "lifecycle_observation_count": result.get("mark_count")})
@@ -70,7 +71,9 @@ class Stage4ALifecycleReplayAdapter:
         if exit_date is None:
             return None
         entry = pd.Timestamp(entry_date).normalize(); exit_day = pd.Timestamp(exit_date).normalize()
-        sessions = (pd.DatetimeIndex(self.trading_sessions).normalize()
-                    if self.trading_sessions is not None
-                    else pd.DatetimeIndex(self.lifecycle["mark_date"].dropna().unique()).normalize())
+        if self.trading_sessions is None:
+            # Quote availability is not an exchange calendar; a missing quote
+            # must not silently turn a valid session into a non-session.
+            return None
+        sessions = pd.DatetimeIndex(self.trading_sessions).normalize()
         return int(((sessions > entry) & (sessions <= exit_day)).sum())
