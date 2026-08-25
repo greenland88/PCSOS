@@ -14,12 +14,13 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from pcs.data.daily_provider import DailyDataProvider
+from pcs.data.access import PCSDataAccess
 from pcs.entry.support_contract import SUPPORT_PRODUCER_VERSION, classify_support
 
-ROOT = Path("research_outputs/tsla_specialized_pcs_20260820")
-FROZEN = Path("data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet")
-TREND = Path("research_outputs/safe_strike_risk_map_v0_1/trend_histories/TSLA_trend.parquet")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPO_ROOT / "research_outputs/tsla_specialized_pcs_20260820"
+FROZEN = REPO_ROOT / "data/parquet/research/variant_b_full/TSLA_full_post2020_2d.parquet"
+TREND = REPO_ROOT / "research_outputs/safe_strike_risk_map_v0_1/trend_histories/TSLA_trend.parquet"
 
 
 def candidate_id(row: pd.Series) -> str:
@@ -39,8 +40,8 @@ def backfill(root: Path = ROOT) -> dict:
     trend = pd.read_parquet(TREND).copy()
     trend["date"] = pd.to_datetime(trend["date"]).dt.normalize()
     payloads = trend.drop_duplicates("date").set_index("date")["support"]
-    daily = DailyDataProvider().build_daily_series(
-        "TSLA", as_of_date=frozen["expiration"].max(), start_date=frozen["decision_date"].min()
+    daily = PCSDataAccess().read_prices(
+        "TSLA", start_date=frozen["decision_date"].min(), end_date=frozen["expiration"].max()
     )
     daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
     bars = daily.drop_duplicates("date").set_index("date")
@@ -67,7 +68,7 @@ def backfill(root: Path = ROOT) -> dict:
             "low": None if bar is None else bar.get("low"),
             "close": None if bar is None else bar.get("close"),
             "volume": None if bar is None else bar.get("volume"),
-            "ohlcv_source": "DailyDataProvider:purchased_qfq",
+            "ohlcv_source": "PCSDataAccess:canonical_daily_source",
             "pit_status": "PIT" if bar is not None and payload is not None else "PIT_DATA_MISSING",
         })
     out = pd.DataFrame(rows)
