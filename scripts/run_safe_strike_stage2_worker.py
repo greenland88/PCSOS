@@ -1,4 +1,4 @@
-import argparse, json, os, sys, time, traceback
+import argparse, hashlib, json, os, sys, time, traceback
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
