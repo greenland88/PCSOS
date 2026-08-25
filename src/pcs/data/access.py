@@ -626,7 +626,8 @@ class PCSDataAccess:
         metadata = metadata or {}
         out = frame.copy()
         for key, value in metadata.items(): out[key] = value
-        out["created_at"] = metadata.get("created_at", datetime.now(timezone.utc).isoformat())
+        created_at = metadata.get("created_at", datetime.now(timezone.utc).isoformat())
+        out["created_at"] = created_at
         target = Path(root) / namespace
         target.mkdir(parents=True, exist_ok=True)
         path = target / name
@@ -646,7 +647,7 @@ class PCSDataAccess:
         sidecar = path.with_suffix(path.suffix + ".semantic.json")
         side_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
         try:
-            side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": out["created_at"].iloc[0], "row_count": len(out)}, sort_keys=True), encoding="utf-8")
+            side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": created_at, "row_count": len(out)}, sort_keys=True), encoding="utf-8")
             os.replace(side_tmp, sidecar)
         finally:
             side_tmp.unlink(missing_ok=True)
@@ -656,6 +657,16 @@ class PCSDataAccess:
         path = Path(root) / namespace / name
         if not path.exists(): return pd.DataFrame()
         out = pd.read_parquet(path)
+        sidecar = path.with_suffix(path.suffix + ".semantic.json")
+        if not sidecar.is_file():
+            raise DataQualityError(f"artifact semantic sidecar missing: {path}")
+        try:
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise DataQualityError(f"artifact semantic sidecar invalid: {path}") from exc
+        if (metadata.get("semantic_hash") != self.semantic_content_hash(out)
+                or int(metadata.get("row_count", -1)) != len(out)):
+            raise DataQualityError(f"artifact semantic sidecar mismatch: {path}")
         for key, value in (filters or {}).items():
             if key not in out: raise DataQualityError(f"artifact filter column missing: {key}")
             out = out[out[key] == value]

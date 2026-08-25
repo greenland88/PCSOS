@@ -47,6 +47,26 @@ def test_semantic_hash_ignores_run_metadata(tmp_path):
     assert a.write_artifact(y, "test", "result", root=tmp_path) == p
 
 
+def test_empty_artifact_has_valid_sidecar_and_can_be_read(tmp_path):
+    a = _access(tmp_path)
+    p = a.write_artifact(pd.DataFrame(columns=["value"]), "test", "empty", root=tmp_path)
+    assert a.read_artifact("test", "empty.parquet", root=tmp_path).empty
+    assert p.with_suffix(p.suffix + ".semantic.json").is_file()
+
+
+def test_artifact_read_fails_closed_on_missing_or_tampered_sidecar(tmp_path):
+    a = _access(tmp_path)
+    p = a.write_artifact(pd.DataFrame({"value": [1]}), "test", "result", root=tmp_path)
+    sidecar = p.with_suffix(p.suffix + ".semantic.json")
+    sidecar.unlink()
+    with pytest.raises(DataQualityError, match="sidecar missing"):
+        a.read_artifact("test", "result.parquet", root=tmp_path)
+    a.write_artifact(pd.DataFrame({"value": [1]}), "test", "result", root=tmp_path)
+    sidecar.write_text('{"semantic_hash":"wrong","row_count":1}', encoding="utf-8")
+    with pytest.raises(DataQualityError, match="sidecar mismatch"):
+        a.read_artifact("test", "result.parquet", root=tmp_path)
+
+
 def test_concurrent_manifest_updates_and_interruption(tmp_path, monkeypatch):
     def write(partition):
         _access(tmp_path).update_manifest("daily", "AAA", pd.DataFrame({"date": [f"2024-0{partition}-02"]}), f"p{partition}.parquet", "v1", f"year=2024/quarter={partition}")
