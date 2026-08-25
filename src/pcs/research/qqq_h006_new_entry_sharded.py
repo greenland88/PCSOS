@@ -23,11 +23,35 @@ from pcs.research.variant_b_replay import ReplayPolicy
 YEARS = (2020, 2021, 2022, 2023)
 MODULE = "pcs.research.qqq_h006_new_entry_sharded"
 
+_SHARD_COLUMNS = {
+    "trade_date", "ticker", "pit_feature_ready", "signal_date",
+    "option_chain_available", "contract_selected", "lifecycle_completed",
+    "reason_code",
+}
+
 
 def _atomic_json(path: Path, value: dict) -> None:
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
     os.replace(temp, path)
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+def _valid_shard_output(path: Path, summary: dict) -> bool:
+    if not path.is_file() or not isinstance(summary.get("rows"), int):
+        return False
+    if summary.get("output_sha256") != _file_digest(path):
+        return False
+    try:
+        frame = pd.read_parquet(path)
+    except Exception:
+        return False
+    return len(frame) == summary["rows"] and _SHARD_COLUMNS.issubset(frame.columns)
 
 def _shard_identity(year: int) -> dict:
     access = PCSDataAccess()
@@ -68,7 +92,9 @@ def _one_year(year: int, root: Path) -> dict:
     if target.exists() and summary.exists():
         try:
             prior = json.loads(summary.read_text())
-            if prior.get("shard_identity") == _shard_identity(year) and prior.get("status") == "COMPLETED":
+            if (prior.get("shard_identity") == _shard_identity(year)
+                    and prior.get("status") == "COMPLETED"
+                    and _valid_shard_output(target, prior)):
                 return prior
         except Exception:
             pass
@@ -127,6 +153,7 @@ def _one_year(year: int, root: Path) -> dict:
     shard_status = "COMPLETED" if option_failures == 0 and lifecycle_failures == 0 else "BLOCKED_INCOMPLETE_CANONICAL_REPLAY"
     counts={"year":year,"rows":len(out),"signal_dates":int(out.signal_date.sum()),"option_data_available":int(out.option_chain_available.sum()),"contract_selected":int(out.contract_selected.sum()),"lifecycle_completed":int(out.lifecycle_completed.sum()),"option_read_failures":option_failures,"lifecycle_failures":lifecycle_failures,"status":shard_status,"shard_identity":_shard_identity(year)}
     for code in ["NO_OPTION_DATA","NO_DTE","NO_SAFE_STRIKE","LIQUIDITY_FAIL","CREDIT_FAIL","CONTRACT_FAIL","LIFECYCLE_FAIL"]: counts[code]=int(out.reason_code.eq(code).sum())
+    counts["output_sha256"] = _file_digest(target)
     _atomic_json(summary, counts); return counts
 
 def run(output_dir="research_outputs/qqq_entry_discovery_agent_v1_h006_timing_train/shards", workers=4):
