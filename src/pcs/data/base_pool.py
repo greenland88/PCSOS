@@ -41,7 +41,7 @@ def _tier(score: float) -> str:
 
 def _underlying_rows(manifest: pd.DataFrame, config: BasePoolConfig, access: PCSDataAccess) -> pd.DataFrame:
     try:
-        files = str(Path("data/parquet/daily") / "symbol=*" / "year=*" / "*.parquet")
+        files = str(access.parquet_root / "daily" / "symbol=*" / "year=*" / "*.parquet")
         daily = duckdb.connect().execute("select upper(symbol) symbol, min(date) coverage_start, max(date) coverage_end, count(*) daily_rows, avg(volume) avg_share_volume, avg(close*volume) avg_dollar_volume from read_parquet(?, hive_partitioning=true) group by upper(symbol)", [files]).fetchdf()
         manifest = manifest.merge(daily, on="symbol", how="left")
     except Exception:
@@ -103,12 +103,14 @@ def _option_metrics(access: PCSDataAccess, symbol: str, config: BasePoolConfig) 
 
 
 def build_base_pool(*, access: PCSDataAccess | None = None, daily_manifest: str | Path = "data/manifests/daily_universe_migration.csv", output_dir: str | Path = "research_outputs/global_pcs_base_universe", config: BasePoolConfig = BasePoolConfig()) -> dict[str, Any]:
-    access = access or PCSDataAccess(); manifest = pd.read_csv(daily_manifest)
+    access = access or PCSDataAccess()
+    daily_manifest = access._storage_path(daily_manifest)
+    manifest = pd.read_csv(daily_manifest)
     # The base pool is a live research input boundary.  Never select an
     # options_recent/options_monthly migration store merely because its
     # manifest happens to exist; ticker-specific canonical routing is the
     # source of truth for both membership and quality reads.
-    canonical_options_manifest = Path("data/manifests/storage_manifest_options_v2.csv")
+    canonical_options_manifest = access.data_root / "manifests/storage_manifest_options_v2.csv"
     option_symbols = set(pd.read_csv(canonical_options_manifest).symbol.astype(str).str.upper()) if canonical_options_manifest.exists() else set()
     under = _underlying_rows(manifest, config, access)
     records = []
