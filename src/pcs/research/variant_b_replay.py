@@ -77,6 +77,8 @@ def _load_replay_calendar(path: str | Path) -> pd.DataFrame:
     unavailable-calendar result (or its validation error) and fail closed.
     """
     out = load_calendar(path)
+    if len(out) and "event_date_known_at_entry" not in out.columns and "known_at_entry" not in out.columns:
+        raise ValueError("EVENT_PIT_METADATA_MISSING:event_date_known_at_entry")
     out.attrs["historical_pit_required"] = True
     return out
 
