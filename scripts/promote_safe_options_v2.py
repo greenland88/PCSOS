@@ -1,6 +1,6 @@
 """Promote the validated exact-duplicate-only artifacts into isolated options_v2."""
 from __future__ import annotations
-import hashlib, json
+import hashlib, json, os
 from pathlib import Path
 import pandas as pd
 from pcs.data.access import PCSDataAccess
@@ -36,7 +36,12 @@ def main():
         access.update_manifest("options_v2",symbol,frame,target,source_version,part,replace_existing=True)
         access.record_provenance({"source":"safe_rebuild_artifact","symbol":symbol,"quarter":f"{year} Q{quarter}","dataset":"options_v2","source_sha256":row.source_sha256,"artifact_sha256":row.output_sha256,"raw_rows":int(row.raw_rows),"exact_duplicates_removed":int(row.exact_duplicates_removed),"conflicting_keys":0,"unique_keys_preserved":int(row.unique_keys_preserved),"promotion":"PCSDataAccess","status":"PROMOTED"})
         results.append({"ticker":symbol,"quarter":f"{year} Q{quarter}","status":"PROMOTED"})
-    OUT.write_text(json.dumps(results,indent=2),encoding="utf-8")
+    temp = OUT.with_name(f".{OUT.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(results,indent=2),encoding="utf-8")
+        os.replace(temp, OUT)
+    finally:
+        temp.unlink(missing_ok=True)
     print("promoted",len(results))
 
 if __name__=="__main__": main()
