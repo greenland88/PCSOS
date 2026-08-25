@@ -146,6 +146,27 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     portfolio.setdefault("planned_loss", portfolio.get("planned_risk", 0.0))
     portfolio.setdefault("bucket_risk", {})
     portfolio.setdefault("ticker_risk", {})
+    portfolio.setdefault("_reservations", [])
+
+    def release_finished(day: pd.Timestamp) -> None:
+        """Release planned risk after each trade's authoritative exit date."""
+        active = []
+        for reservation in portfolio["_reservations"]:
+            if reservation["end_date"] < day:
+                amount = reservation["amount"]
+                portfolio["planned_loss"] -= amount
+                portfolio["planned_risk"] = portfolio["planned_loss"]
+                bucket = reservation["bucket"]
+                ticker = reservation["ticker"]
+                portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) - amount
+                portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) - amount
+                if portfolio["bucket_risk"][bucket] <= 0:
+                    portfolio["bucket_risk"].pop(bucket, None)
+                if portfolio["ticker_risk"][ticker] <= 0:
+                    portfolio["ticker_risk"].pop(ticker, None)
+            else:
+                active.append(reservation)
+        portfolio["_reservations"] = active
     market_state_factory = market_state_factory or canonical_market_state_factory()
     decisions, opened, results = [], [], []
 
@@ -164,6 +185,7 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
         kind="mergesort",
     )
     for row in ordered.to_dict("records"):
+        release_finished(pd.Timestamp(row["date"]).normalize())
         event_state = str(row.get("event_state", ""))
         if event_state == config.event_unsupported_state or not _strict_bool(row.get("historical_replay_eligible", True), default=True):
             decisions.append(_decision_record(row, status="EVENT_WINDOW_UNSUPPORTED", reason=config.event_unsupported_state, historical_replay_eligible=False)); continue
@@ -209,6 +231,10 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
             portfolio["bucket_risk"][bucket] = portfolio["bucket_risk"].get(bucket, 0.0) + reserved
             ticker = str(row.get("ticker", "UNKNOWN")).upper()
             portfolio["ticker_risk"][ticker] = portfolio["ticker_risk"].get(ticker, 0.0) + reserved
+            lifecycle_end = lifecycle.get("exit_date") or lifecycle.get("authoritative_exit_date") or row.get("expiration")
+            portfolio["_reservations"].append({"amount": reserved, "bucket": bucket,
+                                                "ticker": ticker,
+                                                "end_date": pd.Timestamp(lifecycle_end).normalize()})
         except Exception as exc:
             from pcs.research.stage4a_lifecycle import LifecycleAdapterError
             status = "DATA_FAILURE" if isinstance(exc, LifecycleAdapterError) else "CONTRACT_FAILURE"
