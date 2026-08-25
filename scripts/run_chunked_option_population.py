@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -18,6 +19,28 @@ WINDOWS = {
     "AMZN": ("2022-06-06", "2026-07-31"),
 }
 ROOT = Path(__file__).resolve().parents[1] / "research_outputs/safe_strike_chunked_population_monthly"
+RUNNER = Path(__file__).resolve()
+
+def shard_identity(symbol, start, end):
+    access = PCSDataAccess()
+    daily = access.resolve_source("daily", symbol)
+    options = access.resolve_source("options", symbol)
+    payload = {"ticker": symbol, "start": str(pd.Timestamp(start).date()), "end": str(pd.Timestamp(end).date()),
+               "daily_source_version": daily.source_version, "options_source_version": options.source_version,
+               "runner_sha256": hashlib.sha256(RUNNER.read_bytes()).hexdigest()}
+    payload["identity_sha256"] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    return payload
+
+def valid_shard(path, symbol, start, end):
+    try:
+        sidecar = path.with_suffix(".identity.json")
+        if not sidecar.exists() or json.loads(sidecar.read_text()) != shard_identity(symbol, start, end):
+            return False
+        frame = pd.read_parquet(path)
+        return len(frame) == 0 or (frame.ticker.astype(str).eq(symbol).all() and
+            pd.to_datetime(frame.entry_date).between(pd.Timestamp(start), pd.Timestamp(end)).all())
+    except Exception:
+        return False
 
 def chunks(start, end):
     cur = pd.Timestamp(start).to_period("M")
@@ -77,12 +100,13 @@ def run_symbol(symbol):
     for lo, hi in chunks(start, end):
         name = f"{lo:%Y-%m}.parquet"
         target = out / name
-        if target.exists():
+        if target.exists() and valid_shard(target, symbol, lo, hi):
             continue
         t0 = time.perf_counter()
         result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")
         frame = flatten(result["trades"], symbol)
         frame.to_parquet(target, index=False)
+        target.with_suffix(".identity.json").write_text(json.dumps(shard_identity(symbol, lo, hi), indent=2), encoding="utf-8")
         record = {"ticker": symbol, "chunk_start": str(lo.date()), "chunk_end": str(hi.date()), "status": "COMPLETE", "qualified_trades": len(frame), "elapsed_seconds": round(time.perf_counter() - t0, 3), "source_option_files_touched": result["quality"].get("quarter_files_opened"), "rows_scanned": result["quality"].get("option_rows_loaded")}
         with checkpoint.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
