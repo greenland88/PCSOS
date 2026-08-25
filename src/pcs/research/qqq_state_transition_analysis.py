@@ -26,15 +26,23 @@ def _features():
     f['RECOVERY_AFTER_RESET']=(f.drawdown60<-.02)&(f.ret10>0)&(f.ret5>0)
     return f
 
-def _first(x):
-    x=x.sort_values('trade_date').copy(); x['episode_id']=(x.trade_date.diff().dt.days.fillna(999)>4).cumsum(); return x.groupby('episode_id',as_index=False).first()
+def _first(x, trading_sessions):
+    x=x.sort_values('trade_date').copy()
+    sessions = pd.DatetimeIndex(trading_sessions).normalize()
+    positions = {day: i for i, day in enumerate(sessions)}
+    x['session_index'] = x.trade_date.map(positions)
+    if x['session_index'].isna().any():
+        raise ValueError('EPISODE_SESSION_CALENDAR_MISSING')
+    x['episode_id'] = x.session_index.diff().fillna(999).ne(1).cumsum()
+    return x.groupby('episode_id',as_index=False).first()
 
 def _rate(x,col): return float(x[col].mean()) if len(x) else None
 
 def main():
     o=pd.read_parquet(ART/'qqq_pit_feature_outcome_table_train_2020_2023.parquet').copy(); o.trade_date=pd.to_datetime(o.trade_date).dt.normalize()
     d=o.merge(_features(),on='trade_date',how='left',suffixes=('','_daily'))
-    broad=_first(d); reset=d[(d.drawdown60<=-.02)&(d.ret10>0)]; reset_ep=_first(reset); reset22=reset[reset.trade_date.dt.year==2022]; reset22ep=_first(reset22)
+    sessions = PCSDataAccess().read_prices('QQQ', d.trade_date.min(), d.trade_date.max()).date
+    broad=_first(d, sessions); reset=d[(d.drawdown60<=-.02)&(d.ret10>0)]; reset_ep=_first(reset, sessions); reset22=reset[reset.trade_date.dt.year==2022]; reset22ep=_first(reset22, sessions)
     transitions=['TREND_WEAKENING','VOLATILITY_EXPANDING','DRAWDOWN_DEEPENING','RECOVERY_AFTER_RESET']
     out={'module':'pcs.research.qqq_state_transition_analysis','status':'DESCRIPTIVE_ONLY','data_source':'PCS_CANONICAL_DATA','sign_only_transitions':True,'threshold_mining':False,'validation_read':False,'final_oos_read':False,'production_changes':False,'broad':{},'controlled_reset':{},'controlled_reset_2022':{}}
     for name,frame in [('broad',broad),('controlled_reset',reset_ep),('controlled_reset_2022',reset22ep)]:
