@@ -20,7 +20,8 @@ def months(lo,hi):
 def work_identity(ticker, start, end):
  access=PCSDataAccess(); payload={"ticker":ticker,"start":str(pd.Timestamp(start).date()),"end":str(pd.Timestamp(end).date()),"atr":float(atr),
           "daily":access.source_data_identity("daily",ticker),"benchmark":access.source_data_identity("daily","QQQ"),
-          "options":access.source_data_identity("options",ticker),"runner":hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+          "options":access.source_data_identity("options",ticker),"runner":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+          "backtest":hashlib.sha256((REPO_ROOT/"src/pcs/research/credit_stop.py").read_bytes()).hexdigest()}
  return hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
 done={}
 if ck.exists():
