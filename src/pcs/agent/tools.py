@@ -25,7 +25,13 @@ def get_option_quotes(symbol, trade_date, expiration_date, strikes):
 
 def get_research_run(run_id):
     json_path=_REPO_ROOT / "data/manifests/research_runs" / f"{run_id}.json"
-    if json_path.exists(): return response("AVAILABLE","DATA_AVAILABLE",[json.loads(json_path.read_text(encoding="utf-8"))], run_id=str(run_id))
+    if json_path.exists():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return response("UNAVAILABLE", "MANIFEST_CORRUPT", [], run_id=str(run_id),
+                            reason_codes=["MANIFEST_CORRUPT", type(exc).__name__])
+        return response("AVAILABLE", "DATA_AVAILABLE", [payload], run_id=str(run_id))
     path=_REPO_ROOT / "data/manifests/research_runs.csv"
     if not path.exists(): return response("UNAVAILABLE","DATA_NOT_FOUND", run_id=str(run_id))
     try:
