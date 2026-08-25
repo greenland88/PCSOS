@@ -84,7 +84,7 @@ class Stage4ALifecycleReplayAdapter:
                        "holding_trading_days": self._holding_trading_days(candidate["date"], result.get("exit_date")),
                        "holding_trading_days_status": ("AVAILABLE" if self.trading_sessions is not None else "TRADING_CALENDAR_UNAVAILABLE"),
                        "stopped": _strict_bool(result.get("stop_triggered", False)),
-                       "expired": bool(result.get("exit_date") is not None and pd.Timestamp(result["exit_date"]).normalize() >= expected[1]),
+                       "expired": str(result.get("exit_reason", "")).upper() == "EXPIRATION",
                        "mfe": result.get("mfe"), "mae": result.get("mae"), "lifecycle_observation_count": result.get("mark_count")})
         return result
 
