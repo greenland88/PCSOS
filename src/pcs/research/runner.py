@@ -34,6 +34,11 @@ from .pit_cache_identity import build_pit_cache_identity, cache_identity_matches
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _runner_code_version() -> str:
+    """Bind artifact acceptance to the actual runner implementation."""
+    return "pcs.research.runner:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
 def _status_for_funnel(records: list[Any]) -> str:
     return next((r.status.value for r in records if r.output_count == 0), ResearchStatus.COMPUTABLE.value)
 
@@ -320,7 +325,7 @@ class ResearchRunner:
             "research_id": self.spec.research_id, "status": "CURRENT",
             "artifact_version": artifact_version, "population_semantics": population_semantics,
             "data_source": "PCS_CANONICAL_DATA", "ticker": self.spec.ticker,
-            "created_at": datetime.now(timezone.utc).isoformat(), "code_version": "pcs.research.runner:1.1",
+            "created_at": datetime.now(timezone.utc).isoformat(), "code_version": _runner_code_version(),
             "data_version": data_version, "input_identities": input_identities,
             "spec_hash": spec_hash(self.spec), "files": records,
             "current": True,
@@ -342,7 +347,7 @@ class ResearchRunner:
         if (manifest.get("current") is not True or manifest.get("data_source") != "PCS_CANONICAL_DATA"
                 or manifest.get("research_id") != self.spec.research_id
                 or manifest.get("spec_hash") != spec_hash(self.spec)
-                or manifest.get("code_version") != "pcs.research.runner:1.1"):
+                or manifest.get("code_version") != _runner_code_version()):
             raise RuntimeError("STALE_ARTIFACT")
         try:
             access = PCSDataAccess()
