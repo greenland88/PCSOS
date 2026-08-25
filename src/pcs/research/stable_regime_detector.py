@@ -144,9 +144,11 @@ def analyze_symbol(df: pd.DataFrame, ticker: str, confirmation_days: int = 30) -
     return current, timeline
 
 
-def load_symbol_csv(symbol: str, root: str | Path = "data/raw/daily_forward_adjusted") -> pd.DataFrame:
+def load_symbol_csv(symbol: str, root: str | Path = "data/raw/daily_forward_adjusted", *, allow_test_source: bool = False) -> pd.DataFrame:
     if Path(root) == Path("data/raw/daily_forward_adjusted"):
         return PCSDataAccess().read_prices(symbol)
+    if not allow_test_source:
+        raise ValueError("NONCANONICAL_DAILY_SOURCE_REQUIRES_EXPLICIT_TEST_OPT_IN")
     p = Path(root) / f"{symbol.upper()}_daily_qfq.csv"
     d = pd.read_csv(p)
     rename = {"日期":"date", "开盘价":"open", "最高价":"high", "最低价":"low", "收盘价":"close", "成交量":"volume"}
