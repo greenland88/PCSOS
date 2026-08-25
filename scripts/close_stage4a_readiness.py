@@ -18,6 +18,19 @@ PHASE0 = Path("research_outputs/phase0_20260820/candidate_universe.parquet")
 TREND = Path("research_outputs/safe_strike_risk_map_v0_1/trend_histories")
 DAILY = Path("data/raw/daily_forward_adjusted")
 
+def _strict_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes"}:
+            return True
+        if value in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
 
 def load_daily(ticker):
     d = pd.read_csv(DAILY / f"{ticker}_daily_qfq.csv").rename(columns={"日期":"date", "开盘价":"open", "最高价":"high", "最低价":"low", "收盘价":"close", "成交量":"volume"})
@@ -72,7 +85,7 @@ def event_audit():
     rows=[]
     for _,r in c.iterrows():
         future = r.expiration > coverage
-        crosses = bool(r.get("event_crosses_earnings", False))
+        crosses = _strict_bool(r.get("event_crosses_earnings", False))
         state = "FUTURE_EVENT_WINDOW_UNSUPPORTED" if future else ("EVENT_CONFIRMED" if crosses else "NO_EVENT_IN_WINDOW")
         rows.append({"ticker":r.ticker,"candidate_id":r.candidate_id,"decision_date":r.date,"expiration":r.expiration,"event_mode":EventMode.EX_POST_HISTORICAL.value,"event_state":state,"historically_observable":not future,"future_window_unsupported":future,"event_data_quality_missing":False,"event_source":"existing Phase0 event contract","event_provenance":"phase0 candidate_universe.event_crosses_earnings"})
     out=pd.DataFrame(rows); out.to_parquet(ROOT/"stage4a_event_readiness_ex_post_historical.parquet",index=False); return out
