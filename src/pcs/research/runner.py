@@ -506,7 +506,9 @@ class ResearchRunner:
     def calendar_preflight(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
         """Fast canonical-calendar admission check without state construction."""
         access = data_access or PCSDataAccess()
-        daily = access.read_prices(self.spec.ticker)
+        train_end_raw = self.spec.split_policy.get("train_end")
+        train_end = pd.Timestamp(train_end_raw).normalize() if train_end_raw else None
+        daily = access.read_prices(self.spec.ticker, end_date=train_end)
         options = access.resolve_source("options", self.spec.ticker)
         result = {
             "module": "pcs.research.runner", "version": "1.1", "research_id": self.spec.research_id,
