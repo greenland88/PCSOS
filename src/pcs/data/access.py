@@ -59,13 +59,18 @@ class PCSDataAccess:
         manifest/parquet paths still take precedence for isolated fixtures.
         """
         configured_root = data_root or os.environ.get("PCS_CANONICAL_DATA_ROOT")
-        self.data_root = Path(configured_root) if configured_root else Path("data")
+        repo_root = Path(__file__).resolve().parents[3]
+        self.data_root = (Path(configured_root).expanduser().resolve()
+                          if configured_root else repo_root / "data")
         self._uses_default_store = manifest_path is None and parquet_root is None
         self.manifest_path = Path(manifest_path) if manifest_path is not None else self.data_root / "manifests" / "storage_manifest.csv"
         self.provenance_manifest_path = self.manifest_path.with_name("data_provenance_manifest.csv")
         self.parquet_root = Path(parquet_root) if parquet_root is not None else self.data_root / "parquet"
         self._manifest = pd.read_csv(self.manifest_path) if self.manifest_path.exists() else pd.DataFrame()
-        self.source_routes_path = Path(source_routes_path) if source_routes_path else None
+        self.source_routes_path = (
+            Path(source_routes_path).expanduser().resolve()
+            if source_routes_path else None
+        )
         self.source_routes = source_routes if source_routes is not None else self._load_source_routes(self.source_routes_path)
         metadata_path = self.manifest_path.with_name("price_basis_metadata.csv")
         if not metadata_path.exists() and self._uses_default_store:
