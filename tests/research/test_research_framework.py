@@ -88,3 +88,18 @@ def test_runner_reports_new_entry_funnel_and_never_changes_population():
     assert result["status"] == "CONTRACT_SELECTION_FAILED"
     assert result["funnel"][5]["first_zero_stage"] == "CONTRACT_AVAILABLE_DATES"
     assert result["population_source"]["type"] == "ticker_daily_calendar"
+
+
+def test_current_replay_preserves_descriptive_precursor_count():
+    from pcs.research.runner import ResearchRunner
+    raw = base("CURRENT_STRATEGY_REPLAY")
+    raw["signal_definition"] = {"purpose": "current_strategy_replay", "creates_new_entry_dates": True}
+    raw["rules"] = {"dte_min": 30, "dte_max": 45, "safe_strike_atr": 2.3,
+                     "allowed_widths": [5, 10, 2], "width_mode": "ALL",
+                     "min_credit_width_ratio": .10}
+    spec = validate_population_routing(from_mapping(raw))
+    result = ResearchRunner(spec, output_dir="research_outputs/test_runner").preflight(
+        counts={"ALL_TRADING_DAYS": 100, "FEATURE_READY_DAYS": 80,
+                "PRECURSOR_EPISODES": 7, "SIGNAL_DATES": 0})
+    precursor = next(row for row in result["funnel"] if row["stage"] == "PRECURSOR_EPISODES")
+    assert precursor["output_count"] == 7
