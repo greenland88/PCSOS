@@ -130,7 +130,12 @@ def run_year(year: int) -> dict:
     for candidate in candidates:
         try:
             validate_lifecycle_corporate_action(candidate, registry)
-            q = quotes[(quotes.trade_date >= pd.Timestamp(candidate["date"])) & (quotes.trade_date <= min(pd.Timestamp(candidate["expiration"]), pd.Timestamp(candidate["date"])+pd.Timedelta(days=20))) & quotes.expiration_date.eq(pd.Timestamp(candidate["expiration"])) & quotes.strike.isin([candidate["short_strike"],candidate["long_strike"]])]
+            q = quotes[(quotes.symbol.astype(str).str.upper() == "NVDA")
+                       & quotes.call_put.astype(str).str.lower().eq("p")
+                       & (quotes.trade_date >= pd.Timestamp(candidate["date"]))
+                       & (quotes.trade_date <= min(pd.Timestamp(candidate["expiration"]), pd.Timestamp(candidate["date"])+pd.Timedelta(days=20)))
+                       & quotes.expiration_date.eq(pd.Timestamp(candidate["expiration"]))
+                       & quotes.strike.isin([candidate["short_strike"], candidate["long_strike"]])]
             candidate_id = (
                 f"NVDA_{pd.Timestamp(candidate['date']).date()}_"
                 f"{pd.Timestamp(candidate['expiration']).date()}_"
