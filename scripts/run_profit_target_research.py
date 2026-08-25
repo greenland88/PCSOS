@@ -6,10 +6,11 @@ import numpy as np
 import pandas as pd
 from pcs.research.annualized_metrics import annualized_performance_metrics
 
-OUT=Path("research_outputs/profit_target_research_20260820"); OUT.mkdir(parents=True,exist_ok=True)
+REPO_ROOT=Path(__file__).resolve().parents[1]
+OUT=REPO_ROOT/"research_outputs/profit_target_research_20260820"; OUT.mkdir(parents=True,exist_ok=True)
 PRIMARY_TARGETS=(.40,.50,.60,.70,.75,.85); SENSITIVITY_TARGETS=(.45,.55,.65,.80)
 TARGETS=PRIMARY_TARGETS+SENSITIVITY_TARGETS; TICKERS=("NVDA","AMD","TSLA","AMZN")
-PHASE0=Path("research_outputs/phase0_20260820"); CAND=Path("data/parquet/research/variant_b_full")
+PHASE0=REPO_ROOT/"research_outputs/phase0_20260820"; CAND=REPO_ROOT/"data/parquet/research/variant_b_full"
 
 def make_id(r):
     import hashlib
@@ -17,7 +18,7 @@ def make_id(r):
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 def load_candidates(t):
-    source=Path("research_outputs/nvda_v2_v2_replay.parquet") if t=="NVDA" else CAND/f"{t}_full_post2020_2d.parquet"; x=pd.read_parquet(source).copy(); x["date"]=pd.to_datetime(x.date).dt.normalize(); x["expiration"]=pd.to_datetime(x.expiration).dt.normalize(); x["candidate_id"]=x.apply(make_id,axis=1); return x
+    source=REPO_ROOT/"research_outputs/nvda_v2_v2_replay.parquet" if t=="NVDA" else CAND/f"{t}_full_post2020_2d.parquet"; x=pd.read_parquet(source).copy(); x["date"]=pd.to_datetime(x.date).dt.normalize(); x["expiration"]=pd.to_datetime(x.expiration).dt.normalize(); x["candidate_id"]=x.apply(make_id,axis=1); return x
 
 def one_trade(c, marks, target):
     m=marks.sort_values("mark_date"); m=m[m.quote_available.eq(True)&m.spread_mark.notna()]
