@@ -8,7 +8,7 @@ entry_date_rule: {rule: current_strategy_entry_date}
 date_range: {split: TRAIN}
 split_policy: {name: TRAIN_ONLY, train_end: '2025-12-31'}
 contract_selection_policy: {mode: RULE_SET}
-lifecycle_policy: {source: canonical_lifecycle_adapter, benchmark_symbol: QQQ, outcome_horizon_policy: SPLIT_CUTOFF}
+lifecycle_policy: {source: canonical_lifecycle_adapter}
 frozen_parameters: {}
 allowed_parameters: {rules: true}
 final_oos_access: false
