@@ -2,17 +2,17 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-import duckdb, pandas as pd
+import pandas as pd
+from pcs.data.access import PCSDataAccess
 
-ROOT = Path("research_outputs/safe_strike_stage4a")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPO_ROOT / "research_outputs/safe_strike_stage4a"
 TICKERS = ("NVDA", "AMD", "TSLA", "AMZN")
 
 
 def backfill(path: Path, ticker: str) -> dict:
     d = pd.read_parquet(path).copy(); d["date"] = pd.to_datetime(d.date).dt.normalize(); d["expiration"] = pd.to_datetime(d.expiration).dt.normalize()
-    roots = [Path("data/parquet/options_v2") / f"symbol={ticker}", Path("data/parquet/options_v2_onboarding_amd_20260820") / f"symbol={ticker}", Path("data/parquet/options_v2/rebuild_20260820") / f"symbol={ticker}"]
-    root = next((x for x in roots if x.exists()), roots[0]); glob = str((root / "**" / "*.parquet").as_posix())
-    con = duckdb.connect(); q = con.execute("SELECT trade_date, expiration_date AS expiration, strike, call_put, bid, ask, volume, open_interest FROM read_parquet(?) WHERE trade_date BETWEEN ? AND ? AND call_put = 'p'", [glob, d.date.min().date(), d.date.max().date()]).fetchdf(); con.close()
+    q = PCSDataAccess().read_quotes(ticker, d.date.min(), d.date.max())
     q.trade_date = pd.to_datetime(q.trade_date).dt.normalize(); q.expiration = pd.to_datetime(q.expiration).dt.normalize(); q.strike = pd.to_numeric(q.strike)
     q = q.drop_duplicates(["trade_date", "expiration", "strike"], keep="first")
     sm = q.rename(columns={"strike":"short_strike", "bid":"short_bid", "ask":"short_ask", "volume":"option_volume", "open_interest":"open_interest"})
