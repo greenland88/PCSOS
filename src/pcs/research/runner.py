@@ -432,11 +432,15 @@ class ResearchRunner:
                     "research_mode": self.spec.research_mode.value, "status": ResearchStatus.DAILY_DATA_MISSING.value,
                     "data_source": "PCS_CANONICAL_DATA", "exact_reason": str(exc),
                     "final_oos_read": final_oos_read, "production_changes_allowed": False}
-        options_status = "PASS"
-        try:
-            option_source = access.resolve_source("options", self.spec.ticker)
-        except Exception as exc:
-            options_status, option_source = "MISSING", {"exact_reason": str(exc)}
+        dependencies = _research_dependencies(self.spec)
+        options_status = "NOT_REQUIRED"
+        option_source = {"status": "NOT_REQUIRED"}
+        if "options" in dependencies or "options_v2" in dependencies or "options_v3" in dependencies:
+            options_status = "PASS"
+            try:
+                option_source = access.resolve_source("options", self.spec.ticker)
+            except Exception as exc:
+                options_status, option_source = "MISSING", {"exact_reason": str(exc)}
         # Build the existing PIT state adapter's timeline.  Do not replace it
         # with a local indicator calculation; dependency failures must remain
         # explicit rather than becoming UNKNOWN precursor results.
@@ -563,14 +567,17 @@ class ResearchRunner:
         train_end_raw = self.spec.split_policy.get("train_end")
         train_end = pd.Timestamp(train_end_raw).normalize() if train_end_raw else None
         daily = access.read_prices(self.spec.ticker, end_date=train_end)
-        options = access.resolve_source("options", self.spec.ticker)
+        dependencies = _research_dependencies(self.spec)
+        options = None
+        if "options" in dependencies or "options_v2" in dependencies or "options_v3" in dependencies:
+            options = access.resolve_source("options", self.spec.ticker)
         result = {
             "module": "pcs.research.runner", "version": "1.1", "research_id": self.spec.research_id,
             "ticker": self.spec.ticker, "research_mode": self.spec.research_mode.value,
             "status": ResearchStatus.COMPUTABLE.value, "data_source": "PCS_CANONICAL_DATA",
             "daily_source": "PCSDataAccess", "daily_rows": len(daily),
             "daily_first_date": str(daily.date.min().date()), "daily_last_date": str(daily.date.max().date()),
-            "options_source": options.to_dict(), "final_oos_read": False,
+            "options_source": options.to_dict() if options is not None else {"status": "NOT_REQUIRED"}, "final_oos_read": False,
             "production_changes_allowed": False, "signal_execution": "NOT_RUN",
             "reason_codes": ["RESEARCH_SPEC_VALIDATED", "CANONICAL_CALENDAR_RESOLVED", "FINAL_OOS_NOT_READ"],
         }
