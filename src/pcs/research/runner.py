@@ -398,7 +398,7 @@ class ResearchRunner:
                 cached = pd.read_parquet(timeline_path)
                 cache_valid = cache_identity_matches(cached, cache_meta)
                 cached_ready = sum(
-                    bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
+                    _strict_flag(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
                     for row in cached.to_dict("records")
                 )
                 if cache_valid and len(cached) == len(daily) and set(cached.symbol.astype(str).str.upper()) == {self.spec.ticker} and cached_ready > 0:
@@ -437,7 +437,7 @@ class ResearchRunner:
             pd.read_parquet(temp_timeline, columns=list(timeline_frame.columns))
             temp_timeline.replace(timeline_path)
         state_ready = sum(
-            bool(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
+            _strict_flag(row.get("available_data")) and row.get("final_underlying_state") != UnderlyingState.UNKNOWN.value
             for row in states
         )
         breakdown_runs = 0
