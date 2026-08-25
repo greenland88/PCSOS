@@ -82,17 +82,18 @@ def invalidate_current_derived(symbol: str, affected_partitions: list[str], *, m
     symbol = str(symbol).upper()
     target = _resolve_default(manifest_path, "data/manifests/derived_invalidations.jsonl"); target.parent.mkdir(parents=True, exist_ok=True)
     marker = {"symbol": symbol, "affected_partitions": sorted(set(affected_partitions)), "created_at": datetime.now(timezone.utc).isoformat()}
-    existing = []
-    if target.exists():
-        for line in target.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                try: existing.append(json.loads(line))
-                except json.JSONDecodeError: continue
-    semantic = {(x.get("symbol"), tuple(x.get("affected_partitions", []))) for x in existing}
-    key = (symbol, tuple(marker["affected_partitions"]))
-    if key not in semantic:
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(marker, sort_keys=True) + "\n")
+    with PCSDataAccess._file_lock(target):
+        existing = []
+        if target.exists():
+            for line in target.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    try: existing.append(json.loads(line))
+                    except json.JSONDecodeError: continue
+        semantic = {(x.get("symbol"), tuple(x.get("affected_partitions", []))) for x in existing}
+        key = (symbol, tuple(marker["affected_partitions"]))
+        if key not in semantic:
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(marker, sort_keys=True) + "\n")
     return [f"{symbol}:{part}" for part in marker["affected_partitions"]]
 
 
