@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import hashlib, json
 from pathlib import Path
-import duckdb
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 from pcs.entry.contract_v2 import ENTRY_CONTRACT_V2, later_expirations, nearby_strikes, normalize_price_confirmation
 from pcs.entry.support_contract import SUPPORT_PRODUCER_VERSION, classify_support
@@ -13,10 +13,10 @@ from pcs.research.entry_confirmation import analyze_entry_confirmation
 from pcs.research.phase0_data_integration import EventMode, EventState
 from pcs.research.stage4a_replay import audit_inputs
 
-ROOT = Path("research_outputs/safe_strike_stage4a")
-PHASE0 = Path("research_outputs/phase0_20260820/candidate_universe.parquet")
-TREND = Path("research_outputs/safe_strike_risk_map_v0_1/trend_histories")
-DAILY = Path("data/raw/daily_forward_adjusted")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPO_ROOT / "research_outputs/safe_strike_stage4a"
+PHASE0 = REPO_ROOT / "research_outputs/phase0_20260820/candidate_universe.parquet"
+TREND = REPO_ROOT / "research_outputs/safe_strike_risk_map_v0_1/trend_histories"
 
 def _strict_bool(value: object) -> bool:
     if isinstance(value, bool):
@@ -33,7 +33,7 @@ def _strict_bool(value: object) -> bool:
 
 
 def load_daily(ticker):
-    d = pd.read_csv(DAILY / f"{ticker}_daily_qfq.csv").rename(columns={"日期":"date", "开盘价":"open", "最高价":"high", "最低价":"low", "收盘价":"close", "成交量":"volume"})
+    d = PCSDataAccess().read_prices(ticker)
     d.date = pd.to_datetime(d.date).dt.normalize()
     return d
 
@@ -45,11 +45,10 @@ def support_map(ticker):
 
 
 def chain_map(ticker, dates):
-    root = Path("data/parquet/options_v2") / f"symbol={ticker}"
-    con = duckdb.connect()
-    g = str((root / "**" / "*.parquet").as_posix())
-    out = con.execute("SELECT trade_date, expiration_date AS expiration, strike, call_put AS option_type, bid, ask, volume, open_interest FROM read_parquet(?) WHERE trade_date BETWEEN ? AND ?", [g, dates.min().date(), dates.max().date()]).fetchdf()
-    con.close(); out.trade_date = pd.to_datetime(out.trade_date).dt.normalize(); out.expiration = pd.to_datetime(out.expiration).dt.normalize()
+    access = PCSDataAccess()
+    out = access.read_quotes(ticker, dates.min(), dates.max())
+    out = out.rename(columns={"expiration_date":"expiration", "call_put":"option_type"})
+    out.trade_date = pd.to_datetime(out.trade_date).dt.normalize(); out.expiration = pd.to_datetime(out.expiration).dt.normalize()
     return {d: x for d, x in out.groupby("trade_date", sort=False)}
 
 
