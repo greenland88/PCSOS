@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
-import json, hashlib
+import json, hashlib, os, uuid
 import pandas as pd
 from pcs.data.access import PCSDataAccess, DataAccessError, DataQualityError
 from pcs.strategies.research_templates.catalog import get_strategy
@@ -100,7 +100,14 @@ def run_transfer(request: TransferRequest, *, data_access: PCSDataAccess | None 
         episodes = [{"episode_id":int(i),"qualifying_dates":[d.date().isoformat() for d in g]} for i,g in qualifying.groupby(breaks)]
     result = {"module":"pcs.research.strategy_transfer_runner","version":"v1","status":"COMPLETED_DESCRIPTIVE","strategy_id":request.strategy_id,"ticker":ticker,"train_start":request.train_start,"train_end":request.train_end,"data_dependencies":sorted(spec.data_dependencies),"transfer_identity":transfer_identity,"qualifying_dates":[d.date().isoformat() for d in qualifying],"independent_episodes":episodes,"executable_episodes":[],"trades":[],"performance":{},"reason_codes":["EXACT_TRANSFER","PIT_FEATURES","CANONICAL_DATA_VALIDATED","DECLARED_DATA_DEPENDENCIES","COMPOSITE_TRANSFER_IDENTITY","CONTRACT_LIFECYCLE_DELEGATED"]}
     if output_dir:
-        out=Path(output_dir); out.mkdir(parents=True, exist_ok=True); (out/"transfer_result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        out=Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+        target = out / "transfer_result.json"
+        temp = out / f".{target.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            temp.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
     return result
 
 __all__ = ["TransferRequest", "run_transfer"]
