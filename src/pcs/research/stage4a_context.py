@@ -7,6 +7,19 @@ import pandas as pd
 from pcs.data.access import PCSDataAccess
 from pcs.research.entry_candidate_universe import build_historical_setup_context, _daily
 
+def _strict_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {"true", "1", "yes"}:
+            return True
+        if value in {"false", "0", "no", ""}:
+            return False
+    return bool(value)
+
 
 def _jsonable(value: Any):
     if hasattr(value, "__dict__"):
@@ -42,7 +55,7 @@ class HistoricalTrendContextProvider:
     def serialized(self, row: dict[str, Any]) -> dict[str, Any]:
         ctx = self(row)
         return {"candidate_id": row["candidate_id"], "ticker": self.ticker, "decision_date": row["date"],
-                "context_available": bool(ctx.get("available", False)),
+                "context_available": _strict_bool(ctx.get("available", False)),
                 "trend_snapshot": _jsonable(ctx.get("snapshot")),
                 "trend_interpretation": _jsonable(ctx.get("interpretation")),
                 "trend_score_result": _jsonable(ctx.get("trend_score")),

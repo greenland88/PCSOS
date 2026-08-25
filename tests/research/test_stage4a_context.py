@@ -26,3 +26,14 @@ def test_historical_context_provider_is_pit_and_cached(monkeypatch, tmp_path):
     assert persisted["pit"] is True
     assert pd.Timestamp(persisted["pit_asof"]) <= pd.Timestamp(persisted["decision_date"])
     assert persisted["context_available"] is True
+from pcs.research.stage4a_context import _strict_bool
+
+
+def test_context_availability_flag_is_strict():
+    assert _strict_bool("true") is True
+    assert _strict_bool("false") is False
+
+
+def test_context_availability_flag_is_strict():
+    assert _strict_bool("true") is True
+    assert _strict_bool("false") is False
