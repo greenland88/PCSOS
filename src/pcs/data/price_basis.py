@@ -97,7 +97,10 @@ def load_corporate_actions(path: str | Path = "config/data/corporate_actions.csv
     """Load all declared actions; unverified rows remain fail-closed inputs."""
     target = Path(path)
     if not target.exists():
-        return EMPTY_REGISTRY
+        # Absence of the registry is not evidence that no corporate actions
+        # occurred.  Keep the unloaded default for legacy pure unit callers,
+        # but make the production loader's missing-file result fail closed.
+        return CorporateActionRegistry((), covered_symbols=())
     actions = []
     with target.open(encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
