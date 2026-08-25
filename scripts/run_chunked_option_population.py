@@ -17,7 +17,7 @@ WINDOWS = {
     "NVDA": ("2024-06-10", "2026-07-31"),
     "AMZN": ("2022-06-06", "2026-07-31"),
 }
-ROOT = Path("research_outputs/safe_strike_chunked_population_monthly")
+ROOT = Path(__file__).resolve().parents[1] / "research_outputs/safe_strike_chunked_population_monthly"
 
 def chunks(start, end):
     cur = pd.Timestamp(start).to_period("M")
@@ -56,10 +56,10 @@ def equivalence_test(symbol="QQQ", start="2026-01-02", end="2026-03-31"):
     access = PCSDataAccess()
     stock = load_stock(access, symbol, end)
     bench = load_stock(access, "QQQ", end)
-    old = flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=start, end=end, backend="duckdb")["trades"], symbol)
+    old = flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=start, end=end, backend="canonical")["trades"], symbol)
     parts = []
     for lo, hi in chunks(start, end):
-        parts.append(flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="duckdb")["trades"], symbol))
+        parts.append(flatten(run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")["trades"], symbol))
     new = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=old.columns)
     a, b = key_frame(old), key_frame(new)
     if not a.equals(b):
@@ -80,7 +80,7 @@ def run_symbol(symbol):
         if target.exists():
             continue
         t0 = time.perf_counter()
-        result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="duckdb")
+        result = run_backtest(stock, bench, option_root=f"data/parquet/options_monthly/{symbol}", start=lo, end=hi, backend="canonical")
         frame = flatten(result["trades"], symbol)
         frame.to_parquet(target, index=False)
         record = {"ticker": symbol, "chunk_start": str(lo.date()), "chunk_end": str(hi.date()), "status": "COMPLETE", "qualified_trades": len(frame), "elapsed_seconds": round(time.perf_counter() - t0, 3), "source_option_files_touched": result["quality"].get("quarter_files_opened"), "rows_scanned": result["quality"].get("option_rows_loaded")}
