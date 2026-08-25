@@ -13,6 +13,13 @@ YEARS=range(2020,2024)
 def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+
+def _atomic_json(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp.write_text(json.dumps(value, indent=2, default=str), encoding="utf-8")
+    os.replace(temp, path)
+
 def _shard_identity(year: int) -> dict:
     """Identity for all inputs that can change a chronological shard."""
     access = PCSDataAccess()
@@ -58,7 +65,7 @@ def main() -> dict:
         # Persist the same identity that guards future reuse.  If identity
         # cannot be resolved, the run is not considered safely resumable.
         result["shard_identity"] = _shard_identity(year)
-        summary.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+        _atomic_json(summary, result)
         return result, "COMPLETED"
     results=[]
     with ThreadPoolExecutor(max_workers=min(8,len(list(YEARS)))) as pool:
@@ -68,7 +75,7 @@ def main() -> dict:
             try: results.append({"year":y,"status":"OK","mode":f.result()[1],"summary":f.result()[0]})
             except Exception as exc: results.append({"year":y,"status":"FAILED","error":repr(exc)})
     results.sort(key=lambda x:x["year"])
-    (shard_root/"shard_status.json").write_text(json.dumps(results,indent=2,default=str))
+    _atomic_json(shard_root/"shard_status.json", results)
     return {"shards":results,"failed":[x for x in results if x["status"]!="OK"]}
 
 if __name__=="__main__": print(json.dumps(main(),indent=2,default=str))
