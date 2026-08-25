@@ -22,7 +22,10 @@ def _parquet_safe(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def run(output_dir: str | Path = "research_outputs/qqq_entry_discovery_agent_v1", start="2010-01-01", end="2023-12-31", ticker: str = "QQQ") -> dict:
-    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    out = Path(output_dir)
+    if not out.is_absolute():
+        out = Path(__file__).resolve().parents[3] / out
+    out.mkdir(parents=True, exist_ok=True)
     for name in ("rounds", "cache", "artifacts"): (out / name).mkdir(exist_ok=True)
     access = PCSDataAccess(); ticker = str(ticker).upper()
     # Load prior canonical history so the PIT warmup is global rather than
