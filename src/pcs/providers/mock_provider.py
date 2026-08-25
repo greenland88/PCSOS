@@ -15,7 +15,10 @@ class MockProvider(BaseBrokerProvider):
         return {"planned_risk": 4600, "theoretical_max_loss": 8400}
 
     def get_market_state(self):
-        return MarketState(vix=18, recent_drawdown_pct=1.2)
+        return MarketState(qqq_above_20dma=True, qqq_above_50dma=True,
+                           qqq_above_200dma=True, spy_above_50dma=True,
+                           soxx_above_50dma=True, breadth_positive=True,
+                           vix=18, recent_drawdown_pct=1.2)
 
     def get_candidates(self):
         return [
