@@ -44,3 +44,12 @@ def test_future_event_is_persisted_but_not_evaluated(tmp_path):
     assert engine.calls == 0
     out = pd.read_parquet(tmp_path / "stage4a_candidate_decisions.parquet")
     assert out.iloc[0].status == "EVENT_WINDOW_UNSUPPORTED"
+
+
+def test_string_false_replay_eligibility_is_not_truthy(tmp_path):
+    engine = FakeEngine()
+    frame = pd.DataFrame([base_row(event_state="NO_EVENT_IN_WINDOW", historical_replay_eligible="false")])
+    run_stage4a_full_replay(frame, decision_engine=engine, lifecycle_replay=None,
+                            market_state_factory=lambda row: __import__("pcs.models.market", fromlist=["MarketState"]).MarketState(vix=18),
+                            config=__import__("pcs.research.stage4a_full_replay", fromlist=["ReplayConfig"]).ReplayConfig(tmp_path))
+    assert engine.calls == 0

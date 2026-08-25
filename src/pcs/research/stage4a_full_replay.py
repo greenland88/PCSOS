@@ -29,6 +29,16 @@ class MarketStateFactory(Protocol):
     def __call__(self, candidate: dict[str, Any]) -> Any: ...
 
 
+def _strict_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    return isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}
+
+
 def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -129,7 +139,7 @@ def run_stage4a_full_replay(population: pd.DataFrame, *, decision_engine: Any,
     )
     for row in ordered.to_dict("records"):
         event_state = str(row.get("event_state", ""))
-        if event_state == config.event_unsupported_state or not bool(row.get("historical_replay_eligible", True)):
+        if event_state == config.event_unsupported_state or not _strict_bool(row.get("historical_replay_eligible", True), default=True):
             decisions.append(_decision_record(row, status="EVENT_WINDOW_UNSUPPORTED", reason=config.event_unsupported_state, historical_replay_eligible=False)); continue
         support = str(row.get("support_state", ""))
         if support == SupportState.NO_SUPPORT:
