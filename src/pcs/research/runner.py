@@ -326,7 +326,9 @@ class ResearchRunner:
             "current": True,
         }
         target = self.output_dir / "artifact_manifest.json"
-        temp = target.with_suffix(".json.tmp")
+        # Use a per-writer temp name: two workers rebuilding the same
+        # research id must never share/truncate one staging file.
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         temp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         os.replace(temp, target)
         return target
