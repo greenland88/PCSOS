@@ -680,7 +680,24 @@ class PCSDataAccess:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._file_lock(path):
             if path.exists():
-                if self.semantic_content_hash(pd.read_parquet(path)) == semantic_hash:
+                existing = pd.read_parquet(path)
+                if self.semantic_content_hash(existing) == semantic_hash:
+                    sidecar = path.with_suffix(path.suffix + ".semantic.json")
+                    valid_sidecar = False
+                    if sidecar.is_file():
+                        try:
+                            saved = json.loads(sidecar.read_text(encoding="utf-8"))
+                            valid_sidecar = (saved.get("semantic_hash") == semantic_hash
+                                             and int(saved.get("row_count", -1)) == len(existing))
+                        except (OSError, ValueError, TypeError):
+                            valid_sidecar = False
+                    if not valid_sidecar:
+                        side_tmp = sidecar.with_name(f".{sidecar.name}.{uuid.uuid4().hex}.tmp")
+                        try:
+                            side_tmp.write_text(json.dumps({"semantic_hash": semantic_hash, "created_at": created_at, "row_count": len(existing)}, sort_keys=True), encoding="utf-8")
+                            os.replace(side_tmp, sidecar)
+                        finally:
+                            side_tmp.unlink(missing_ok=True)
                     return path
                 raise DataQualityError(f"conflicting artifact content: {path}")
             tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
