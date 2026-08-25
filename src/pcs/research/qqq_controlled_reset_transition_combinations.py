@@ -2,6 +2,8 @@
 from itertools import combinations
 from pathlib import Path
 import json
+import os
+import uuid
 import pandas as pd
 
 ROOT = Path("research_outputs/qqq_entry_discovery_agent_v1")
@@ -14,9 +16,14 @@ TRANSITIONS = [
 ]
 
 
-def first_episode(frame):
+def first_episode(frame, calendar):
     x = frame.sort_values("trade_date").copy()
-    x["episode_id"] = (x.trade_date.diff().dt.days.fillna(999) > 4).cumsum()
+    sessions = pd.DatetimeIndex(pd.to_datetime(calendar).dt.normalize().drop_duplicates().sort_values())
+    positions = pd.Series(range(len(sessions)), index=sessions)
+    x["session_index"] = x.trade_date.map(positions)
+    if x["session_index"].isna().any():
+        raise ValueError("QQQ_TRANSITION_SESSION_INDEX_INCOMPLETE")
+    x["episode_id"] = x.session_index.diff().fillna(999).ne(1).cumsum()
     return x.groupby("episode_id", as_index=False).first()
 
 
@@ -39,7 +46,7 @@ def run():
     d = pd.read_parquet(ART / "qqq_state_transition_features_train_2020_2023.parquet")
     d.trade_date = pd.to_datetime(d.trade_date).dt.normalize()
     family = d[(d.drawdown60 <= -0.02) & (d.ret10 > 0)]
-    entries = first_episode(family)
+    entries = first_episode(family, d.trade_date)
     all_stats = stats(entries)
     rows = []
     for size in range(1, len(TRANSITIONS) + 1):
@@ -76,8 +83,21 @@ def run():
         "production_changes": False,
         "reason_codes": ["PIT_SAFE_FEATURES", "ONE_ENTRY_PER_EPISODE", "FINITE_PREDECLARED_SCREEN", "DESCRIPTIVE_ONLY"],
     }
-    (ART / "controlled_reset_transition_combinations.json").write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
-    pd.DataFrame(rows).to_csv(ART / "controlled_reset_transition_combinations.csv", index=False)
+    targets = [ART / "controlled_reset_transition_combinations.json", ART / "controlled_reset_transition_combinations.csv"]
+    temps = []
+    try:
+        for target in targets:
+            temp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            temps.append(temp)
+            if target.suffix == ".json":
+                temp.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
+            else:
+                pd.DataFrame(rows).to_csv(temp, index=False)
+        for temp, target in zip(temps, targets):
+            os.replace(temp, target)
+    finally:
+        for temp in temps:
+            temp.unlink(missing_ok=True)
     print(json.dumps(out, indent=2, default=str))
     return out
 
