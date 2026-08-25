@@ -30,7 +30,10 @@ def _risk_class(symbol: str, instrument_type: str | None) -> str:
     return "COMMON_EQUITY"
 
 def _load_daily(symbols: list[str], root: str | Path="data/parquet") -> pd.DataFrame:
-    access = PCSDataAccess(parquet_root=root)
+    # Default pool analysis must use the active canonical daily route.  An
+    # explicit parquet_root is reserved for isolated fixtures; constructing a
+    # PCSDataAccess with only that default root disables normal routing.
+    access = PCSDataAccess() if str(root).replace("\\", "/") == "data/parquet" else PCSDataAccess(parquet_root=root)
     frames = []
     for symbol in symbols:
         frame = access.read_prices(symbol)
