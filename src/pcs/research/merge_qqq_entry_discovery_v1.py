@@ -13,7 +13,16 @@ def safe(frame):
     for c in out.columns:
         if out[c].map(lambda x:isinstance(x,(list,dict,tuple))).any(): out[c]=out[c].map(lambda x:_json.dumps(x,default=str) if isinstance(x,(list,dict,tuple)) else x)
     return out
+
+def _feature_calendar(access: PCSDataAccess, year: int) -> pd.DataFrame:
+    """Build the same global-warmup PIT calendar used by the shard runner."""
+    daily = access.read_prices("QQQ", "2010-01-01", f"{year}-12-31").copy()
+    daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
+    states = pd.DataFrame([evaluate_as_of(daily, "QQQ", day) for day in daily["date"]])
+    return states[states["date"].between(pd.Timestamp(f"{year}-01-01"), pd.Timestamp(f"{year}-12-31"))].copy()
+
 def main():
+    access = PCSDataAccess()
     frames=[]; features=[]
     for y in range(2020,2024):
         d=SHARDS/f'year={y}'
@@ -23,10 +32,11 @@ def main():
             f=pd.read_parquet(fp); f['date']=pd.to_datetime(f['date']).dt.normalize()
             features.append(f[f.date.between(pd.Timestamp(f'{y}-01-01'),pd.Timestamp(f'{y}-12-31'))].copy())
         else:
-            daily=PCSDataAccess().read_prices('QQQ',f'{y}-01-01',f'{y}-12-31').copy()
-            daily.date=pd.to_datetime(daily.date).dt.normalize()
-            states=pd.DataFrame([evaluate_as_of(daily,'QQQ',x) for x in daily.date])
-            features.append(states.iloc[200:].copy())
+            # Never use a year-local fallback: it changes lookback and state
+            # semantics at the shard boundary. Reconstruct from the same
+            # global canonical history and then select the target year.
+            states = _feature_calendar(access, y)
+            features.append(states.copy())
             safe(states).to_parquet(fp,index=False)
     out=pd.concat(frames,ignore_index=True).sort_values(['trade_date','ticker']).reset_index(drop=True)
     feat=pd.concat(features,ignore_index=True).sort_values(['date']).reset_index(drop=True)
