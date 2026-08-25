@@ -9,11 +9,19 @@ from pcs.data.derived_store import read_derived, read_backtest_trades
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def get_daily_history(symbol, start_date, end_date):
-    df=PCSDataAccess().read_prices(symbol, start_date, end_date)
+    try:
+        df=PCSDataAccess().read_prices(symbol, start_date, end_date)
+    except (OSError, ValueError, DataAccessError) as exc:
+        return response("UNAVAILABLE", "CANONICAL_ROUTE_UNAVAILABLE", [], symbol,
+                        as_of=end_date, reason_codes=["CANONICAL_ROUTE_UNAVAILABLE", type(exc).__name__])
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol, as_of=end_date)
 
 def get_option_chain(symbol, trade_date, expiration_date=None):
-    df=PCSDataAccess().read_option_chain(symbol, trade_date)
+    try:
+        df=PCSDataAccess().read_option_chain(symbol, trade_date)
+    except (OSError, ValueError, DataAccessError) as exc:
+        return response("UNAVAILABLE", "CANONICAL_ROUTE_UNAVAILABLE", [], symbol,
+                        as_of=trade_date, reason_codes=["CANONICAL_ROUTE_UNAVAILABLE", type(exc).__name__])
     if expiration_date is not None and not df.empty: df=df[pd.to_datetime(df.expiration_date).dt.date==pd.Timestamp(expiration_date).date()]
     return response("AVAILABLE" if not df.empty else "UNAVAILABLE", "DATA_AVAILABLE" if not df.empty else "DATA_NOT_FOUND", df.to_dict("records"), symbol, as_of=trade_date)
 
