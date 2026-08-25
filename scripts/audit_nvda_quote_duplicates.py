@@ -23,10 +23,11 @@ def run():
         result = {"status":"BLOCKED", "reason":"SOURCE_SCHEMA_MISSING", "missing":missing, "columns":schema}
         (OUT/"nvda_duplicate_summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result
+    economic_fields_sql = ",".join(f"coalesce(cast({column} as varchar),'NULL')" for column in ECON)
     q = f"""with raw as (select 'NVDA' as symbol, "Trade Date" as trade_date, "Expiry Date" as expiration_date, "Call/Put" as call_put, "Strike" as strike, "Last Trade Price" as last, "Bid Price" as bid, "Ask Price" as ask, "Bid Implied Volatility" as bid_iv, "Ask Implied Volatility" as ask_iv, "Open Interest" as open_interest, "Volume" as volume, "Delta" as delta, "Gamma" as gamma, "Vega" as vega, "Theta" as theta, "Rho" as rho, filename from read_csv_auto(?, header=true, union_by_name=true, sample_size=-1)),
     g as (select {','.join(KEY)}, count(*) as row_count,
       max(case when bid is null or ask is null or trade_date is null or expiration_date is null then 1 else 0 end) as invalid,
-      count(distinct md5(concat_ws('|',{','.join('coalesce(cast('+x+' as varchar),\'NULL\')' for x in ECON)}))) as quote_variants,
+      count(distinct md5(concat_ws('|',{economic_fields_sql}))) as quote_variants,
       min(filename) as source_partition
       from raw group by {','.join(KEY)} having count(*) > 1)
     select * from g"""
