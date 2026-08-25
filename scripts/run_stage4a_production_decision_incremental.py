@@ -188,13 +188,24 @@ def main() -> None:
     calendar.attrs["historical_pit_required"] = True
     if "event_date_known_at_entry" not in calendar.columns and "known_at_entry" not in calendar.columns:
         raise RuntimeError("EVENT_CALENDAR_PIT_METADATA_MISSING")
-    calculation_version = "|".join(("stage4a-production-evaluation-v2", f"rules={_file_digest(Path('config/pcs_rules.yaml'))}",
-                                    f"events={_file_digest(EVENT)}", f"market_states={_file_digest(args.market_state_artifact)}"))
     evaluator = build_row_evaluator(access=access, market_states=_load_market_states(args.market_state_artifact), event_calendar=calendar)
     DEC.mkdir(parents=True, exist_ok=True)
     parts = sorted(PARTS.glob("*.parquet"))
     if args.limit_partitions is not None:
         parts = parts[:args.limit_partitions]
+    symbols = sorted({str(symbol).upper()
+                      for partition in parts
+                      for symbol in pd.read_parquet(partition, columns=["ticker"]).ticker.dropna().unique()})
+    source_identity = []
+    for symbol in symbols:
+        source_identity.append((symbol, access.source_data_identity("daily", symbol),
+                                access.source_data_identity("options", symbol)))
+    calculation_version = "|".join(("stage4a-production-evaluation-v3",
+                                    f"rules={_file_digest(Path('config/pcs_rules.yaml'))}",
+                                    f"events={_file_digest(EVENT)}",
+                                    f"market_states={_file_digest(args.market_state_artifact)}",
+                                    f"evaluator={_file_digest(Path(__file__))}",
+                                    f"sources={hashlib.sha256(json.dumps(source_identity, sort_keys=True).encode()).hexdigest()}"))
     results, receipts = [], []
     for partition in parts:
         source, target = pd.read_parquet(partition), DEC / partition.name
