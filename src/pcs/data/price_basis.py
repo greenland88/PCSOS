@@ -77,11 +77,15 @@ class CorporateActionRegistry:
         return float(raw_strike) / self.adjustment_factor(symbol, date, PriceBasis.MARKET_RAW, PriceBasis.ANALYTIC_ADJUSTED)
 
     def crossing_action(self, symbol: str, entry_date, expiration_date) -> CorporateAction | None:
+        if self._covered_symbols is not None and str(symbol).upper() not in self._covered_symbols:
+            raise PriceBasisError("CORPORATE_ACTION_COVERAGE_UNPROVEN")
         entry = pd.Timestamp(entry_date).normalize()
         expiry = pd.Timestamp(expiration_date).normalize()
         for action in self.actions_for(symbol):
             day = pd.Timestamp(action.effective_date).normalize()
             if entry < day <= expiry:
+                if not action.verified:
+                    raise PriceBasisError("CORPORATE_ACTION_UNVERIFIED")
                 return action
         return None
 

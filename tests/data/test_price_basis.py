@@ -35,3 +35,5 @@ def test_loaded_registry_rejects_symbol_outside_declared_coverage(tmp_path):
     r = load_corporate_actions(path)
     with pytest.raises(PriceBasisError, match="CORPORATE_ACTION_COVERAGE_UNPROVEN"):
         r.to_comparison_strike("MSFT", "2024-01-01", 400)
+    with pytest.raises(PriceBasisError, match="CORPORATE_ACTION_COVERAGE_UNPROVEN"):
+        r.crossing_action("MSFT", "2024-01-01", "2024-07-01")
