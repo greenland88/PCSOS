@@ -33,6 +33,10 @@ def _strict_bool(value: object) -> bool:
     return bool(value)
 
 
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "MISSING"
+
+
 def run_year(year: int) -> dict:
     target = OUT / f"year={year}"
     target.mkdir(parents=True, exist_ok=True)
@@ -46,7 +50,13 @@ def run_year(year: int) -> dict:
         "daily": access.source_data_identity("daily", "NVDA"),
         "benchmark_daily": access.source_data_identity("daily", "QQQ"),
         "options": access.source_data_identity("options", "NVDA"),
-        "code": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "code": {
+            "runner": _digest(Path(__file__)),
+            "candidate_universe": _digest(ROOT / "src/pcs/research/entry_candidate_universe.py"),
+            "current_strategy_replay": _digest(ROOT / "src/pcs/research/current_strategy_replay.py"),
+            "lifecycle_adapter": _digest(ROOT / "src/pcs/research/stage4a_lifecycle.py"),
+        },
+        "corporate_actions_sha256": _digest(ROOT / "config/data/corporate_actions.csv"),
     }
     identity = hashlib.sha256(json.dumps(identity_payload, sort_keys=True).encode()).hexdigest()
     if marker.exists():
