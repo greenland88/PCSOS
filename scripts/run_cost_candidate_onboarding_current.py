@@ -20,6 +20,14 @@ def sha(path):
     with path.open("rb") as f:
         for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
     return h.hexdigest()
+def run_identity():
+    access=PCSDataAccess(); payload={"ticker":"COST","benchmark":"QQQ","periods":PERIODS,
+        "safe_strike_atr":SAFE,"dte_min":DTE_LO,"dte_max":DTE_HI,"credit_ratio":CREDIT,
+        "daily":access.source_data_identity("daily","COST"),
+        "benchmark_daily":access.source_data_identity("daily","QQQ"),
+        "options":access.source_data_identity("options","COST"),
+        "runner":hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    payload["sha256"]=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest(); return payload
 def load_daily(sym):
     d=PCSDataAccess().read_prices(sym).drop_duplicates("date"); d.date=pd.to_datetime(d.date).dt.normalize(); d["atr14"]=_atr14(d); return d.sort_values("date").reset_index(drop=True)
 def period_work(period,stock,bench):
@@ -41,9 +49,18 @@ def period_work(period,stock,bench):
                 rows.append({"candidate_id":cid,"ticker":"COST","decision_date":str(day.date()),"expiration":str(pd.Timestamp(expiry).date()),"underlying_price":close,"atr":atr,"safe_strike_atr":SAFE,"dte":int(r["s_DTE"]),"short_strike":float(r["s_Strike"]),"long_strike":float(r["l_Strike"]),"width":float(r["width"]),"credit":float(r["credit"]),"credit_width_ratio":float(r["ratio"]),"short_bid":float(r["s_Bid Price"]),"short_ask":float(r["s_Ask Price"]),"short_delta":float(r["s_Delta"]) if pd.notna(r["s_Delta"]) else None,"short_oi":int(r["s_Open Interest"]),"short_volume":int(r["s_Volume"]),"long_bid":float(r["l_Bid Price"]),"long_ask":float(r["l_Ask Price"]),"long_oi":int(r["l_Open Interest"]),"long_volume":int(r["l_Volume"]),"trend_state":ctx.get("trend_state"),"support_state":ctx.get("support_state"),"predictability_state":ctx.get("predictability_state"),"market_state":"PIT_SAFE_CONTEXT","event_state":"NOT_INCLUDED","pit_status":"PIT_SAFE","source_provenance":"PCSDataAccess:options_v2"})
     frame=pd.DataFrame(rows); path=BATCH/f"period={period}.parquet"; tmp=path.with_suffix(".tmp"); frame.to_parquet(tmp,index=False); os.replace(tmp,path); return {"period":period,"status":"COMMITTED","output_path":str(path),"output_checksum":sha(path),"row_count":len(frame),"decision_dates":dates,"setup_pass_dates":setup,"meta":meta}
 def main():
-    started=time.time(); stock=load_daily("COST"); bench=load_daily("QQQ"); state=json.loads(STATE.read_text()) if STATE.exists() else {"ticker":"COST","version":"candidate.v2","partitions":{}}
+    started=time.time(); stock=load_daily("COST"); bench=load_daily("QQQ"); identity=run_identity(); state=json.loads(STATE.read_text()) if STATE.exists() else {"ticker":"COST","version":"candidate.v2","partitions":{},"identity":identity}
+    if state.get("identity") != identity:
+        if STATE.exists(): raise RuntimeError("COST_RESUME_IDENTITY_CHANGED")
+        state["identity"] = identity
     for p in PERIODS: state["partitions"].setdefault(p,{"status":"PENDING"})
-    atomic_json(STATE,state); pending=[p for p in PERIODS if state["partitions"][p].get("status")!="COMMITTED" or not Path(state["partitions"][p].get("output_path","")).exists()]; durations=[]
+    atomic_json(STATE,state); pending=[]
+    for p in PERIODS:
+        saved=state["partitions"][p]; output=Path(saved.get("output_path",""))
+        reusable=(saved.get("status")=="COMMITTED" and output.is_file()
+                  and saved.get("output_checksum")==sha(output))
+        if not reusable: pending.append(p)
+    durations=[]
     def report(stage):
         committed=[p for p in PERIODS if state["partitions"].get(p,{}).get("status")=="COMMITTED"]; failed=[p for p in PERIODS if state["partitions"].get(p,{}).get("status")=="FAILED"]; dates=sum(int(state["partitions"][p].get("decision_dates",0)) for p in committed); candidates=sum(int(state["partitions"][p].get("row_count",0)) for p in committed); avg=sum(durations)/len(durations) if durations else None; atomic_json(PROGRESS,{"ticker":"COST","stage":stage,"workers":WORKERS,"completed_work_units":len(committed),"total_work_units":len(PERIODS),"active_workers":0,"failed_work_units":len(failed),"completed_decision_dates":dates,"candidates_generated":candidates,"elapsed_seconds":round(time.time()-started,2),"average_work_unit_seconds":round(avg,2) if avg else None,"remaining_work_units":len(PERIODS)-len(committed)-len(failed),"eta_seconds":round((len(PERIODS)-len(committed))*avg,2) if avg else None})
     report("resuming")
