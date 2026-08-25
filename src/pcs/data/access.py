@@ -326,9 +326,13 @@ class PCSDataAccess:
 
     def source_data_identity(self, dataset: str, symbol: str) -> str:
         """Return a deterministic identity for the active canonical input."""
+        resolved_dataset, manifest_path, _ = self._resolve_route(dataset, symbol)
         spec = self.resolve_source(dataset, symbol)
-        manifest = self._manifest if self._uses_default_store else self._read_manifest(self.manifest_path)
-        rows = manifest[(manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == str(symbol).upper())]
+        manifest = self._manifest if manifest_path == self.manifest_path else self._read_manifest(manifest_path)
+        rows = manifest[
+            manifest.get("dataset", pd.Series(dtype=str)).astype(str).eq(resolved_dataset)
+            & manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(str(symbol).upper())
+        ]
         files = spec.path.split(";") if ";" in spec.path else [spec.path]
         physical = []
         for raw in files:

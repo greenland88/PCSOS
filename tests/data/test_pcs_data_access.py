@@ -44,6 +44,28 @@ def test_relative_configured_routes_follow_data_root(tmp_path):
     assert parquet == data_root / "parquet"
 
 
+def test_routed_source_identity_uses_resolved_dataset_rows_only(tmp_path):
+    data_root = tmp_path / "canonical-data"
+    manifest_dir = data_root / "manifests"
+    option_dir = data_root / "parquet" / "options_v2" / "symbol=ZZZ" / "year=2026" / "quarter=1"
+    manifest_dir.mkdir(parents=True)
+    option_dir.mkdir(parents=True)
+    pd.DataFrame({"symbol": ["ZZZ"], "trade_date": ["2026-01-02"], "expiration_date": ["2026-02-20"],
+                  "strike": [100.0], "call_put": ["p"], "bid": [1.0]}).to_parquet(option_dir / "quotes.parquet", index=False)
+    manifest = pd.DataFrame([
+        {"dataset": "options_v2", "symbol": "ZZZ", "status": "SUCCESS", "row_count": 1,
+         "min_date": "2026-01-02", "max_date": "2026-01-02", "schema_version": "1"},
+    ])
+    manifest.to_csv(manifest_dir / "storage_manifest.csv", index=False)
+    routes = {"options": {"by_symbol": {"ZZZ": {"dataset": "options_v2"}}}}
+    first = PCSDataAccess(data_root=data_root, source_routes=routes).source_data_identity("options", "ZZZ")
+    manifest.loc[len(manifest)] = {"dataset": "daily", "symbol": "ZZZ", "status": "SUCCESS", "row_count": 99,
+                                   "min_date": "2020-01-01", "max_date": "2026-01-02", "schema_version": "1"}
+    manifest.to_csv(manifest_dir / "storage_manifest.csv", index=False)
+    second = PCSDataAccess(data_root=data_root, source_routes=routes).source_data_identity("options", "ZZZ")
+    assert first == second
+
+
 def _options(rows):
     return pd.DataFrame(rows, columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "last", "bid", "ask", "bid_iv", "ask_iv", "open_interest", "volume", "delta", "gamma", "vega", "theta", "rho"])
 
