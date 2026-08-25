@@ -45,7 +45,7 @@ def run_ticker(ticker: str) -> dict:
     identity = hashlib.sha256(json.dumps(identity_payload, sort_keys=True).encode()).hexdigest()
     if output.exists() and receipt.exists():
         saved = json.loads(receipt.read_text(encoding="utf-8"))
-        if saved.get("identity") == identity:
+        if saved.get("identity") == identity and saved.get("output_sha256") == hashlib.sha256(output.read_bytes()).hexdigest():
             frame = pd.read_parquet(output)
             return {"ticker": ticker, "reused": True, "rows": len(frame)}
     stock = access.read_prices(ticker).copy()
@@ -66,7 +66,8 @@ def run_ticker(ticker: str) -> dict:
         tmp.unlink(missing_ok=True)
     receipt_tmp = receipt.with_name(f".{receipt.name}.{uuid.uuid4().hex}.tmp")
     try:
-        receipt_tmp.write_text(json.dumps({"identity": identity, "inputs": identity_payload}, indent=2), encoding="utf-8")
+        receipt_tmp.write_text(json.dumps({"identity": identity, "inputs": identity_payload,
+                                           "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest()}, indent=2), encoding="utf-8")
         os.replace(receipt_tmp, receipt)
     finally:
         receipt_tmp.unlink(missing_ok=True)
