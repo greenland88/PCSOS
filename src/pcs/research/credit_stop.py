@@ -279,6 +279,8 @@ def buffer_bucket(distance): return "1.5-2.0 ATR" if distance<=2 else "2.0-2.5 A
 def track_trade(entry, quotes, short, long, initial, max_days=20, quote_index=None):
     if quote_index is None:
         q=quotes[(quotes["Expiry Date"]==entry["expiration"])&quotes["Trade Date"].ge(entry["date"])&quotes.Strike.isin([entry["short_strike"],entry["long_strike"]])]
+        if "Call/Put" in q.columns:
+            q = q[q["Call/Put"].astype(str).str.lower().eq("p")]
     else:
         q=pd.concat([quote_index.get((entry["expiration"],entry["short_strike"],"p"),pd.DataFrame()),quote_index.get((entry["expiration"],entry["long_strike"],"p"),pd.DataFrame())],ignore_index=True)
         q=q[q["Trade Date"]>=entry["date"]]
