@@ -29,7 +29,11 @@ def backfill(ticker: str) -> dict:
     variant = REPO_ROOT / "data/parquet/research/variant_b_full" / f"{ticker}_full_post2020_2d.parquet"
     if variant.exists():
         v = pd.read_parquet(variant)
-        if len(v) == len(frame):
+        identity = ["date", "expiration", "short_strike", "long_strike"]
+        same_identity = (len(v) == len(frame) and all(c in v.columns and c in frame.columns for c in identity)
+                         and v[identity].sort_values(identity).reset_index(drop=True).equals(
+                             frame[identity].sort_values(identity).reset_index(drop=True)))
+        if same_identity and {"short_volume", "short_oi", "short_ask", "short_bid"}.issubset(v.columns):
             prior = pd.DataFrame({"option_volume": v["short_volume"], "open_interest": v["short_oi"], "bid_ask_pct": (v["short_ask"] - v["short_bid"]) / ((v["short_ask"] + v["short_bid"]) / 2).clip(lower=1e-12)})
     chain = load_chain(ticker, frame)
     chain["trade_date"] = pd.to_datetime(chain["trade_date"]).dt.normalize()
@@ -71,7 +75,12 @@ def backfill(ticker: str) -> dict:
     frame["nearby_strikes_definition"] = "2-below-2-above-distinct:v1"
     frame["later_expirations_definition"] = "distinct-strictly-later:v1"
     frame["calculation_asof"] = frame["date"]
-    frame.to_parquet(path, index=False)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        frame.to_parquet(temp, index=False)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
     a = audit_inputs(frame)
     return {"ticker": ticker, "candidate_rows": len(frame), "expected_move_1d_populated": int(frame.expected_move_1d.notna().sum()),
             "nearby_strikes_populated": int(frame.nearby_strikes.notna().sum()), "later_expirations_populated": int(frame.later_expirations.notna().sum()),
