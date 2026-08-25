@@ -2,6 +2,8 @@
 from pathlib import Path
 from dataclasses import asdict
 import json
+import os
+import uuid
 import pandas as pd
 from pcs.data.access import PCSDataAccess
 from pcs.research.underlying_state import evaluate_as_of
@@ -40,13 +42,25 @@ def run():
     for c in frame.columns:
         if frame[c].map(lambda x: isinstance(x, (list, dict, tuple))).any():
             frame[c] = frame[c].map(lambda x: json.dumps(x, default=str) if isinstance(x, (list, dict, tuple)) else x)
-    frame.to_parquet(OUT / "pit_state_timeline.parquet", index=False)
+    timeline = OUT / "pit_state_timeline.parquet"
+    timeline_tmp = OUT / f".{timeline.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        frame.to_parquet(timeline_tmp, index=False)
+        os.replace(timeline_tmp, timeline)
+    finally:
+        timeline_tmp.unlink(missing_ok=True)
     result = {"status":"REBUILT", "rows":len(frame), "identity":identity,
               "affected_artifact":"pit_state_timeline only", "options_rebuilt":False,
               "canonical_daily_rebuilt":False, "price_basis_rebuilt":False,
               "corporate_actions_rebuilt":False, "lifecycle_rebuilt":False,
               "final_oos_read":False, "production_changed":False}
-    (OUT / "v2_pit_cache_rebuild_report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    report = OUT / "v2_pit_cache_rebuild_report.json"
+    report_tmp = OUT / f".{report.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        report_tmp.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        os.replace(report_tmp, report)
+    finally:
+        report_tmp.unlink(missing_ok=True)
     return result
 
 if __name__ == "__main__":
