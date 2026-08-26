@@ -39,4 +39,6 @@ def main():
     OUT.write_text(json.dumps(results,indent=2),encoding="utf-8")
     print("promoted",len(results))
 
-if __name__=="__main__": main()
+if __name__=="__main__":
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

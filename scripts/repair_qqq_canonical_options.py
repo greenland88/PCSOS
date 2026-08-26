@@ -47,4 +47,6 @@ def main():
     (out/"qqq_repair_execution.json").write_text(json.dumps({"policy":"VENDOR_CONFLICT_RESOLVED_BY_FIRST_RAW_ROW","before":before,"after":after,"partitions":outcomes,"canonical_data_modified":True},indent=2,default=str),encoding="utf-8")
     print(json.dumps({"partitions":len(outcomes),"exact_duplicates_removed":sum(x["exact_duplicates_removed"] for x in outcomes),"conflicts_resolved":sum(x["conflicts_resolved"] for x in outcomes),"status":"COMPLETED"},indent=2))
 
-if __name__=="__main__": main()
+if __name__=="__main__":
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

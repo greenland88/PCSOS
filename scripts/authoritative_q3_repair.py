@@ -69,4 +69,6 @@ def main():
  Path('data/manifests/options_v2_authoritative_q3_repair_20260820.json').write_text(json.dumps(results,indent=2),encoding='utf-8')
  for r in results: print(f"{r['symbol']} | {r['conflicting_keys_examined']} | {r['keys_resolved_by_raw_a']+r['keys_resolved_by_raw_b']} | {r['unresolved_keys']} | 0 | 0 | COMPLETE | NOT_STARTED | V2 Q3 AUTHORITATIVE REPAIR VALIDATED")
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+  from pcs.data.import_boundary import reject_legacy_import_entrypoint
+  reject_legacy_import_entrypoint()

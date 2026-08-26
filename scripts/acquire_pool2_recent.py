@@ -51,4 +51,6 @@ def main() -> None:
         for f in as_completed(futures): results.append(f.result())
     out=pd.DataFrame(results).sort_values("symbol"); Path("research_outputs/global_pcs_base_universe/pool_2_options").mkdir(parents=True,exist_ok=True); out.to_parquet("research_outputs/global_pcs_base_universe/pool_2_options/acquisition_status.parquet",index=False); out.to_csv("research_outputs/global_pcs_base_universe/pool_2_options/acquisition_status.csv",index=False); print(json.dumps(out.groupby("status").size().to_dict(), default=str))
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()
