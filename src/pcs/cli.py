@@ -5,15 +5,12 @@ import tempfile
 from pathlib import Path
 import pandas as pd
 
-from pcs.collectors.option_chain_snapshot import OptionChainSnapshotCollector
-from pcs.data.storage import ParquetStore
 from pcs.engine.decision_engine import DecisionEngine, load_rules
 from pcs.providers.hood_trader_provider import HoodTraderProvider, JsonHoodClient
 from pcs.providers.mock_provider import MockProvider
 from pcs.research.youtube_subtitles import DEFAULT_TRANSCRIPT_DIR, download_youtube_subtitles
 from pcs.simulation.paper_trading import run_daily_paper_trading
 from pcs.stress_lab.scenarios import DEFAULT_SYNTHETIC_SCENARIOS, StressLab
-from pcs.data.incremental_update import load_source, update_ticker
 from pcs.data.onboarding_engine import OnboardingEngine
 
 
@@ -156,12 +153,6 @@ def main():
     parser = argparse.ArgumentParser(prog="pcs-lite")
     sub = parser.add_subparsers(required=True)
 
-    collect = sub.add_parser("collect-options", help="write read-only option-chain snapshots to Parquet")
-    collect.add_argument("--hood-json", help="local exported Hood payload JSON; omit to use MockProvider")
-    collect.add_argument("--data-root", default="data")
-    collect.add_argument("symbols", nargs="+")
-    collect.set_defaults(func=collect_options)
-
     analyze = sub.add_parser("analyze-mock", help="run local PCS rule engine on mock data")
     analyze.add_argument("--rules", default="config/pcs_rules.yaml")
     analyze.set_defaults(func=analyze_mock)
@@ -190,37 +181,11 @@ def main():
     subtitles.add_argument("--languages", default="en,en-orig")
     subtitles.set_defaults(func=download_subtitles)
 
-    update = sub.add_parser("update-data", help="incrementally update current daily/options data")
-    update.add_argument("symbols", nargs="*", help="tickers; omit to discover daily CSVs")
-    update.add_argument("--daily-root", default="data/live/daily")
-    update.add_argument("--options-root", default="data/incoming/options")
-    update.add_argument("--parquet-root", default="data/parquet")
-    update.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
-    update.add_argument("--options-manifest-path", default="data/manifests/storage_manifest.csv")
-    update.add_argument("--source-version", default="incremental")
-    update.set_defaults(func=update_data)
-
-    onboard_cmd = sub.add_parser("onboard", help="automatically onboard one ticker through the canonical workflow")
-    onboard_cmd.add_argument("symbol")
-    onboard_cmd.add_argument("--period", action="append", metavar="YEAR-QUARTER", help="optional fixture override; otherwise periods are discovered")
-    onboard_cmd.add_argument("--source-root", default=r"K:\BaiduNetdiskDownload\USDailyOptions")
-    onboard_cmd.add_argument("--parquet-root", default="data/parquet")
-    onboard_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
-    onboard_cmd.add_argument("--routes-path", default="config/data_source_routes.yaml")
-    onboard_cmd.add_argument("--state-root", default="data/onboarding")
-    onboard_cmd.add_argument("--workers", type=int, default=4)
-    onboard_cmd.set_defaults(func=onboard)
-
     ready_cmd = sub.add_parser("readiness", help="run the canonical ticker readiness gate")
     ready_cmd.add_argument("symbol")
     ready_cmd.add_argument("--parquet-root", default="data/parquet")
     ready_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     ready_cmd.set_defaults(func=readiness)
-
-    status_cmd = sub.add_parser("onboarding-status", help="inspect persisted onboarding progress")
-    status_cmd.add_argument("symbol")
-    status_cmd.add_argument("--state-root", default="data/onboarding")
-    status_cmd.set_defaults(func=onboarding_status)
 
     md_status = sub.add_parser("market-data-status", help="inspect canonical coverage and produce an import plan")
     md_status.add_argument("symbol")
