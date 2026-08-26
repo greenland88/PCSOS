@@ -360,6 +360,10 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
 
     def options(plan):
         req = plan.requirements if hasattr(plan, "requirements") else plan
+        resolver = kwargs.get("resolver") or SourceResolver(kwargs.get("source_registry_path"))
+        approved = {str(item.get("source_id")) for item in resolver.resolve("options")}
+        if "clickhouse_options" not in approved and kwargs.get("clickhouse_client") is None:
+            return {"status": "BLOCKED", "reason_codes": ["SOURCE_NOT_AUTHORIZED"], "selected_source": "clickhouse_options"}
         current_client = kwargs.get("clickhouse_client")
         if current_client is None:
             import os

@@ -178,6 +178,19 @@ def test_options_handler_zero_rows_is_authorized_source_block(monkeypatch, tmp_p
     assert result["reason_codes"] == ["AUTHORIZED_SOURCE_NO_ROWS"]
 
 
+def test_options_handler_fails_closed_when_clickhouse_is_not_registered(tmp_path):
+    from pcs.data.access import PCSDataAccess
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    class Resolver:
+        def resolve(self, dataset):
+            return [{"source_id": "purchased_option_zip"}] if dataset == "options" else []
+    handlers = __import__("pcs.data.control_plane", fromlist=["default_import_handlers"]).default_import_handlers(
+        access=access, resolver=Resolver())
+    result = handlers["options"](MarketDataRequirements("NVDL", "2023-09-26", "2023-12-31", ("options",)))
+    assert result["status"] == "BLOCKED"
+    assert result["reason_codes"] == ["SOURCE_NOT_AUTHORIZED"]
+
+
 def test_massive_daily_handler_uses_canonical_incremental_writer(tmp_path):
     from pcs.data.access import PCSDataAccess
     access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
