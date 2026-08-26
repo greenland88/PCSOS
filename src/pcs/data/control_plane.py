@@ -295,6 +295,29 @@ class ImportCoordinator:
         payload["imported_periods"] = tuple(x["dataset"] for x in outcomes if x["status"] == "IMPORTED")
         payload["blocked_periods"] = tuple(x["dataset"] for x in outcomes if x["status"] == "BLOCKED")
         payload["stages"] = {**payload.get("stages", {}), **{x["dataset"]: x["status"] for x in outcomes}}
+        payload["initial_plan"] = asdict(plan)
+        payload["import_outcomes"] = outcomes
+        payload["selected_source"] = tuple(sorted({
+            str(x.get("result", {}).get("selected_source"))
+            for x in outcomes if isinstance(x.get("result"), dict)
+            and x.get("result", {}).get("selected_source")
+        }))
+        payload["provider_coverage"] = tuple(
+            x.get("result", {}).get("provider_coverage")
+            for x in outcomes if isinstance(x.get("result"), dict)
+            and x.get("result", {}).get("provider_coverage") is not None
+        )
+        payload["promoted_partitions"] = tuple(
+            partition for x in outcomes if isinstance(x.get("result"), dict)
+            for partition in x.get("result", {}).get("promoted_partitions", ())
+            if isinstance(partition, dict) and partition.get("status") == "IMPORTED"
+        )
+        payload["blocked_partitions"] = tuple(
+            partition for x in outcomes if isinstance(x.get("result"), dict)
+            for partition in x.get("result", {}).get("promoted_partitions", ())
+            if isinstance(partition, dict) and partition.get("status") != "IMPORTED"
+        )
+        payload["final_canonical_status"] = payload.get("status", "BLOCKED")
         return {"status": payload.get("status", "BLOCKED"), "result": payload, "outcomes": outcomes}
 
 
