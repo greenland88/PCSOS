@@ -334,7 +334,6 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
     classified failure in the coordinator.
     """
     from .import_daily_snapshot import import_daily_snapshot
-    from .import_option_archives import import_option_archives
     access = kwargs.get("access") or PCSDataAccess.canonical()
 
     def daily(plan):
@@ -412,14 +411,6 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
             return {"status": "BLOCKED" if blocked else "IMPORTED", "provider_coverage": coverage,
                     "selected_source": "clickhouse_options", "promoted_partitions": promotions,
                     "reason_codes": ["PROMOTION_FAILED"] if blocked else []}
-        loader = kwargs.get("clickhouse_loader")
-        periods = kwargs.get("periods")
-        if loader is not None and periods:
-            from .onboarding import HistoricalTxtZipAdapter, onboard_ticker_incremental
-            return onboard_ticker_incremental(req.symbol, periods, loader,
-                adapter=HistoricalTxtZipAdapter(archive_root or r"K:\BaiduNetdiskDownload\USDailyOptions"),
-                access=kwargs.get("access") or PCSDataAccess.canonical(),
-                workers=kwargs.get("workers", 4), resume=True).__dict__
         return {"status": "BLOCKED", "reason_codes": ["OPTIONS_REQUEST_WINDOW_REQUIRED"], "selected_source": "clickhouse_options"}
 
     return {"daily": daily, "options": options,
