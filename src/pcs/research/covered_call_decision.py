@@ -236,9 +236,18 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
     read. The function is ticker-agnostic; ticker routing belongs to callers.
     """
     symbol = str(symbol).strip().upper(); day = str(as_of_date)[:10]
-    profile = profile or resolve_covered_call_profile(symbol)
-    if profile.symbol.strip().upper() != symbol:
-        profile = resolve_covered_call_profile(symbol)
+    canonical_profile = resolve_covered_call_profile(symbol)
+    # The ticker registry is authoritative.  A caller-supplied profile may
+    # only provide an independently validated profile for the same symbol;
+    # it can never upgrade an unvalidated ticker such as NVDL.
+    if profile is not None and profile.symbol.strip().upper() != symbol:
+        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+            "profile symbol does not match request symbol", 0, "UNKNOWN", "UNKNOWN",
+            active_calls, max_active_calls,
+            no_sell_reasons=("PROFILE_SYMBOL_MISMATCH",),
+            reason_codes=("SINGLE_SYMBOL_PROFILE_GATE", "FAIL_CLOSED"),
+            profile_status=canonical_profile.status.value).to_dict()
+    profile = canonical_profile
     if shares_owned is None or event_context is None or (market_context is None and market is None):
         return CoveredCallDecision(symbol, day, CallDecision.WAIT,
             "required single-symbol request fields are missing", 0, "UNKNOWN", "UNKNOWN",
@@ -251,7 +260,7 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
             active_calls, max_active_calls, no_sell_reasons=("INVALID_POSITION_COUNTS",),
             reason_codes=("REQUEST_VALIDATION_FAILED", "FAIL_CLOSED"),
             profile_status=profile.status.value).to_dict()
-    max_contracts = max(0, min(int(shares_owned) // 100 - int(active_calls), int(max_active_calls)))
+    max_contracts = max(0, min(int(shares_owned) // 100 - int(active_calls), int(profile.max_calls)))
     market = market_context if market_context is not None else market
     if profile.status is not ProfileStatus.VALIDATED:
         return CoveredCallDecision(symbol, day, CallDecision.WAIT,

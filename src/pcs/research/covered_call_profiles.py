@@ -23,6 +23,7 @@ class CoveredCallProfile:
     min_atr_distance: float | None = None
     preferred_dte: int | None = None
     preferred_delta: float | None = None
+    max_calls: int = 3
     earnings_applicable: bool = True
     reason_codes: tuple[str, ...] = ()
 
