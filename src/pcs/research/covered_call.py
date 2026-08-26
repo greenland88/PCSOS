@@ -90,7 +90,7 @@ class CoveredCallEpisode:
     close_underlying_price: float | None = None
 
     def __post_init__(self) -> None:
-        self.cumulative_premium_received = self.current_contract.mid * self.shares
+        self.cumulative_premium_received = self.current_contract.bid * self.shares
         self.realized_cashflow = self.cumulative_premium_received
         self.opened_date = self.opened_date or self.current_contract.quote_date
 
@@ -107,7 +107,7 @@ class CoveredCallEpisode:
         return (float(underlying_price) - self.stock_entry_price) * self.shares + call_cashflow
 
     def roll(self, new_contract: CoveredCallContract, *, old_buyback_price: float) -> float:
-        proceeds = new_contract.mid * self.shares
+        proceeds = new_contract.bid * self.shares
         cost = float(old_buyback_price) * self.shares
         credit = proceeds - cost
         if credit < 0:
@@ -182,16 +182,19 @@ class CoveredCallRollSelector:
             if new.symbol != current_contract.symbol or _as_date(new.expiration) <= _as_date(current_contract.expiration):
                 continue
             dte = (_as_date(new.expiration) - today).days
-            if dte < 0 or dte > self.max_dte or new.mid <= 0:
+            if (dte < 0 or dte > self.max_dte or new.bid <= 0 or new.ask < new.bid or
+                new.open_interest is None or new.volume is None or
+                new.open_interest < 100 or new.volume < 1 or new.spread_pct > 0.20):
                 continue
-            credit = new.mid - current_contract.ask
+            credit = new.bid - current_contract.ask
             if credit < 0:
                 continue
             candidates.append((new, credit * 100))
         if not candidates:
             return None
-        return max(candidates, key=lambda x: (x[0].strike, -(_as_date(x[0].expiration)-today).days,
-                                               x[1], -x[0].spread_pct))
+        return max(candidates, key=lambda x: (x[1], -x[0].spread_pct,
+                                               -abs((_as_date(x[0].expiration)-today).days - 43),
+                                               x[0].strike))
 
     select_roll = select
 
@@ -352,7 +355,7 @@ class CoveredCallPosition:
         if self.state is not CoveredCallState.FLAT_CALL or self.contract is not None:
             raise ValueError("ONE_SHORT_CALL_PER_100_SHARES")
         self.stock_entry_price, self.contract = float(stock_price), contract
-        self.premium_collected = contract.mid * self.shares
+        self.premium_collected = contract.bid * self.shares
         self.state = CoveredCallState.SHORT_CALL_OPEN
 
     def close(self, state: CoveredCallState, *, stock_price: float, buy_to_close_price: float | None = None,
@@ -389,7 +392,9 @@ class CoveredCallPosition:
         self.roll_count += 1
         self.roll_credits += float(net_credit)
         self.episode_pnl += float(net_credit)
-        self.premium_collected += float(net_credit) * self.shares
+        # ``net_credit`` is an account-level dollar amount, matching
+        # ``episode_pnl`` and ``roll_credits``.
+        self.premium_collected += float(net_credit)
         self.contract = CoveredCallContract(self.symbol, self.contract.quote_date, str(new_expiration),
                                             float(new_strike), float(new_bid), float(new_ask), new_delta,
                                             underlying_price=self.contract.underlying_price)
@@ -421,7 +426,13 @@ def replay_covered_call(position: CoveredCallPosition, observations: Iterable[Ma
     exit_row = None
     for row in rows:
         days = (date.fromisoformat(str(row["date"])[:10]) - date.fromisoformat(str(entry_date)[:10])).days
-        mid = (float(row["bid"]) + float(row["ask"])) / 2.0 * position.shares
+        if row.get("bid") is None or row.get("ask") is None:
+            position.state = CoveredCallState.HARD_CONSTRAINT_CONFLICT
+            return {"symbol": position.symbol, "entry_date": entry_date,
+                    "exit_date": row["date"], "exit_state": position.state.value,
+                    "status": "HARD_CONSTRAINT_CONFLICT", "holding_days": days,
+                    "reason_codes": ["LIFECYCLE_QUOTE_UNAVAILABLE"]}
+        buyback = float(row["ask"])
         dte = (date.fromisoformat(str(row["expiration"])[:10]) - date.fromisoformat(str(row["date"])[:10])).days
         if dte <= 5 and float(row.get("underlying_close", 0)) >= float(position.contract.strike):
             roll_credit = row.get("roll_net_credit")
@@ -437,14 +448,14 @@ def replay_covered_call(position: CoveredCallPosition, observations: Iterable[Ma
                     "holding_days": days,
                     "reason_codes": ["H1_NO_ASSIGNMENT", "H4_MANDATORY_ROLL_REVIEW",
                                      "NO_PROFITABLE_CLOSE_OR_ROLL"]}
-        profit_close_ready = (mid <= target and days >= int(minimum_holding_days) and
+        profit_close_ready = (buyback * position.shares <= target and days >= int(minimum_holding_days) and
                               (remaining_dte_condition is None or dte <= int(remaining_dte_condition)))
         time_exit_ready = (time_exit_days is not None and days >= time_exit_days and
                            days >= int(minimum_holding_days))
         if profit_close_ready or time_exit_ready:
             try:
                 position.close(CoveredCallState.BUY_TO_CLOSE, stock_price=float(row["underlying_close"]),
-                               buy_to_close_price=mid / position.shares, holding_days=days)
+                               buy_to_close_price=buyback, holding_days=days)
             except ValueError as exc:
                 continue
             exit_row = row

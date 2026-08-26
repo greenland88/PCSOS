@@ -23,6 +23,7 @@ class PlanAction(StrEnum):
     SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE = "SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE"
     IMPORT_HISTORICAL_OPTIONS = "IMPORT_HISTORICAL_ZIP_WITH_CLICKHOUSE_OVERLAP"
     BLOCKED_NO_AUTHORIZED_SOURCE = "BLOCKED_NO_AUTHORIZED_SOURCE"
+    REPAIR_EXACT_OPTIONS_GAP = "REPAIR_EXACT_OPTIONS_GAP"
 
 @dataclass(frozen=True)
 class MarketDataRequirements:
@@ -30,6 +31,8 @@ class MarketDataRequirements:
     required_start: str | None = None
     required_end: str | None = None
     datasets: tuple[str, ...] = ("daily", "options")
+    exact_contract_quote_keys: tuple[dict[str, Any], ...] = ()
+    required_fields: tuple[str, ...] = ()
     def __post_init__(self):
         object.__setattr__(self, "symbol", self.symbol.strip().upper())
         if not self.symbol: raise ValueError("symbol must be non-empty")
@@ -43,7 +46,10 @@ class MarketDataRequirements:
             datasets = tuple(name for name, spec in raw.items() if not isinstance(spec, dict) or spec.get("required", True))
         else:
             datasets = tuple(raw)
-        return cls(symbol or value.get("symbol", ""), start, end, datasets)
+        keys = value.get("exact_contract_quote_keys", ()) or ()
+        if isinstance(keys, dict): keys = (keys,)
+        fields = value.get("required_fields", ()) or ()
+        return cls(symbol or value.get("symbol", ""), start, end, datasets, tuple(dict(x) for x in keys), tuple(str(x) for x in fields))
 
 @dataclass(frozen=True)
 class CoveragePlan:
@@ -342,10 +348,7 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                 adapter=HistoricalTxtZipAdapter(archive_root or r"K:\BaiduNetdiskDownload\USDailyOptions"),
                 access=kwargs.get("access") or PCSDataAccess.canonical(),
                 workers=kwargs.get("workers", 4), resume=True).__dict__
-        return import_option_archives(archive_root=archive_root or r"K:\BaiduNetdiskDownload\USDailyOptions",
-                                      raw_root=options_raw_root, output_root=options_output_root,
-                                      manifest_path=options_manifest_path, symbols=[req.symbol],
-                                      sync_parquet=True).__dict__
+        return {"status": "BLOCKED", "reason_codes": ["CLICKHOUSE_LOADER_REQUIRED", "LEGACY_IMPORT_FALLBACK_DISABLED"], "detail": "Control plane cannot bypass overlap, staging, manifest, provenance, and readiness validation."}
 
     return {"daily": daily, "options": options,
             PlanAction.REPAIR_DAILY_FROM_GATEWAY.value: daily,
@@ -427,6 +430,10 @@ class MarketDataControlPlane:
         req = requirements if isinstance(requirements, MarketDataRequirements) else MarketDataRequirements.from_mapping(symbol, requirements)
         existing = self._existing(req); actions = []
         for dataset in req.datasets:
+            if dataset == "options" and req.exact_contract_quote_keys:
+                actions.append({"dataset": dataset, "action": PlanAction.REPAIR_EXACT_OPTIONS_GAP.value,
+                                "reason": "exact execution quote keys require source-level probe"})
+                continue
             if existing[dataset]["present"] and "coverage_gap" not in existing[dataset]:
                 actions.append({"dataset": dataset, "action": PlanAction.REUSE_CANONICAL.value, "reason": "validated canonical source exists"})
             else:
@@ -492,6 +499,25 @@ class MarketDataControlPlane:
         reasons = blockers or validation_reasons or coverage_reasons or (("DATASET_GAP",) if missing else ())
         return MarketDataResult(self.MODULE, self.VERSION, plan.requirements.symbol, plan.requirements.required_end or now, status, now, self.VERSION, uuid.uuid4().hex, uuid.uuid4().hex, reasons, asdict(plan.requirements), plan_payload, validation, blockers or validation_reasons, sources, stages, tuple(a["dataset"] for a in plan.actions if a["action"] == PlanAction.REUSE_CANONICAL.value), (), (), tuple(a["dataset"] for a in plan.actions if a["action"] == PlanAction.BLOCKED_NO_AUTHORIZED_SOURCE.value))
     def ensure_market_data(self, requirements, importer=None, symbol=None):
+        req = requirements if isinstance(requirements, MarketDataRequirements) else MarketDataRequirements.from_mapping(symbol, requirements)
+        if req.exact_contract_quote_keys and "options" in req.datasets:
+            # Exact-gap repair is deliberately bounded to the requested keys.
+            # It never uses adjacent dates/strikes or a legacy fallback.
+            from .clickhouse import PCSClickHouseClient
+            import os
+            client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", ""), os.getenv("CLICKHOUSE_PASSWORD", ""))
+            dates = sorted({str(x.get("quote_date", x.get("trade_date")))[:10] for x in req.exact_contract_quote_keys})
+            source = client.fetch_options_dates(req.symbol, dates)
+            source["trade_date"] = pd.to_datetime(source["trade_date"]).dt.normalize()
+            source["expiration_date"] = pd.to_datetime(source["expiration_date"]).dt.normalize()
+            source["call_put"] = source["call_put"].astype(str).str.lower().replace({"call": "c"})
+            wanted = {(str(x.get("quote_date", x.get("trade_date")))[:10], str(x["expiration_date"])[:10], float(x["strike"]), str(x.get("call_put", "c")).lower().replace("call", "c")) for x in req.exact_contract_quote_keys}
+            selected = source[source.apply(lambda r: (str(r.trade_date.date()), str(r.expiration_date.date()), float(r.strike), str(r.call_put)) in wanted, axis=1)].drop_duplicates(keep="last")
+            actual = {(str(r.trade_date.date()), str(r.expiration_date.date()), float(r.strike), str(r.call_put)) for r in selected.itertuples()}
+            if actual != wanted:
+                return {"status": ImportStatus.BLOCKED.value, "reason_codes": ["AUTHORIZED_SOURCE_QUOTE_GAPS"], "source_status": "AUTHORIZED_SOURCE_QUOTE_GAP", "missing_keys": sorted(wanted - actual)}
+            repair = self.repair_exact_option_quotes(req.symbol, selected, source_version="clickhouse_exact_key_auto_repair", expected_keys=list(wanted))
+            return {"status": ImportStatus.READY.value, "source_status": "CANONICAL_INGESTION_GAP_AUTO_REPAIRABLE", "repair": repair, "repaired_keys": sorted(actual)}
         result = self.get_market_data_status(requirements, symbol)
         if result.status == ImportStatus.PARTIAL:
             if importer:
@@ -508,6 +534,34 @@ class MarketDataControlPlane:
         result = self.get_market_data_status(req)
         if result.status not in {ImportStatus.READY.value, ImportStatus.ALREADY_COMPLETE.value}: raise DataAccessError(f"DATA_NOT_READY:{req.symbol}:{','.join(result.reason_codes)}")
         return result
+
+    def repair_exact_option_quotes(self, symbol: str, frame: pd.DataFrame, *, source_version: str,
+                                   expected_keys: list[tuple[str, str, float, str]] | None = None) -> dict[str, Any]:
+        """Promote a bounded, source-probed options gap through the canonical upsert.
+
+        This is intentionally narrower than an import: callers must provide
+        exact execution rows already obtained from an authorized source. The
+        existing options duplicate/conflict validation and partition upsert
+        remain authoritative.
+        """
+        symbol = str(symbol).strip().upper()
+        if frame is None or frame.empty:
+            raise DataAccessError("EXACT_OPTIONS_GAP_EMPTY")
+        checked = frame.copy()
+        checked["symbol"] = checked.get("symbol", symbol).astype(str).str.upper()
+        checked = checked[checked["symbol"] == symbol]
+        checked["trade_date"] = pd.to_datetime(checked["trade_date"]).dt.normalize()
+        checked["expiration_date"] = pd.to_datetime(checked["expiration_date"]).dt.normalize()
+        checked["call_put"] = checked["call_put"].astype(str).str.lower().replace({"call": "c"})
+        checked = checked[checked["call_put"] == "c"]
+        checked = checked.drop_duplicates(keep="last")
+        if expected_keys:
+            actual = {(str(r.trade_date.date()), str(r.expiration_date.date()), float(r.strike), str(r.call_put)) for r in checked.itertuples()}
+            missing = [k for k in expected_keys if k not in actual]
+            if missing: raise DataAccessError(f"EXACT_OPTIONS_EXPECTED_KEYS_MISSING:{missing}")
+        from .incremental_update import update_ticker
+        return update_ticker(symbol, options_frame=checked, parquet_root=str(self.access.parquet_root),
+                             options_manifest_path=str(self.access.manifest_path), source_version=source_version)
 
 def get_market_data_status(symbol_or_requirements, requirements=None, *, access=None): return MarketDataControlPlane(access).get_market_data_status(requirements or symbol_or_requirements, None if requirements is None else symbol_or_requirements)
 def ensure_market_data(symbol=None, requirements=None, *, access=None, importer=None): return MarketDataControlPlane(access).ensure_market_data(requirements or {}, importer, symbol)

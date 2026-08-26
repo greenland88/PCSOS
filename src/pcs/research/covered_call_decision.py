@@ -210,7 +210,7 @@ def _contract_view(c: CoveredCallContract, spot: float, atr: float | None) -> di
     return {"expiration": c.expiration, "dte": dte, "strike": c.strike,
             "delta": c.delta, "moneyness": c.strike / spot - 1.0,
             "atr_distance": ((c.strike - spot) / atr if atr and atr > 0 else None),
-            "expected_credit": c.mid * 100, "liquidity_status": "PASS"}
+            "expected_credit": c.bid * 100, "liquidity_status": "PASS"}
 
 
 def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
@@ -275,6 +275,16 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
         return management
     market = market or {}
     event_context = event_context or {}
+    if market.get("market_state") is None:
+        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+            "market state is unknown", 0, "UNKNOWN", "UNKNOWN", active_calls,
+            max_active_calls, no_sell_reasons=("MARKET_STATE_UNKNOWN",),
+            reason_codes=("MARKET_CONTEXT_REQUIRED", "FAIL_CLOSED")).to_dict()
+    if event_context.get("earnings_status") not in {"KNOWN", "NO_EVENT"}:
+        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+            "earnings context is unknown", 0, "UNKNOWN", "UNKNOWN", active_calls,
+            max_active_calls, no_sell_reasons=("EARNINGS_UNKNOWN",),
+            reason_codes=("EVENT_CONTEXT_REQUIRED", "FAIL_CLOSED")).to_dict()
     earnings_date = (_date(event_context["earnings_date"])
                      if event_context.get("earnings_date") else None)
     days_to_earnings = ((earnings_date - _date(day)).days if earnings_date else
@@ -370,12 +380,14 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
                 c.strike < spot * (1.0 + preferred_moneyness) or
                 atr_distance < minimum_atr_distance):
             continue
-        if c.bid < 0 or c.ask < c.bid or c.spread_pct > 0.20:
+        if (c.bid <= 0 or c.ask < c.bid or c.spread_pct > 0.20 or
+                c.open_interest is None or c.volume is None or
+                c.open_interest < 100 or c.volume < 1):
             continue
         if c.delta is not None and c.delta > 0.30:
             continue
         candidates.append(c)
-    candidates.sort(key=lambda c: (-c.strike, abs((c.dte or (_date(c.expiration)-_date(day)).days) - preferred_dte), c.spread_pct))
+    candidates.sort(key=lambda c: (-c.bid, abs((c.dte or (_date(c.expiration)-_date(day)).days) - preferred_dte), c.spread_pct))
     if not candidates:
         return CoveredCallDecision(symbol, day, CallDecision.NO_SELL,
             "no safe liquid canonical call meets the frozen distance and DTE constraints", quality,
