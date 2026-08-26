@@ -5,7 +5,7 @@ sources:
       type: FILE
       enabled: true
       authorized: true
-      adapter: pcs.data.import_daily_snapshot
+      adapter: pcs.data.import_daily_snapshot.capabilities
       capabilities: [DAILY_HISTORY]
       authority: historical_daily_primary
       priority: 1
@@ -13,7 +13,7 @@ sources:
       type: FILE
       enabled: true
       authorized: true
-      adapter: pcs.data.import_daily_snapshot
+      adapter: pcs.data.import_daily_snapshot.capabilities
       capabilities: [DAILY_HISTORY]
       authority: daily_snapshot
       priority: 2
