@@ -1,5 +1,9 @@
 """Research-only COST new-ticker onboarding acceptance run."""
 from __future__ import annotations
+from pcs.data.import_boundary import reject_legacy_import_entrypoint
+
+reject_legacy_import_entrypoint()
+
 import calendar, os, tempfile
 from pathlib import Path
 import pyarrow.parquet as pq

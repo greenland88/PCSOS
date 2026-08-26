@@ -36,10 +36,17 @@ def test_legacy_canonical_mutators_are_explicitly_closed():
         "repair_amzn_batch2_confirmed_gaps.py", "repair_historical_vendor_conflicts.py",
         "repair_qqq_canonical_options.py", "repair_daily_provenance.py",
         "clean_manifest_exact_duplicates.py", "persist_options_promotion_provenance.py",
+        "run_cost_end_to_end_onboarding.py",
     )
     for name in scripts:
         source = (root / "scripts" / name).read_text(encoding="utf-8")
         assert "reject_legacy_import_entrypoint" in source, name
+
+
+def test_legacy_research_storage_entrypoint_is_closed():
+    root = Path(__file__).parents[2]
+    source = (root / "src/pcs/research/run_qqq_storage_phase1.py").read_text(encoding="utf-8")
+    assert "reject_legacy_import_entrypoint" in source
 
 
 def test_no_script_can_write_canonical_without_explicit_entrypoint_policy():

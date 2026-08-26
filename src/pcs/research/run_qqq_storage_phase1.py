@@ -1,5 +1,9 @@
 """Controlled QQQ base migration and integrity audit; never runs a backtest."""
 from pathlib import Path
+from pcs.data.import_boundary import reject_legacy_import_entrypoint
+
+reject_legacy_import_entrypoint()
+
 import argparse
 import re
 import csv, hashlib, time
