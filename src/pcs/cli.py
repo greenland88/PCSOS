@@ -134,6 +134,52 @@ def readiness(args):
     print(json.dumps(result.to_dict(), sort_keys=True, default=str))
 
 
+def covered_call_status(args):
+    """One-ticker covered-call admission/decision status.
+
+    This command deliberately stops at the ticker's own profile/readiness
+    gate.  It never scans a sibling ticker or substitutes another ticker's
+    research artifacts.
+    """
+    from pcs.data.access import PCSDataAccess
+    from pcs.research.covered_call_decision import evaluate_covered_call
+    from pcs.research.covered_call_profiles import resolve_covered_call_profile
+    from pcs.research.ticker_readiness import preflight_ticker
+
+    symbol = str(args.symbol).strip().upper()
+    profile = resolve_covered_call_profile(symbol)
+    if profile.status.value != "VALIDATED":
+        result = evaluate_covered_call(
+            symbol=symbol, as_of_date=args.as_of,
+            shares_owned=args.shares_owned, active_calls=args.active_calls,
+            event_context=args.event_context,
+            market_context=args.market_context,
+            profile=profile,
+        )
+        print(json.dumps(result, sort_keys=True, default=str))
+        return
+    access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+    readiness_result = preflight_ticker(symbol, access=access)
+    if readiness_result.PCS_RESEARCH_READY != "YES":
+        result = evaluate_covered_call(
+            symbol=symbol, as_of_date=args.as_of,
+            shares_owned=args.shares_owned, active_calls=args.active_calls,
+            event_context=args.event_context, market_context=args.market_context,
+            profile=profile,
+        )
+        result["reason_codes"] = list(result.get("reason_codes", [])) + ["TICKER_READINESS_NOT_PASSED"]
+        result["readiness"] = readiness_result.to_dict()
+        print(json.dumps(result, sort_keys=True, default=str))
+        return
+    result = evaluate_covered_call(
+        symbol=symbol, as_of_date=args.as_of,
+        shares_owned=args.shares_owned, active_calls=args.active_calls,
+        event_context=args.event_context, market_context=args.market_context,
+        data_access=access, profile=profile,
+    )
+    print(json.dumps(result, sort_keys=True, default=str))
+
+
 def onboarding_status(args):
     print(json.dumps(OnboardingEngine(args.symbol, args.state_root).progress(), sort_keys=True, default=str))
 
@@ -201,6 +247,17 @@ def main():
     md_import.add_argument("--end")
     md_import.add_argument("--dataset", action="append", choices=["daily", "options"], default=[])
     md_import.set_defaults(func=lambda args: (setattr(args, "execute", True), market_data_status(args))[1])
+
+    cc = sub.add_parser("covered-call-status", help="evaluate one ticker's covered-call admission/decision")
+    cc.add_argument("symbol")
+    cc.add_argument("--as-of", required=True)
+    cc.add_argument("--shares-owned", type=int, required=True)
+    cc.add_argument("--active-calls", type=int, required=True)
+    cc.add_argument("--event-context", type=json.loads, required=True)
+    cc.add_argument("--market-context", type=json.loads, required=True)
+    cc.add_argument("--parquet-root", default="data/parquet")
+    cc.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    cc.set_defaults(func=covered_call_status)
 
     args = parser.parse_args()
     args.func(args)
