@@ -91,9 +91,10 @@ def update_data(args):
 
 
 def onboard(args):
-    """Run the system-owned stage machine using an integration adapter."""
+    """Run onboarding only through the unified market-data control plane."""
     from pcs.data.access import PCSDataAccess
     from pcs.data.onboarding import HistoricalTxtZipAdapter, run_system_onboarding
+    from pcs.data.control_plane import MarketDataControlPlane
     periods = [(int(item.split("-", 1)[0]), int(item.split("-", 1)[1])) for item in args.period] if args.period else None
     def clickhouse_loader(symbol, year, quarter):
         from pcs.data.clickhouse import PCSClickHouseClient
@@ -113,13 +114,20 @@ def onboard(args):
             PCSClickHouseClient(url, user, password).query(sql, ticker=symbol, partition=f"{year}Q{quarter}", output=output)
             return pd.read_parquet(output)
 
-    result = run_system_onboarding(
-        args.symbol, periods=periods, clickhouse_loader=clickhouse_loader,
-        adapter=HistoricalTxtZipAdapter(args.source_root),
-        access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
-        workers=args.workers, state_root=args.state_root, routes_path=args.routes_path,
+    access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+    control = MarketDataControlPlane(access=access)
+    requirements = {"start": "2018-01-01", "end": pd.Timestamp.now().date().isoformat(),
+                    "datasets": {"options": {"required": True}}, "consumer": "CLI_ONBOARDING"}
+    result = control.ensure_market_data(
+        requirements,
+        importer=lambda plan: run_system_onboarding(
+            args.symbol, periods=periods, clickhouse_loader=clickhouse_loader,
+            adapter=HistoricalTxtZipAdapter(args.source_root), access=access,
+            workers=args.workers, state_root=args.state_root, routes_path=args.routes_path,
+        ),
+        symbol=args.symbol,
     )
-    print(json.dumps(result, sort_keys=True, default=str))
+    print(json.dumps(result.to_dict() if hasattr(result, "to_dict") else result, sort_keys=True, default=str))
 
 
 def readiness(args):
