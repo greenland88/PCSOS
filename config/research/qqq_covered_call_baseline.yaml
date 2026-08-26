@@ -1,4 +1,4 @@
-research_id: covered_call_qqq_baseline
+research_id: covered_call_qqq_full_baseline_v2
 ticker: QQQ
 research_mode: NEW_ENTRY
 hypothesis: "Use PIT-safe stock and market context to identify covered-call entry dates and compare total economic return with buy-and-hold."
@@ -13,7 +13,7 @@ frozen_parameters: {shares: 100, multiplier: 100}
 allowed_parameters: {dte: [43], target_delta: [0.30], profit_capture: [0.60]}
 rules:
   strategy: COVERED_CALL
-  pit_feature_dataset: data/parquet/derived/trend_history/trend_history_QQQ_v1.parquet
+  pit_feature_dataset: research_outputs/safe_strike_risk_map_v0_1/trend_histories/QQQ_trend.parquet
   market_feature_dataset: data/derived/canonical_pit_market_states.parquet
   covered_call_config: {profit_capture: 0.60}
 final_oos_access: false

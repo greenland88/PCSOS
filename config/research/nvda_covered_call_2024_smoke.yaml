@@ -1,16 +1,16 @@
-research_id: covered_call_nvda_full_baseline_v2
+research_id: covered_call_nvda_unified_2024_smoke_v7
 ticker: NVDA
 research_mode: NEW_ENTRY
-hypothesis: "Use PIT-safe stock and market context to identify covered-call entry dates and compare total economic return with buy-and-hold."
+hypothesis: "Replay the frozen NVDA covered-call lifecycle for 2024 entry dates."
 population_source: {type: ticker_daily_calendar, source: PCSDataAccess, frozen: false}
 signal_definition: {name: covered_call_timing, creates_new_entry_dates: true}
 entry_date_rule: {rule: stock_trend_and_market_confirmation, decision_timing: post_close}
-date_range: {start: "2020-01-01", end: "2026-08-18"}
-split_policy: {train: "2020-2023", validation: "2024-2025", final_oos: sealed}
+date_range: {start: "2024-01-01", end: "2024-12-31"}
+split_policy: {validation: "2024", final_oos: sealed}
 contract_selection_policy: {source: PCSDataAccess, exact_contract_identity: true, select_after_signal_date: true}
-lifecycle_policy: {model: LONG_100_SHARES_PLUS_SHORT_1_CALL, terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS, ASSIGNED]}
+lifecycle_policy: {model: LONG_100_SHARES_PLUS_SHORT_1_CALL, terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS]}
 frozen_parameters: {shares: 100, multiplier: 100}
-allowed_parameters: {dte: [43], target_delta: [0.30], profit_capture: [0.60]}
+allowed_parameters: {dte: [43], target_delta: [0.30], profit_capture: [0.60], strike_moneyness: [1.15, 1.20]}
 rules:
   strategy: COVERED_CALL
   pit_feature_dataset: research_outputs/safe_strike_risk_map_v0_1/trend_histories/NVDA_trend.parquet

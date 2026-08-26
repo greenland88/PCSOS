@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Iterable, Mapping
 from datetime import date
+from typing import Sequence
 
 
 class CoveredCallState(StrEnum):
@@ -65,8 +66,249 @@ class CoveredCallContract:
     def spread_pct(self) -> float: return (self.ask - self.bid) / self.mid if self.mid > 0 else float("inf")
 
 
+def _as_date(value: Any) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+@dataclass
+class CoveredCallEpisode:
+    """Research-only accounting container spanning every call in a chain."""
+    episode_id: str
+    symbol: str
+    stock_entry_price: float
+    current_contract: CoveredCallContract
+    shares: int = 100
+    opened_date: str | None = None
+    roll_history: list[dict[str, Any]] = field(default_factory=list)
+    cumulative_premium_received: float = 0.0
+    cumulative_buyback_cost: float = 0.0
+    cumulative_roll_credits: float = 0.0
+    realized_cashflow: float = 0.0
+    closed: bool = False
+    conflicted: bool = False
+    close_date: str | None = None
+    close_underlying_price: float | None = None
+
+    def __post_init__(self) -> None:
+        self.cumulative_premium_received = self.current_contract.mid * self.shares
+        self.realized_cashflow = self.cumulative_premium_received
+        self.opened_date = self.opened_date or self.current_contract.quote_date
+
+    @property
+    def contract(self) -> CoveredCallContract:
+        return self.current_contract
+
+    @property
+    def final_pnl(self) -> float | None:
+        return self.realized_cashflow if self.closed else None
+
+    def episode_pnl_if_closed_today(self, underlying_price: float, buyback_price: float | None = None) -> float:
+        call_cashflow = self.realized_cashflow - (float(buyback_price) * self.shares if buyback_price is not None else 0.0)
+        return (float(underlying_price) - self.stock_entry_price) * self.shares + call_cashflow
+
+    def roll(self, new_contract: CoveredCallContract, *, old_buyback_price: float) -> float:
+        proceeds = new_contract.mid * self.shares
+        cost = float(old_buyback_price) * self.shares
+        credit = proceeds - cost
+        if credit < 0:
+            raise ValueError("H3_DEBIT_OR_ZERO_CREDIT_ROLL_FORBIDDEN")
+        self.cumulative_buyback_cost += cost
+        self.cumulative_premium_received += proceeds
+        self.cumulative_roll_credits += credit
+        self.realized_cashflow += credit
+        self.roll_history.append({"old_contract": self.current_contract, "new_contract": new_contract,
+                                  "buyback_cost": cost, "new_call_proceeds": proceeds, "net_roll_credit": credit})
+        self.current_contract = new_contract
+        return credit
+
+    def close(self, *, close_date: str, underlying_price: float, buyback_price: float | None = None) -> float:
+        if self.closed:
+            raise ValueError("EPISODE_ALREADY_CLOSED")
+        pnl = self.episode_pnl_if_closed_today(underlying_price, buyback_price)
+        if buyback_price is not None:
+            self.cumulative_buyback_cost += float(buyback_price) * self.shares
+            self.realized_cashflow -= float(buyback_price) * self.shares
+        self.realized_cashflow += (float(underlying_price) - self.stock_entry_price) * self.shares
+        self.closed, self.close_date = True, str(close_date)
+        self.close_underlying_price = float(underlying_price)
+        return pnl
+
+
+class CoveredCallPositionBook:
+    MAX_ACTIVE_SHORT_CALLS = 3
+
+    def __init__(self, max_active_short_calls: int = MAX_ACTIVE_SHORT_CALLS):
+        self.max_active_short_calls = max_active_short_calls
+        self._episodes: dict[str, CoveredCallEpisode] = {}
+        self.capacity_rejections = 0
+
+    @property
+    def active_episodes(self) -> list[CoveredCallEpisode]:
+        # A conflict is not a released slot: only a fully closed episode may
+        # make capacity available again.
+        return [e for e in self._episodes.values() if not e.closed]
+
+    def open(self, episode: CoveredCallEpisode) -> CoveredCallEpisode:
+        if len(self.active_episodes) >= self.max_active_short_calls:
+            self.capacity_rejections += 1
+            raise ValueError("MAX_CALL_CAPACITY_REACHED")
+        if episode.episode_id in self._episodes:
+            raise ValueError("DUPLICATE_EPISODE_ID")
+        self._episodes[episode.episode_id] = episode
+        return episode
+
+    add = open
+
+    def get(self, episode_id: str) -> CoveredCallEpisode:
+        return self._episodes[episode_id]
+
+    def close(self, episode_id: str, **kwargs: Any) -> float:
+        episode = self._episodes[episode_id]
+        return episode.close(**kwargs)
+
+    def release(self, episode_id: str, **kwargs: Any) -> float:
+        return self.close(episode_id, **kwargs)
+
+
+class CoveredCallRollSelector:
+    def __init__(self, max_dte: int = 120):
+        self.max_dte = max_dte
+
+    def select(self, current_contract: CoveredCallContract, current_date: str | date,
+               underlying_price: float, quotes: Iterable[CoveredCallContract]) -> tuple[CoveredCallContract, float] | None:
+        today = _as_date(current_date)
+        candidates = []
+        for new in quotes:
+            if new.symbol != current_contract.symbol or _as_date(new.expiration) <= _as_date(current_contract.expiration):
+                continue
+            dte = (_as_date(new.expiration) - today).days
+            if dte < 0 or dte > self.max_dte or new.mid <= 0:
+                continue
+            credit = new.mid - current_contract.ask
+            if credit < 0:
+                continue
+            candidates.append((new, credit * 100))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda x: (x[0].strike, -(_as_date(x[0].expiration)-today).days,
+                                               x[1], -x[0].spread_pct))
+
+    select_roll = select
+
+
+class CoveredCallDailyEngine:
+    """Small deterministic, research-only episode state machine.
+
+    ``daily`` is an iterable of mappings with ``date``, ``underlying_price``
+    (or ``close``), optional ``new_entry`` and optional ``entry_contract``;
+    ``quotes_by_date`` contains canonical :class:`CoveredCallContract` rows.
+    Entry dates are controlled by the caller, while active episodes are never
+    discarded at a year boundary.
+    """
+    def __init__(self, symbol: str, *, profit_capture: float = .60,
+                 mandatory_roll_days: int = 5, max_roll_dte: int = 120,
+                 minimum_holding_days: int = 0,
+                 remaining_dte_condition: int | None = None,
+                 position_book: CoveredCallPositionBook | None = None):
+        self.symbol = str(symbol).upper()
+        self.profit_capture = float(profit_capture)
+        self.mandatory_roll_days = int(mandatory_roll_days)
+        self.book = position_book or CoveredCallPositionBook()
+        self.selector = CoveredCallRollSelector(max_roll_dte)
+        self.minimum_holding_days = int(minimum_holding_days)
+        self.remaining_dte_condition = (int(remaining_dte_condition)
+                                        if remaining_dte_condition is not None else None)
+        self.actions: list[dict[str, Any]] = []
+        self.conflicts: list[dict[str, Any]] = []
+        self._sequence = 0
+
+    def run(self, daily: Iterable[Mapping[str, Any]], *,
+            quotes_by_date: Mapping[Any, Iterable[CoveredCallContract]] | None = None) -> dict[str, Any]:
+        quotes_by_date = quotes_by_date or {}
+        for row in sorted(daily, key=lambda r: str(r["date"])):
+            day = str(row["date"])[:10]
+            spot = float(row.get("underlying_price", row.get("close")))
+            quotes = list(quotes_by_date.get(row["date"], quotes_by_date.get(day, ())))
+            # Existing episodes are managed before a new entry can consume a slot.
+            for episode in list(self.book.active_episodes):
+                if episode.conflicted:
+                    continue
+                current = next((q for q in quotes if q.expiration == episode.contract.expiration and
+                                q.strike == episode.contract.strike), None)
+                if current is None:
+                    if _as_date(day) >= _as_date(episode.contract.expiration):
+                        episode.conflicted = True
+                        conflict = {"date": day, "episode_id": episode.episode_id,
+                                    "action": "CONFLICT", "reason_codes": ["H1_NO_ASSIGNMENT",
+                                    "LIFECYCLE_QUOTE_UNAVAILABLE_AT_EXPIRY"]}
+                        self.conflicts.append(conflict)
+                        self.actions.append(conflict)
+                    else:
+                        self.actions.append({"date": day, "episode_id": episode.episode_id,
+                                             "action": "HOLD", "reason_codes": ["QUOTE_UNAVAILABLE"]})
+                    continue
+                dte = (_as_date(current.expiration) - _as_date(day)).days
+                buyback = current.ask
+                pnl = episode.episode_pnl_if_closed_today(spot, buyback)
+                # Episode-level capture: compare the remaining call value with
+                # the original premium, while requiring positive whole-episode P&L.
+                captured = (episode.cumulative_premium_received - episode.cumulative_buyback_cost -
+                            buyback * episode.shares)
+                holding_days = (_as_date(day) - _as_date(episode.opened_date)).days
+                close_allowed = (pnl > 0 and captured >= episode.cumulative_premium_received * self.profit_capture
+                                 and holding_days >= self.minimum_holding_days
+                                 and (self.remaining_dte_condition is None or
+                                      dte <= self.remaining_dte_condition))
+                if close_allowed:
+                    episode.close(close_date=day, underlying_price=spot, buyback_price=buyback)
+                    self.actions.append({"date": day, "episode_id": episode.episode_id,
+                                         "action": "CLOSE", "episode_pnl": pnl})
+                    continue
+                if dte <= self.mandatory_roll_days:
+                    # Roll economics use today's canonical buyback ask, not
+                    # the entry quote retained on the episode contract.
+                    selection_base = CoveredCallContract(
+                        episode.contract.symbol, day, episode.contract.expiration,
+                        episode.contract.strike, current.bid, current.ask,
+                        episode.contract.delta, underlying_price=spot,
+                        dte=dte)
+                    selected = self.selector.select(selection_base, day, spot, quotes)
+                    if selected is not None:
+                        new, credit = selected
+                        episode.roll(new, old_buyback_price=buyback)
+                        self.actions.append({"date": day, "episode_id": episode.episode_id,
+                                             "action": "ROLL", "net_roll_credit": credit})
+                    else:
+                        self.actions.append({"date": day, "episode_id": episode.episode_id,
+                                             "action": "HOLD", "reason_codes": ["H4_NO_LEGAL_ROLL"]})
+                else:
+                    self.actions.append({"date": day, "episode_id": episode.episode_id,
+                                         "action": "HOLD", "episode_pnl": pnl})
+            if row.get("new_entry") or row.get("entry_contract") is not None:
+                contract = row.get("entry_contract")
+                if contract is not None:
+                    self._sequence += 1
+                    episode = CoveredCallEpisode(f"{self.symbol}-{self._sequence}", self.symbol,
+                                                 spot, contract)
+                    try:
+                        self.book.open(episode)
+                        self.actions.append({"date": day, "episode_id": episode.episode_id, "action": "OPEN"})
+                    except ValueError as exc:
+                        self.actions.append({"date": day, "action": "WAIT",
+                                             "reason_codes": [str(exc)]})
+        completed = [e for e in self.book._episodes.values() if e.closed]
+        return {"symbol": self.symbol, "episodes": list(self.book._episodes.values()),
+                "actions": self.actions, "completed_episodes": completed,
+                "conflicts": self.conflicts,
+                "metrics": {"episodes": len(self.book._episodes), "rolls": sum(len(e.roll_history) for e in self.book._episodes.values()),
+                             "capacity_rejections": self.book.capacity_rejections}}
+
+
 def select_contract(contracts: Iterable[CoveredCallContract], *, config: CoveredCallResearchConfig,
-                    dte: int, target_delta: float, min_strike: float | None = None) -> CoveredCallContract | None:
+                    dte: int, target_delta: float, min_strike: float | None = None,
+                    selection_method: str = "DELTA", underlying_price: float | None = None,
+                    atr: float | None = None, target_moneyness: float | None = None,
+                    target_atr_distance: float | None = None) -> CoveredCallContract | None:
     """Select an exact contract from an already PIT-valid option chain."""
     eligible = []
     for c in contracts:
@@ -77,6 +319,18 @@ def select_contract(contracts: Iterable[CoveredCallContract], *, config: Covered
         if min_strike is not None and c.strike < min_strike:
             continue
         eligible.append(c)
+    if not eligible:
+        return None
+    method = str(selection_method).upper()
+    if method == "MONEYNESS":
+        if underlying_price is None or target_moneyness is None:
+            return None
+        return min(eligible, key=lambda c: abs(c.strike / float(underlying_price) - float(target_moneyness)))
+    if method == "ATR":
+        if underlying_price is None or atr is None or float(atr) <= 0 or target_atr_distance is None:
+            return None
+        return min(eligible, key=lambda c: abs((c.strike - float(underlying_price)) /
+                                               float(atr) - float(target_atr_distance)))
     return min(eligible, key=lambda c: abs(float(c.delta) - target_delta)) if eligible else None
 
 
@@ -128,7 +382,7 @@ class CoveredCallPosition:
         """Roll only with positive credit and a still-profitable episode."""
         if self.state is not CoveredCallState.SHORT_CALL_OPEN or self.contract is None:
             raise ValueError("SHORT_CALL_NOT_OPEN")
-        if float(net_credit) <= 0:
+        if float(net_credit) < 0:
             raise ValueError("H3_DEBIT_OR_ZERO_CREDIT_ROLL_FORBIDDEN")
         if self.episode_pnl + float(net_credit) <= 0:
             raise ValueError("H3_LOSS_MAKING_ROLL_FORBIDDEN")
@@ -151,7 +405,9 @@ class CoveredCallPosition:
 
 
 def replay_covered_call(position: CoveredCallPosition, observations: Iterable[Mapping[str, Any]],
-                        *, profit_capture: float = .60, time_exit_days: int | None = None) -> dict[str, Any]:
+                        *, profit_capture: float = .60, time_exit_days: int | None = None,
+                        minimum_holding_days: int = 0,
+                        remaining_dte_condition: int | None = None) -> dict[str, Any]:
     """Replay one short call from PIT observations through terminal state.
 
     Each observation must contain ``date``, ``underlying_close``, ``bid``,
@@ -178,9 +434,14 @@ def replay_covered_call(position: CoveredCallPosition, observations: Iterable[Ma
             position.state = CoveredCallState.HARD_CONSTRAINT_CONFLICT
             return {"symbol": position.symbol, "entry_date": entry_date, "exit_date": row["date"],
                     "exit_state": position.state.value, "status": "HARD_CONSTRAINT_CONFLICT",
+                    "holding_days": days,
                     "reason_codes": ["H1_NO_ASSIGNMENT", "H4_MANDATORY_ROLL_REVIEW",
                                      "NO_PROFITABLE_CLOSE_OR_ROLL"]}
-        if mid <= target or (time_exit_days is not None and days >= time_exit_days):
+        profit_close_ready = (mid <= target and days >= int(minimum_holding_days) and
+                              (remaining_dte_condition is None or dte <= int(remaining_dte_condition)))
+        time_exit_ready = (time_exit_days is not None and days >= time_exit_days and
+                           days >= int(minimum_holding_days))
+        if profit_close_ready or time_exit_ready:
             try:
                 position.close(CoveredCallState.BUY_TO_CLOSE, stock_price=float(row["underlying_close"]),
                                buy_to_close_price=mid / position.shares, holding_days=days)
@@ -193,6 +454,7 @@ def replay_covered_call(position: CoveredCallPosition, observations: Iterable[Ma
                 position.state = CoveredCallState.ASSIGNED
                 return {"symbol": position.symbol, "entry_date": entry_date, "exit_date": row["date"],
                         "exit_state": position.state.value, "status": "STRATEGY_VIOLATION",
+                        "holding_days": days,
                         "reason_codes": ["H1_NO_ASSIGNMENT", "ASSIGNMENT_OBSERVED"]}
             position.close(CoveredCallState.EXPIRE_WORTHLESS, stock_price=float(row["underlying_close"]), allow_loss=True)
             exit_row = row
@@ -202,6 +464,8 @@ def replay_covered_call(position: CoveredCallPosition, observations: Iterable[Ma
     last = exit_row or rows[-1]
     return {"symbol": position.symbol, "entry_date": entry_date,
             "exit_date": last["date"],
+            "holding_days": (date.fromisoformat(str(last["date"])[:10]) -
+                             date.fromisoformat(str(entry_date)[:10])).days,
             "exit_state": position.state.value, "roll_count": position.roll_count,
             "roll_credits": position.roll_credits, **position.economic_result(float(last["underlying_close"]))}
 
@@ -224,6 +488,18 @@ def aggregate_metrics(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     violations = sum(str(r.get("status")) == "STRATEGY_VIOLATION" for r in rows)
     conflicts = sum(str(r.get("status")) == "HARD_CONSTRAINT_CONFLICT" or
                     str(r.get("exit_state")) == CoveredCallState.HARD_CONSTRAINT_CONFLICT.value for r in rows)
+    holding = [float(r.get("holding_days", 0) or 0) for r in rows if r.get("holding_days") is not None]
+    equity = []
+    running = 0.0
+    for row in rows:
+        if row.get("combined_pnl") is not None:
+            running += float(row.get("combined_pnl", 0) or 0)
+            equity.append(running)
+    peak = 0.0
+    max_drawdown = 0.0
+    for value in equity:
+        peak = max(peak, value)
+        max_drawdown = min(max_drawdown, value - peak)
     return {"trades": len(rows), "premium_collected": total("call_premium"), "option_pnl": total("call_realized_pnl"),
             "stock_pnl": total("stock_pnl"), "combined_pnl": total("combined_pnl"), "buy_and_hold_pnl": total("buy_and_hold_pnl"),
             "excess_return": total("excess_return_vs_buy_and_hold"), "upside_sacrificed": total("upside_sacrificed"),
@@ -234,7 +510,12 @@ def aggregate_metrics(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             "assignment_violations": violations, "hard_constraint_conflicts": conflicts,
             "hard_constraint_conflict_rate": conflicts / len(rows) if rows else None,
             "profitable_close_rate": sum(str(r.get("exit_state")) == CoveredCallState.BUY_TO_CLOSE.value and
-                                          float(r.get("combined_pnl", 0) or 0) > 0 for r in rows) / len(rows) if rows else None}
+                                          float(r.get("combined_pnl", 0) or 0) > 0 for r in rows) / len(rows) if rows else None,
+            "transaction_count": len(rows),
+            "average_holding_days": sum(holding) / len(holding) if holding else None,
+            "average_roll_count": total("roll_count") / len(rows) if rows else None,
+            "roll_credits": total("roll_credits"),
+            "max_drawdown": max_drawdown}
 
 
 def sell_call_timing_signal(*, stock: Mapping[str, Any], market: Mapping[str, Any],

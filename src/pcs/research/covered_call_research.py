@@ -17,8 +17,161 @@ from pathlib import Path
 from .covered_call import CoveredCallResearchConfig, aggregate_metrics, replay_covered_call
 from .research_framework import ResearchSpec, ResearchMode, load_spec, validate_population_routing
 from pcs.data.access import PCSDataAccess
-from .covered_call import CoveredCallContract, CoveredCallPosition, CoveredCallState
+from .covered_call import (CoveredCallContract, CoveredCallPosition, CoveredCallState,
+                           CoveredCallDailyEngine)
 from .covered_call import select_contract, sell_call_timing_signal
+
+
+def _read_quotes_chunked(access: PCSDataAccess, symbol: str,
+                         windows: list[tuple[Any, Any]], columns: list[str],
+                         chunk_size: int = 128) -> pd.DataFrame:
+    """Read only requested windows in bounded chunks through PCSDataAccess."""
+    frames = []
+    for start in range(0, len(windows), chunk_size):
+        pending = [windows[start:start + chunk_size]]
+        while pending:
+            current = pending.pop()
+            try:
+                frame = access.read_quotes_for_windows(symbol, current, columns=columns)
+            except (ValueError, FileNotFoundError):
+                continue
+            except Exception as exc:
+                # PCSDataAccess rejects ambiguous keys at the read boundary.
+                # Split only that quality failure so clean dates remain
+                # usable; a single conflicting date is fail-closed.
+                if "ambiguous option quote keys" not in str(exc).lower():
+                    raise
+                if len(current) > 1:
+                    midpoint = len(current) // 2
+                    pending.extend((current[:midpoint], current[midpoint:]))
+                continue
+            if not frame.empty:
+                frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+
+
+def prepare_selected_entry_observations(symbol: str, entries: Iterable[Mapping[str, Any]], *,
+                                        data_access: PCSDataAccess | None = None) -> list[dict[str, Any]]:
+    """Materialize one PIT-safe quote/price snapshot per selected entry."""
+    access = data_access or PCSDataAccess.canonical()
+    entries = list(entries)
+    if not entries:
+        return []
+    price_frame = access.read_prices(symbol, min(pd.Timestamp(e["date"]) for e in entries),
+                                     max(pd.Timestamp(e["expiration"]) for e in entries))
+    prices = {str(pd.Timestamp(r.date).date()): float(r.close) for r in price_frame.itertuples()}
+    grouped = {}
+    for entry in entries:
+        grouped.setdefault(pd.Timestamp(entry["date"]).to_period("Q"), []).append(
+            (entry["date"], entry["expiration"]))
+    quote_cache = {}
+    columns = ["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"]
+    for key, windows in grouped.items():
+        quote_cache[key] = _read_quotes_chunked(access, symbol, windows, columns)
+    prepared = []
+    for entry in entries:
+        start, end = entry["date"], entry["expiration"]
+        price_by_date = {k: v for k, v in prices.items()
+                         if str(pd.Timestamp(start).date()) <= k <= str(pd.Timestamp(end).date())}
+        quotes = quote_cache.get(pd.Timestamp(start).to_period("Q"), pd.DataFrame(columns=columns))
+        quotes = quotes[(quotes.expiration_date == pd.Timestamp(end).date()) &
+                        (quotes.strike == float(entry["strike"]))].copy()
+        if not quotes.empty:
+            quotes["trade_date"] = pd.to_datetime(quotes.trade_date).dt.normalize()
+        observations = [{"date": str(q.trade_date.date()),
+                         "underlying_close": price_by_date[str(q.trade_date.date())],
+                         "bid": float(q.bid), "ask": float(q.ask), "expiration": end}
+                        for q in quotes[quotes.call_put.astype(str).str.lower().isin({"c", "call"})].itertuples()
+                        if str(q.trade_date.date()) in price_by_date]
+        if observations and str(pd.Timestamp(start).date()) in price_by_date:
+            prepared.append({"entry": entry, "observations": observations,
+                             "stock_entry_price": price_by_date[str(pd.Timestamp(start).date())]})
+    return prepared
+
+
+def replay_prepared_entry_observations(symbol: str, prepared: Iterable[Mapping[str, Any]], *,
+                                       profit_capture: float = .60,
+                                       minimum_holding_days: int = 0,
+                                       remaining_dte_condition: int | None = None,
+                                       unified_lifecycle: bool = False) -> dict[str, Any]:
+    """Replay prepared observations without another canonical I/O pass."""
+    if unified_lifecycle:
+        trades = []
+        for item in prepared:
+            entry = item["entry"]
+            entry_day = str(pd.Timestamp(entry["date"]).date())
+            contract = CoveredCallContract(str(symbol).upper(), entry_day, entry["expiration"],
+                                           float(entry["strike"]), float(entry["bid"]), float(entry["ask"]),
+                                           float(entry.get("delta") or 0), dte=int(entry["dte"]))
+            daily = [{"date": entry_day, "underlying_price": item["stock_entry_price"],
+                      "new_entry": True, "entry_contract": contract}]
+            quotes = {}
+            for obs in item["observations"]:
+                day = str(obs["date"])[:10]
+                daily.append({"date": day, "underlying_price": float(obs["underlying_close"])})
+                quotes.setdefault(day, []).append(CoveredCallContract(
+                    str(symbol).upper(), day, obs["expiration"], float(entry["strike"]),
+                    float(obs["bid"]), float(obs["ask"]), dte=(date.fromisoformat(obs["expiration"][:10]) - date.fromisoformat(day)).days))
+            engine = CoveredCallDailyEngine(str(symbol), profit_capture=profit_capture,
+                                             minimum_holding_days=minimum_holding_days,
+                                             remaining_dte_condition=remaining_dte_condition)
+            replay = engine.run(daily, quotes_by_date=quotes)
+            for episode in replay["completed_episodes"]:
+                stock_pnl = ((float(episode.close_underlying_price) - episode.stock_entry_price) * episode.shares
+                             if episode.close_underlying_price is not None else None)
+                trades.append({"symbol": episode.symbol, "entry_date": episode.opened_date,
+                               "exit_date": episode.close_date, "holding_days":
+                               (date.fromisoformat(episode.close_date[:10]) - date.fromisoformat(episode.opened_date[:10])).days,
+                               "roll_count": len(episode.roll_history), "roll_credits": episode.cumulative_roll_credits,
+                               "combined_pnl": episode.final_pnl, "stock_pnl": stock_pnl,
+                               "call_premium": episode.cumulative_premium_received,
+                               "call_realized_pnl": episode.realized_cashflow - (stock_pnl or 0.0),
+                               "exit_state": "BUY_TO_CLOSE"})
+            for conflict in replay["conflicts"]:
+                episode = next(e for e in replay["episodes"] if e.episode_id == conflict["episode_id"])
+                trades.append({"symbol": episode.symbol, "entry_date": episode.opened_date,
+                               "exit_date": None, "roll_count": len(episode.roll_history),
+                               "roll_credits": episode.cumulative_roll_credits,
+                               "exit_state": "HARD_CONSTRAINT_CONFLICT", "status": "HARD_CONSTRAINT_CONFLICT"})
+        return {"module": "pcs.research.covered_call_research", "version": "2.0",
+                "symbol": str(symbol).upper(), "status": "COMPLETED" if trades else "NO_COMPLETED_TRADES",
+                "data_source": "PCS_CANONICAL_DATA", "unified_lifecycle": True,
+                "trades": trades, "metrics": aggregate_metrics(trades),
+                "final_oos_read": False,
+                "reason_codes": ["UNIFIED_DAILY_ENGINE", "CONTRACT_VARIANT_FROZEN_ENTRIES"]}
+    rows = []
+    for item in prepared:
+        entry = item["entry"]
+        observations = item["observations"]
+        position = CoveredCallPosition(str(symbol).upper())
+        position.open(float(item["stock_entry_price"]), CoveredCallContract(
+            str(symbol).upper(), str(pd.Timestamp(entry["date"]).date()), entry["expiration"],
+            float(entry["strike"]), float(entry["bid"]), float(entry["ask"]),
+            float(entry.get("delta") or 0), dte=int(entry["dte"])))
+        try:
+            replay = replay_covered_call(position, observations,
+                profit_capture=profit_capture, minimum_holding_days=minimum_holding_days,
+                remaining_dte_condition=remaining_dte_condition)
+        except ValueError:
+            continue
+        replay.update({"strike": float(entry["strike"]), "dte_at_entry": int(entry["dte"]),
+                       "entry_delta": float(entry.get("delta") or 0),
+                       "entry_premium": float(entry["bid"] + entry["ask"]) / 2 * 100})
+        if "combined_pnl" in replay:
+            buy_hold = (float(observations[-1]["underlying_close"]) - position.stock_entry_price) * 100
+            replay.update({"buy_and_hold_pnl": buy_hold,
+                           "excess_return_vs_buy_and_hold": replay["combined_pnl"] - buy_hold,
+                           "upside_sacrificed": max(buy_hold - replay["combined_pnl"], 0.0)})
+        else:
+            replay.update({"buy_and_hold_pnl": None, "excess_return_vs_buy_and_hold": None,
+                           "upside_sacrificed": None})
+        rows.append(replay)
+    return {"module": "pcs.research.covered_call_research", "version": "1.0",
+            "symbol": str(symbol).upper(), "status": "COMPLETED" if rows else "NO_COMPLETED_TRADES",
+            "data_source": "PCS_CANONICAL_DATA", "trades": rows,
+            "metrics": aggregate_metrics(rows), "final_oos_read": False,
+            "reason_codes": ["PREPARED_CANONICAL_OBSERVATIONS", "H2_NO_LOSS_CLOSE",
+                             "H4_REVIEW_ENFORCED"]}
 
 
 def run_covered_call_research(symbol: str, *, trades: Iterable[Mapping[str, Any]] = (),
@@ -114,7 +267,10 @@ def replay_expiry_or_close(position: CoveredCallPosition, *, stock_exit_price: f
 
 def discover_and_select_entries(symbol: str, daily, market, *, data_access: PCSDataAccess | None = None,
                                 config: CoveredCallResearchConfig | None = None,
-                                target_delta: float = .30, dte: int = 43) -> dict[str, Any]:
+                                target_delta: float = .30, dte: int = 43,
+                                selection_method: str = "DELTA",
+                                target_moneyness: float | None = None,
+                                target_atr_distance: float | None = None) -> dict[str, Any]:
     """Discover PIT sell-call dates, then select contracts on those dates.
 
     ``daily`` and ``market`` are canonical, already-PIT-safe feature frames.
@@ -143,28 +299,53 @@ def discover_and_select_entries(symbol: str, daily, market, *, data_access: PCSD
     signals = []
     for row in joined.to_dict("records"):
         signal = sell_call_timing_signal(stock={**row, "symbol": symbol}, market=row, config=cfg)
-        if signal["action"] == "OPEN": signals.append({"date": row["date"], "symbol": symbol.upper(), **signal})
+        if signal["action"] == "OPEN":
+            signals.append({"date": row["date"], "symbol": symbol.upper(),
+                            "close": row.get("close"), "atr": row.get("atr"), **signal})
     selected = []
-    bulk = None
+    quote_columns = ["symbol", "trade_date", "expiration_date", "strike", "call_put",
+                     "bid", "ask", "delta", "open_interest", "volume"]
     if signals and data_access is not None and hasattr(data_access, "read_quotes_for_windows"):
-        signal_dates = pd.to_datetime([x["date"] for x in signals]).normalize()
-        chunks = []
-        for period, group in pd.Series(signal_dates).groupby(signal_dates.to_period("Q")):
-            chunks.append(data_access.read_quotes_for_windows(symbol,
-                [(group.min(), group.max())],
-                columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask", "delta", "open_interest", "volume"]))
-        bulk = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
-        if not bulk.empty: bulk["trade_date"] = pd.to_datetime(bulk.trade_date).dt.normalize()
-    for candidate in signals:
-        chain = (_contracts_from_frame(bulk[bulk.trade_date.eq(pd.Timestamp(candidate["date"]).normalize())], symbol)
-                 if bulk is not None else read_pit_call_chain(symbol, candidate["date"], data_access=data_access))
-        chosen = select_contract(chain, config=cfg, dte=dte, target_delta=target_delta)
-        if chosen is not None:
-            selected.append({**candidate, "expiration": chosen.expiration, "strike": chosen.strike,
-                             "bid": chosen.bid, "ask": chosen.ask, "delta": chosen.delta,
-                             "dte": chosen.dte, "contract_identity": {
-                                 "symbol": chosen.symbol, "quote_date": chosen.quote_date,
-                                 "expiration": chosen.expiration, "strike": chosen.strike}})
+        # Keep only one bounded quote batch alive.  This is important for
+        # long-history index tickers whose option chain is much larger than
+        # the selected signal population.
+        for offset in range(0, len(signals), 128):
+            batch = signals[offset:offset + 128]
+            dates = [pd.Timestamp(x["date"]).normalize() for x in batch]
+            bulk = _read_quotes_chunked(data_access, symbol, [(day, day) for day in dates], quote_columns)
+            if not bulk.empty:
+                bulk["trade_date"] = pd.to_datetime(bulk.trade_date).dt.normalize()
+            for candidate in batch:
+                chain = _contracts_from_frame(
+                    bulk[bulk.trade_date.eq(pd.Timestamp(candidate["date"]).normalize())], symbol)
+                chosen = select_contract(chain, config=cfg, dte=dte, target_delta=target_delta,
+                                         selection_method=selection_method,
+                                         underlying_price=float(candidate.get("close")) if candidate.get("close") is not None else None,
+                                         atr=float(candidate.get("atr")) if candidate.get("atr") is not None else None,
+                                         target_moneyness=target_moneyness,
+                                         target_atr_distance=target_atr_distance)
+                if chosen is not None:
+                    selected.append({**candidate, "expiration": chosen.expiration, "strike": chosen.strike,
+                                     "bid": chosen.bid, "ask": chosen.ask, "delta": chosen.delta,
+                                     "dte": chosen.dte, "contract_identity": {
+                                         "symbol": chosen.symbol, "quote_date": chosen.quote_date,
+                                         "expiration": chosen.expiration, "strike": chosen.strike}})
+            del bulk
+    else:
+        for candidate in signals:
+            chain = read_pit_call_chain(symbol, candidate["date"], data_access=data_access)
+            chosen = select_contract(chain, config=cfg, dte=dte, target_delta=target_delta,
+                                     selection_method=selection_method,
+                                     underlying_price=float(candidate.get("close")) if candidate.get("close") is not None else None,
+                                     atr=float(candidate.get("atr")) if candidate.get("atr") is not None else None,
+                                     target_moneyness=target_moneyness,
+                                     target_atr_distance=target_atr_distance)
+            if chosen is not None:
+                selected.append({**candidate, "expiration": chosen.expiration, "strike": chosen.strike,
+                                 "bid": chosen.bid, "ask": chosen.ask, "delta": chosen.delta,
+                                 "dte": chosen.dte, "contract_identity": {
+                                     "symbol": chosen.symbol, "quote_date": chosen.quote_date,
+                                     "expiration": chosen.expiration, "strike": chosen.strike}})
     return {"module": "pcs.research.covered_call_research", "version": "1.0",
             "symbol": str(symbol).upper(), "status": "COMPLETED" if selected else "NO_CONTRACTS",
             "data_source": "PCS_CANONICAL_DATA", "signal_execution": "PIT_SAFE",
@@ -176,22 +357,184 @@ def discover_and_select_entries(symbol: str, daily, market, *, data_access: PCSD
                              "PCSDataAccess_CANONICAL_OPTIONS", "EXACT_CONTRACT_IDENTITY"]}
 
 
+def prepare_entry_signal_chains(symbol: str, daily, market, *,
+                                data_access: PCSDataAccess | None = None,
+                                config: CoveredCallResearchConfig | None = None,
+                                dte: int = 37) -> dict[str, Any]:
+    """Discover PIT signals and read each signal-date call chain once."""
+    cfg = config or CoveredCallResearchConfig()
+    stock = daily.copy(); mkt = market.copy()
+    if "atr" not in stock.columns and "atr14" in stock.columns:
+        stock = stock.rename(columns={"atr14": "atr"})
+    if "market_state" in mkt.columns:
+        def unpack(value):
+            if isinstance(value, str):
+                try: return json.loads(value)
+                except json.JSONDecodeError: return {}
+            return value if isinstance(value, Mapping) else {}
+        states = mkt.market_state.map(unpack).apply(pd.Series)
+        mkt = pd.concat([mkt.drop(columns=["market_state"]), states], axis=1)
+        if "breadth_positive" in mkt.columns:
+            mkt["spy_confirmation"] = mkt["breadth_positive"]
+            mkt["qqq_confirmation"] = mkt["breadth_positive"]
+    stock["date"] = pd.to_datetime(stock.date).dt.normalize(); mkt["date"] = pd.to_datetime(mkt.date).dt.normalize()
+    joined = stock.merge(mkt, on="date", how="left", suffixes=("", "_market")).sort_values("date")
+    signals = []
+    for row in joined.to_dict("records"):
+        signal = sell_call_timing_signal(stock={**row, "symbol": symbol}, market=row, config=cfg)
+        if signal["action"] == "OPEN":
+            signals.append({"date": row["date"], "symbol": symbol.upper(), "close": row.get("close"),
+                            "atr": row.get("atr"), **signal})
+    access = data_access or PCSDataAccess.canonical()
+    chains = {}
+    columns = ["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask", "delta", "open_interest", "volume"]
+    for offset in range(0, len(signals), 128):
+        batch = signals[offset:offset + 128]
+        dates = [pd.Timestamp(x["date"]).normalize() for x in batch]
+        frame = _read_quotes_chunked(access, symbol, [(day, day) for day in dates], columns)
+        if not frame.empty:
+            frame["trade_date"] = pd.to_datetime(frame.trade_date).dt.normalize()
+        for signal in batch:
+            day = pd.Timestamp(signal["date"]).normalize()
+            chains[day] = _contracts_from_frame(frame[frame.trade_date.eq(day)], symbol)
+    return {"symbol": symbol.upper(), "signals": signals, "chains": chains,
+            "funnel": {"ALL_TRADING_DAYS": len(joined), "FEATURE_READY_DAYS": len(joined),
+                       "SIGNAL_DATES": len(signals)},
+            "data_source": "PCS_CANONICAL_DATA", "final_oos_read": False,
+            "reason_codes": ["FULL_TICKER_DAILY_CALENDAR", "PIT_SIGNAL_BEFORE_VARIANT_SELECTION",
+                             "CANONICAL_CALL_CHAIN_SNAPSHOT"]}
+
+
 def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *,
                             data_access: PCSDataAccess | None = None,
-                            profit_capture: float = .60) -> dict[str, Any]:
+                            profit_capture: float = .60,
+                            minimum_holding_days: int = 0,
+                            remaining_dte_condition: int | None = None,
+                            unified_lifecycle: bool = False) -> dict[str, Any]:
     """Replay selected entries with canonical quotes and return standard metrics."""
     access = data_access or PCSDataAccess.canonical()
     rows = []
+    entries = list(entries)
+    if unified_lifecycle:
+        # Materialize the same canonical observations once, then process all
+        # entry dates through one book.  This is intentionally a separate
+        # branch so legacy descriptive reports remain reproducible.
+        prepared = prepare_selected_entry_observations(symbol, entries, data_access=access)
+        engine = CoveredCallDailyEngine(symbol, profit_capture=profit_capture)
+        daily_rows: dict[str, dict[str, Any]] = {}
+        quotes_by_date: dict[str, list[CoveredCallContract]] = {}
+        # The selected-entry observations contain only the current contract.
+        # Fetch the bounded management window once so the selector can see
+        # later expirations and strikes at roll dates.
+        if prepared and hasattr(access, "read_quotes_for_windows"):
+            first_day = min(pd.Timestamp(x["entry"]["date"]).normalize() for x in prepared)
+            last_day = max(pd.Timestamp(x["entry"]["expiration"]).normalize() for x in prepared)
+            chain = _read_quotes_chunked(
+                access, symbol, [(first_day, last_day)],
+                ["symbol", "trade_date", "expiration_date", "strike", "call_put",
+                 "bid", "ask", "delta", "open_interest", "volume"])
+            if not chain.empty:
+                chain["trade_date"] = pd.to_datetime(chain.trade_date)
+                for day, frame in chain.groupby(chain.trade_date.dt.normalize()):
+                    quotes_by_date[str(pd.Timestamp(day).date())] = _contracts_from_frame(frame, symbol)
+        for item in prepared:
+            entry = item["entry"]
+            contract = CoveredCallContract(str(symbol).upper(), str(pd.Timestamp(entry["date"]).date()),
+                                           entry["expiration"], float(entry["strike"]),
+                                           float(entry["bid"]), float(entry["ask"]),
+                                           float(entry.get("delta") or 0), dte=int(entry["dte"]))
+            entry_day = str(pd.Timestamp(entry["date"]).date())
+            daily_rows.setdefault(entry_day, {"date": entry_day,
+                                               "underlying_price": item["stock_entry_price"]}).update(
+                                                   new_entry=True, entry_contract=contract)
+            for obs in item["observations"]:
+                day = str(obs["date"])[:10]
+                daily_rows.setdefault(day, {"date": day, "underlying_price": obs["underlying_close"]})
+                if day not in quotes_by_date:
+                    quotes_by_date[day] = []
+                if not any(q.expiration == obs["expiration"] and q.strike == float(entry["strike"])
+                           for q in quotes_by_date[day]):
+                    quotes_by_date[day].append(CoveredCallContract(
+                        str(symbol).upper(), day, obs["expiration"], float(entry["strike"]),
+                        float(obs["bid"]), float(obs["ask"]),
+                        dte=(date.fromisoformat(obs["expiration"][:10]) - date.fromisoformat(day)).days))
+        replay = engine.run(daily_rows.values(), quotes_by_date=quotes_by_date)
+        completed = []
+        for episode in replay["completed_episodes"]:
+            holding_days = (date.fromisoformat(str(episode.close_date)[:10]) -
+                            date.fromisoformat(str(episode.opened_date)[:10])).days
+            total_pnl = episode.final_pnl
+            stock_pnl = ((float(episode.close_underlying_price) - episode.stock_entry_price) * episode.shares
+                         if episode.close_underlying_price is not None else None)
+            completed.append({"symbol": episode.symbol, "entry_date": episode.opened_date,
+                              "exit_date": episode.close_date, "episode_id": episode.episode_id,
+                              "holding_days": holding_days,
+                              "roll_count": len(episode.roll_history),
+                              "roll_credits": episode.cumulative_roll_credits,
+                              "combined_pnl": total_pnl, "stock_pnl": stock_pnl,
+                              "call_premium": episode.cumulative_premium_received,
+                              "call_realized_pnl": episode.realized_cashflow - (stock_pnl or 0.0),
+                              "exit_state": "BUY_TO_CLOSE"})
+        conflicted_ids = {x["episode_id"] for x in replay.get("conflicts", [])}
+        for episode in replay["episodes"]:
+            if episode.episode_id in conflicted_ids:
+                completed.append({"symbol": episode.symbol, "entry_date": episode.opened_date,
+                                  "exit_date": None, "episode_id": episode.episode_id,
+                                  "roll_count": len(episode.roll_history),
+                                  "roll_credits": episode.cumulative_roll_credits,
+                                  "exit_state": "HARD_CONSTRAINT_CONFLICT",
+                                  "status": "HARD_CONSTRAINT_CONFLICT",
+                                  "economic_status": "EXCLUDED_FROM_NORMAL_PNL",
+                                  "reason_codes": ["H1_NO_ASSIGNMENT",
+                                                    "LIFECYCLE_QUOTE_UNAVAILABLE_AT_EXPIRY"]})
+        return {"module": "pcs.research.covered_call_research", "version": "2.0",
+                "symbol": str(symbol).upper(), "status": "COMPLETED" if completed else "NO_COMPLETED_TRADES",
+                "data_source": "PCS_CANONICAL_DATA", "unified_lifecycle": True,
+                "trades": completed, "actions": replay["actions"],
+                "metrics": aggregate_metrics(completed) | {"capacity_rejections": replay["metrics"]["capacity_rejections"]},
+                "final_oos_read": False,
+                "reason_codes": ["UNIFIED_DAILY_ENGINE", "SINGLE_POSITION_BOOK", "CROSS_YEAR_LIFECYCLE"]}
+    price_by_date_global = {}
+    if entries:
+        try:
+            price_frame = access.read_prices(
+                symbol, min(pd.Timestamp(e["date"]) for e in entries),
+                max(pd.Timestamp(e["expiration"]) for e in entries))
+            price_by_date_global = {str(pd.Timestamp(r.date).date()): float(r.close)
+                                    for r in price_frame.itertuples()}
+        except (ValueError, FileNotFoundError):
+            price_by_date_global = {}
+    # Quote reads are the dominant cost for long histories.  Group windows by
+    # calendar quarter and issue one bounded PCSDataAccess read per quarter;
+    # filtering to the exact expiration/strike below preserves identity and
+    # PIT semantics while avoiding repeated Parquet/schema scans.
+    quote_cache = {}
+    if entries and hasattr(access, "read_quotes_for_windows"):
+        grouped = {}
+        for entry in entries:
+            key = pd.Timestamp(entry["date"]).to_period("Q")
+            grouped.setdefault(key, []).append((entry["date"], entry["expiration"]))
+        for key, windows in grouped.items():
+            quote_cache[key] = _read_quotes_chunked(
+                access, symbol, windows,
+                ["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"])
     for entry in entries:
         start, end = entry["date"], entry["expiration"]
-        prices = access.read_prices(symbol, start, end)
-        price_by_date = {str(pd.Timestamp(r.date).date()): float(r.close) for r in prices.itertuples()}
-        try:
-            quotes = access.read_quotes_for_windows(
-                symbol, [(start, end)],
-                columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"])
-        except (ValueError, FileNotFoundError):
-            continue
+        if price_by_date_global:
+            price_by_date = {k: v for k, v in price_by_date_global.items()
+                             if str(pd.Timestamp(start).date()) <= k <= str(pd.Timestamp(end).date())}
+        else:
+            prices = access.read_prices(symbol, start, end)
+            price_by_date = {str(pd.Timestamp(r.date).date()): float(r.close) for r in prices.itertuples()}
+        key = pd.Timestamp(start).to_period("Q")
+        quotes = quote_cache.get(key)
+        if quotes is None:
+            try:
+                quotes = access.read_quotes_for_windows(
+                    symbol, [(start, end)],
+                    columns=["symbol", "trade_date", "expiration_date", "strike", "call_put", "bid", "ask"])
+            except (ValueError, FileNotFoundError):
+                continue
         quotes = quotes[(quotes.expiration_date == pd.Timestamp(end).date()) &
                         (quotes.strike == float(entry["strike"]))]
         quotes["trade_date"] = pd.to_datetime(quotes.trade_date).dt.normalize()
@@ -207,7 +550,10 @@ def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *
             symbol.upper(), str(pd.Timestamp(start).date()), end, float(entry["strike"]),
             float(entry["bid"]), float(entry["ask"]), float(entry["delta"]), dte=int(entry["dte"])))
         try:
-            replay = replay_covered_call(position, observations, profit_capture=profit_capture)
+            replay = replay_covered_call(
+                position, observations, profit_capture=profit_capture,
+                minimum_holding_days=minimum_holding_days,
+                remaining_dte_condition=remaining_dte_condition)
             replay.update({"strike": float(entry["strike"]), "dte_at_entry": int(entry["dte"]),
                            "entry_delta": float(entry["delta"]), "entry_premium": float(entry["bid"] + entry["ask"]) / 2 * 100})
             rows.append(replay)
@@ -259,6 +605,83 @@ def analyze_constraint_failures(report: Mapping[str, Any]) -> dict[str, Any]:
                                                       "HARD_CONSTRAINTS_UNCHANGED", "NO_PNL_TUNING"]}
 
 
+def run_profit_close_parameter_grid(symbol: str, entries: Iterable[Mapping[str, Any]], *,
+                                    data_access: PCSDataAccess | None = None,
+                                    profit_captures: Iterable[float] = (.40, .50, .60, .65, .70, .75, .80, .85, .90),
+                                    minimum_holding_days: Iterable[int] = (3, 5, 10, 15),
+                                    remaining_dte_conditions: Iterable[int] = (21, 14, 10, 7)) -> dict[str, Any]:
+    """Run the governed H2 close grid over frozen entry dates.
+
+    This is a CONTRACT_VARIANT-style management study: entry dates and
+    selected contracts are frozen, while only lifecycle close conditions vary.
+    Each cell is an independent canonical replay and retains conflicts rather
+    than converting them into P&L.
+    """
+    frozen = list(entries)
+    prepared = prepare_selected_entry_observations(symbol, frozen, data_access=data_access)
+    cells = []
+    for capture in profit_captures:
+        for minimum in minimum_holding_days:
+            for remaining in remaining_dte_conditions:
+                replay = replay_prepared_entry_observations(
+                    symbol, prepared,
+                    profit_capture=float(capture),
+                    minimum_holding_days=int(minimum),
+                    remaining_dte_condition=int(remaining),
+                    unified_lifecycle=True)
+                cells.append({"profit_capture": float(capture),
+                              "minimum_holding_days": int(minimum),
+                              "remaining_dte_condition": int(remaining),
+                              "metrics": replay.get("metrics", {}),
+                              "status": replay.get("status"),
+                              "reason_codes": ["CONTRACT_VARIANT_FROZEN_ENTRIES", "UNIFIED_DAILY_ENGINE",
+                                               "H2_NO_LOSS_CLOSE", "H4_REVIEW_ENFORCED"]})
+    return {"module": "pcs.research.covered_call_profit_close_grid", "version": "1.0",
+            "symbol": str(symbol).upper(), "status": "COMPLETED" if cells else "NO_CELLS", "cells": cells,
+            "unified_lifecycle": True,
+            "entry_count": len(frozen), "final_oos_read": False,
+            "production_changes_allowed": False,
+            "reason_codes": ["CONTRACT_VARIANT", "PIT_SAFE_QUOTES", "UNIFIED_DAILY_ENGINE",
+                             "NO_AUTOMATIC_PROMOTION"]}
+
+
+def build_parameter_surface(report: Mapping[str, Any], *,
+                            config: CoveredCallResearchConfig | None = None) -> dict[str, Any]:
+    """Return an auditable observed-vs-missing parameter surface.
+
+    This helper never fills missing cells with zero P&L.  A cell is
+    ``OBSERVED`` only when the canonical replay actually contains trades in
+    that bucket; otherwise it remains ``NOT_RUN`` so downstream selection
+    cannot mistake an untested region for a losing region.
+    """
+    cfg = config or CoveredCallResearchConfig()
+    trades = list(report.get("trades", []))
+    cells = []
+    for low, high in cfg.dte_buckets:
+        subset = [r for r in trades if r.get("dte_at_entry") is not None and
+                  low <= int(r["dte_at_entry"]) < high]
+        cells.append({"dimension": "DTE", "bucket": [low, high],
+                      "status": "OBSERVED" if subset else "NOT_RUN",
+                      "trades": len(subset),
+                      "metrics": aggregate_metrics(subset) if subset else None,
+                      "reason_codes": (["CANONICAL_REPLAY_OBSERVED"] if subset else
+                                       ["PARAMETER_CELL_NOT_EXECUTED", "NO_IMPLICIT_ZERO_FILL"])})
+    for target in cfg.target_deltas:
+        subset = [r for r in trades if r.get("entry_delta") is not None and
+                  abs(float(r["entry_delta"]) - target) <= 0.025]
+        cells.append({"dimension": "DELTA", "target": target,
+                      "status": "OBSERVED" if subset else "NOT_RUN",
+                      "trades": len(subset),
+                      "metrics": aggregate_metrics(subset) if subset else None,
+                      "reason_codes": (["CANONICAL_REPLAY_OBSERVED"] if subset else
+                                       ["PARAMETER_CELL_NOT_EXECUTED", "NO_IMPLICIT_ZERO_FILL"])})
+    return {"module": "pcs.research.covered_call_parameter_surface", "version": "1.0",
+            "symbol": str(report.get("symbol", "")).upper(), "cells": cells,
+            "final_oos_read": False, "production_changes_allowed": False,
+            "reason_codes": ["OBSERVED_CELLS_ONLY", "PIT_SAFE_INPUT_REQUIRED",
+                             "NO_PARAMETER_PROMOTION"]}
+
+
 def build_transfer_matrix(reports: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     rows = []
     for report in reports:
@@ -266,7 +689,12 @@ def build_transfer_matrix(reports: Iterable[Mapping[str, Any]]) -> dict[str, Any
         rows.append({"symbol": str(report.get("symbol", "")).upper(),
                      "trades": int(metrics.get("trades", 0) or 0),
                      "combined_pnl": float(metrics.get("combined_pnl", 0) or 0),
-                     "excess_return": float(metrics.get("excess_return", 0) or 0)})
+                     # aggregate_metrics exposes the normalized name; accept
+                     # the lifecycle report alias as well so transfer analysis
+                     # cannot silently turn valid overlay evidence into zero.
+                     "excess_return": float(metrics.get(
+                         "excess_return", metrics.get("excess_return_vs_buy_and_hold", 0)
+                     ) or 0)})
     positive = sum(row["excess_return"] > 0 for row in rows)
     classification = ("UNIVERSAL" if len(rows) >= 3 and positive / len(rows) >= .67 else
                       "ARCHETYPE_SPECIFIC" if positive >= 2 else

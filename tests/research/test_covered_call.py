@@ -153,6 +153,16 @@ def test_roll_requires_positive_credit_and_preserves_episode():
         raise AssertionError("debit roll must be rejected")
 
 
+def test_zero_credit_and_itm_roll_are_allowed_by_frozen_policy():
+    p = CoveredCallPosition("NVDA")
+    p.open(100, contract("NVDA", strike=110))
+    p.episode_pnl = 100
+    p.roll(net_credit=0, new_expiration="2025-04-14", new_strike=95,
+           new_bid=5, new_ask=5)
+    assert p.roll_count == 1
+    assert p.contract.strike == 95
+
+
 def test_constraint_failure_analysis_is_descriptive():
     report = {"symbol":"NVDA", "trades":[{"status":"HARD_CONSTRAINT_CONFLICT",
         "exit_state":"HARD_CONSTRAINT_CONFLICT", "dte_at_entry":43, "strike":110}]}

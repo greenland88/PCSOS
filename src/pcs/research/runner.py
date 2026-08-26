@@ -221,6 +221,15 @@ class ResearchRunner:
         daily_dates = pd.to_datetime(daily.date).dt.normalize()
         effective_start = max(daily_dates.min(), pd.Timestamp(option_source.first_date).normalize())
         effective_end = min(daily_dates.max(), pd.Timestamp(option_source.last_date).normalize())
+        # The spec controls which dates may create NEW episodes.  Do not let
+        # a full feature artifact silently turn a yearly shard into a
+        # multi-year replay.  Lifecycle management remains responsible for
+        # continuing selected episodes beyond this entry window.
+        requested_range = self.spec.date_range or {}
+        if requested_range.get("start") is not None:
+            effective_start = max(effective_start, pd.Timestamp(requested_range["start"]).normalize())
+        if requested_range.get("end") is not None:
+            effective_end = min(effective_end, pd.Timestamp(requested_range["end"]).normalize())
         if effective_start > effective_end:
             raise ResearchSpecError("NO_COMMON_DAILY_OPTIONS_COVERAGE")
         daily = daily[(pd.to_datetime(daily.date).dt.normalize() >= effective_start) &
@@ -229,9 +238,23 @@ class ResearchRunner:
                         (pd.to_datetime(market.date).dt.normalize() <= effective_end)].copy()
         from .covered_call_research import (discover_and_select_entries, replay_selected_entries,
                                              validate_covered_call_report, analyze_constraint_failures)
-        result = discover_and_select_entries(self.spec.ticker, daily, market, data_access=access)
-        replay = replay_selected_entries(self.spec.ticker, result.get("entries", []), data_access=access,
-                                         profit_capture=float(self.spec.rules.get("covered_call_config", {}).get("profit_capture", .60)))
+        allowed = dict(self.spec.allowed_parameters)
+        moneyness = allowed.get("strike_moneyness")
+        if isinstance(moneyness, (list, tuple)) and len(moneyness) == 1:
+            result = discover_and_select_entries(
+                self.spec.ticker, daily, market, data_access=access,
+                selection_method="MONEYNESS", target_moneyness=float(moneyness[0]))
+        else:
+            result = discover_and_select_entries(self.spec.ticker, daily, market, data_access=access)
+        cc_rules = self.spec.rules.get("covered_call_config", {})
+        capture = cc_rules.get("profit_capture", .60)
+        replay = replay_selected_entries(
+            self.spec.ticker, result.get("entries", []), data_access=access,
+            profit_capture=float(capture if not isinstance(capture, (list, tuple)) else .60),
+            minimum_holding_days=int(cc_rules.get("minimum_holding_days", 0)),
+            remaining_dte_condition=(int(cc_rules["remaining_dte_condition"])
+                                     if cc_rules.get("remaining_dte_condition") is not None else None),
+            unified_lifecycle=True)
         result.update({"lifecycle": replay, "metrics": replay.get("metrics", {}),
                        "yearly_results": replay.get("yearly_results", []),
                        "parameter_stability": replay.get("parameter_stability", {}),
@@ -250,6 +273,55 @@ class ResearchRunner:
         # guarded research writer is called.
         validate_covered_call_report(result)
         self.persist(result, filename="covered_call_entries.json")
+        # Covered-call outputs use the same hash-validated CURRENT artifact
+        # contract as every other governed research run.  All identities are
+        # derived from the actual spec, canonical source routes, and ledgers;
+        # no semantic placeholder is allowed to make an incomplete run look
+        # current.
+        def source_manifest(source):
+            marker = str(source.source_version).split(":", 1)
+            if len(marker) == 2 and Path(marker[1]).is_file():
+                return Path(marker[1])
+            # Some canonical SourceSpec versions contain only a logical
+            # version. Resolve the manifest from the registered dataset, not
+            # from a ticker-specific fallback.
+            candidates = ([Path("data/manifests/storage_manifest_options_v3.csv"),
+                           Path("data/manifests/storage_manifest_options_v2.csv")]
+                          if str(source.dataset).startswith("options") else
+                          [Path("data/manifests/storage_manifest_v2.csv")])
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
+            raise FileNotFoundError(f"CANONICAL_SOURCE_MANIFEST_MISSING:{source.dataset}")
+        daily_source = access.resolve_source("daily", self.spec.ticker)
+        options_source = option_source
+        daily_manifest = source_manifest(daily_source)
+        options_manifest = source_manifest(options_source)
+        code_path = Path(__file__).with_name("covered_call.py")
+        feature_file = Path(feature_path)
+        market_file = Path(market_path)
+        lifecycle_rows = replay.get("trades", [])
+        candidate_rows = result.get("entries", [])
+        reproducibility = {
+            "strategy_definition_hash": self._sha256(code_path),
+            "feature_calculation_version": "PIT_FEATURE_DATASET_AS_DECLARED",
+            "daily_source_version": daily_source.source_version,
+            "options_source_version": options_source.source_version,
+            "daily_manifest_path": str(daily_manifest),
+            "options_manifest_path": str(options_manifest),
+            "daily_manifest_sha": self._sha256(daily_manifest),
+            "options_manifest_sha": self._sha256(options_manifest),
+            "corporate_action_version": self._sha256(Path("config/data/corporate_actions.csv")),
+            "config_hash": spec_hash(self.spec),
+            "population_hash": hashlib.sha256(json.dumps(candidate_rows, sort_keys=True, default=str).encode()).hexdigest(),
+            "candidates_ledger_hash": hashlib.sha256(json.dumps(candidate_rows, sort_keys=True, default=str).encode()).hexdigest(),
+            "selected_trade_ledger_hash": hashlib.sha256(json.dumps(candidate_rows, sort_keys=True, default=str).encode()).hexdigest(),
+            "lifecycle_ledger_hash": hashlib.sha256(json.dumps(lifecycle_rows, sort_keys=True, default=str).encode()).hexdigest(),
+        }
+        manifest_files = ["covered_call_entries.json"]
+        self.write_artifact_manifest(manifest_files, data_version=daily_source.source_version,
+                                     population_semantics="NEW_ENTRY_FULL_PIT_TICKER_CALENDAR",
+                                     reproducibility=reproducibility)
         return result
 
     def persist(self, result: Mapping[str, Any], *, filename: str = "preflight.json") -> Path:
