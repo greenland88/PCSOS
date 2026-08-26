@@ -336,6 +336,15 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
             from .incremental_update import update_ticker
             from .control_plane import ImportEngine
             start = req.required_start
+            # Respect the instrument's own canonical listing boundary.  The
+            # provider is never queried for pre-listing dates.
+            try:
+                daily = access.read_prices(req.symbol)
+                if not daily.empty:
+                    first_daily = pd.Timestamp(daily["date"].min()).date()
+                    start = max(pd.Timestamp(start).date(), first_daily).isoformat()
+            except (DataAccessError, FileNotFoundError, ValueError):
+                pass
             try:
                 existing = access.read("options", req.symbol)
                 if len(existing):
