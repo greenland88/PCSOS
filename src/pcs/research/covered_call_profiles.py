@@ -32,11 +32,18 @@ _NVDA = CoveredCallProfile(
     min_atr_distance=3.0, preferred_dte=43, preferred_delta=.20,
     reason_codes=("NVDA_V1_REFERENCE_PROFILE", "RESEARCH_PARAMETERS_FROZEN"))
 
+_NVDL = CoveredCallProfile(
+    symbol="NVDL", status=ProfileStatus.NOT_VALIDATED,
+    earnings_applicable=True,
+    reason_codes=("NVDL_INDEPENDENT_VALIDATION_REQUIRED", "NO_NVDA_PARAMETER_INHERITANCE"))
+
 
 def resolve_covered_call_profile(symbol: str) -> CoveredCallProfile:
     """Resolve an explicit profile; no fallback to another ticker."""
     ticker = str(symbol).strip().upper()
     if ticker == "NVDA":
         return _NVDA
+    if ticker == "NVDL":
+        return _NVDL
     return CoveredCallProfile(symbol=ticker, status=ProfileStatus.NOT_VALIDATED,
                               reason_codes=("PROFILE_NOT_VALIDATED", "FAIL_CLOSED"))

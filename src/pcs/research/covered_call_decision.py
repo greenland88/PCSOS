@@ -56,6 +56,7 @@ class CoveredCallDecision:
     atr: float | None = None
     extension20_atr: float | None = None
     momentum_state: str | None = None
+    max_contracts: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -214,7 +215,9 @@ def _contract_view(c: CoveredCallContract, spot: float, atr: float | None) -> di
 
 
 def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
+                          shares_owned: int | None = None,
                           stock: Mapping[str, Any] | None = None, market: Mapping[str, Any] | None = None,
+                          market_context: Mapping[str, Any] | None = None,
                           quotes: Iterable[CoveredCallContract] | None = None,
                           data_access: Any | None = None,
                           active_calls: int = 0, max_active_calls: int = 3,
@@ -232,15 +235,31 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
     All inputs are decision-date snapshots. No future quote, outcome, or P&L is
     read. The function is ticker-agnostic; ticker routing belongs to callers.
     """
-    symbol = str(symbol).upper(); day = str(as_of_date)[:10]
+    symbol = str(symbol).strip().upper(); day = str(as_of_date)[:10]
     profile = profile or resolve_covered_call_profile(symbol)
+    if profile.symbol.strip().upper() != symbol:
+        profile = resolve_covered_call_profile(symbol)
+    if shares_owned is None or event_context is None or (market_context is None and market is None):
+        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+            "required single-symbol request fields are missing", 0, "UNKNOWN", "UNKNOWN",
+            active_calls, max_active_calls, no_sell_reasons=("REQUIRED_REQUEST_FIELDS_MISSING",),
+            reason_codes=("SINGLE_SYMBOL_REQUEST_REQUIRED", "FAIL_CLOSED"),
+            profile_status=profile.status.value).to_dict()
+    if int(shares_owned) < 0 or int(active_calls) < 0:
+        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+            "shares_owned and active_calls must be non-negative", 0, "UNKNOWN", "UNKNOWN",
+            active_calls, max_active_calls, no_sell_reasons=("INVALID_POSITION_COUNTS",),
+            reason_codes=("REQUEST_VALIDATION_FAILED", "FAIL_CLOSED"),
+            profile_status=profile.status.value).to_dict()
+    max_contracts = max(0, min(int(shares_owned) // 100 - int(active_calls), int(max_active_calls)))
+    market = market_context if market_context is not None else market
     if profile.status is not ProfileStatus.VALIDATED:
         return CoveredCallDecision(symbol, day, CallDecision.WAIT,
             "ticker covered-call profile is not validated", 0, "UNKNOWN", "UNKNOWN",
             active_calls, max_active_calls,
             no_sell_reasons=("PROFILE_NOT_VALIDATED",),
             reason_codes=("PROFILE_GATE", "FAIL_CLOSED"),
-            profile_status=profile.status.value).to_dict()
+            profile_status=profile.status.value, max_contracts=max_contracts).to_dict()
     preferred_moneyness = profile.min_moneyness if profile.min_moneyness is not None else preferred_moneyness
     minimum_atr_distance = profile.min_atr_distance if profile.min_atr_distance is not None else minimum_atr_distance
     preferred_dte = profile.preferred_dte if profile.preferred_dte is not None else preferred_dte
@@ -328,11 +347,11 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
                                            int(r.volume) if getattr(r, "volume", None) is not None else None,
                                            dte=(_date(r.expiration_date) - _date(day)).days)
                        for r in frame[frame.call_put.astype(str).str.lower().isin({"c", "call"})].itertuples()]
-    if active_calls >= max_active_calls:
+    if max_contracts <= 0:
         return CoveredCallDecision(symbol, day, CallDecision.NO_SELL,
             "all short-call capacity is occupied", 0, "LOW", "UNKNOWN", active_calls,
             max_active_calls, no_sell_reasons=("MAX_CALL_CAPACITY_REACHED",),
-            reason_codes=("CAPACITY_HARD_STOP",)).to_dict()
+            reason_codes=("CAPACITY_HARD_STOP",), max_contracts=max_contracts).to_dict()
     if days_to_earnings is not None and 0 <= int(days_to_earnings) <= int(earnings_window_days):
         return CoveredCallDecision(symbol, day, CallDecision.NO_SELL,
             "earnings are inside the event-risk window", 0, "LOW", "HIGH",
@@ -397,7 +416,7 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
             no_sell_reasons=(("NO_SAFE_CANONICAL_OPTION", "EXPIRATION_CROSSES_EARNINGS")
                              if earnings_date else ("NO_SAFE_CANONICAL_OPTION",)),
             reason_codes=tuple(reason_codes + ["CONTRACT_SELECTION_EMPTY"]),
-            data_timestamp=str(stock.get("date", day))).to_dict()
+        data_timestamp=str(stock.get("date", day)), max_contracts=max_contracts).to_dict()
     chosen = candidates[0]; view = _contract_view(chosen, spot, atr)
     alternatives = [_contract_view(c, spot, atr) for c in candidates[1:3]]
     chosen_delta = float(chosen.delta) if chosen.delta is not None else 0.30
