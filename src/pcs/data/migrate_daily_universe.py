@@ -35,4 +35,6 @@ def main(argv=None):
     p=argparse.ArgumentParser(); p.add_argument("--raw-root",default="data/raw/daily_forward_adjusted"); p.add_argument("--output-root",default="data/parquet/daily"); p.add_argument("--manifest",default="data/manifests/daily_universe_migration.csv"); a=p.parse_args(argv); print(migrate(a.raw_root,a.output_root,a.manifest))
 
 
-if __name__=="__main__": main()
+if __name__=="__main__":
+    from .import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()
