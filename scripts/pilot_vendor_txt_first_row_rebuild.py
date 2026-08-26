@@ -121,7 +121,5 @@ def run(symbol: str) -> dict:
 
 
 if __name__ == "__main__":
-    results = [run(s) for s in TICKERS]
-    SUMMARY.parent.mkdir(parents=True, exist_ok=True)
-    SUMMARY.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(json.dumps(results, indent=2, default=str))
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()
