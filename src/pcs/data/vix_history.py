@@ -10,6 +10,10 @@ from datetime import datetime, time
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
+
+
+def capabilities() -> dict[str, bool]:
+    return {"VIX_HISTORY": True}
 from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 import json

@@ -114,3 +114,19 @@ All new research and production modules, and materially changed storage interfac
 - Include machine-readable `reason_codes` on key results.
 - Result envelopes must include `module`, `version`, `symbol`, `as_of`, `status` and/or `action`, `data_timestamp`, `calculation_version`, `run_id`, and `request_id`.
 - Persist sufficient version and source-data metadata to audit and replay runs.
+
+## Unified Market Data Control Plane
+
+All ticker data readiness and import requests MUST use
+`pcs.data.control_plane.get_market_data_status(symbol, requirements)` and
+`ensure_market_data(symbol, requirements)`. The canonical source allowlist is
+`config/market_data_source_registry.yaml`; remediation rules are in
+`config/data_remediation_registry.yaml`.
+
+Consumers MUST NOT call Massive, Yahoo, ClickHouse, raw CSV/TXT/ZIP readers,
+or mutate canonical Parquet directly. Provider calls are restricted to
+registered adapters and all writes must pass the staging/promotion boundary.
+Before reporting a data blocker, the control plane must inspect canonical
+coverage and all authorized sources; source-unavailable and pre-listing states
+must retain machine-readable reason codes. Strategy, frozen artifacts, and
+FINAL OOS are outside the import system and must not be changed by it.

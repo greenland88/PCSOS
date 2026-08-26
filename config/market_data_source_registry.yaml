@@ -1,0 +1,66 @@
+version: "1"
+sources:
+  daily:
+    - source_id: purchased_qfq
+      type: FILE
+      enabled: true
+      authorized: true
+      adapter: pcs.data.import_daily_snapshot
+      capabilities: [DAILY_HISTORY]
+      authority: historical_daily_primary
+      priority: 1
+    - source_id: daily_snapshot
+      type: FILE
+      enabled: true
+      authorized: true
+      adapter: pcs.data.import_daily_snapshot
+      capabilities: [DAILY_HISTORY]
+      authority: daily_snapshot
+      priority: 2
+    - source_id: private_massive_gateway
+      type: API
+      enabled: true
+      authorized: true
+      adapter: pcs.data.massive_client.MassiveCompatibleClient
+      capabilities: [DAILY_HISTORY, DAILY_CURRENT, OPTION_CONTRACT_REFERENCE]
+      credential_env: [PCS_MARKET_DATA_API_KEY]
+      priority: 3
+    - source_id: yahoo_daily
+      type: API
+      enabled: true
+      authorized: true
+      adapter: pcs.data.daily_fetcher.YahooDailyFetcher
+      capabilities: [DAILY_HISTORY, DAILY_CURRENT]
+      priority: 4
+  options:
+    - source_id: purchased_option_zip
+      type: FILE
+      enabled: true
+      authorized: true
+      adapter: pcs.data.onboarding.HistoricalTxtZipAdapter
+      capabilities: [OPTION_HISTORY_QUOTES]
+      priority: 1
+    - source_id: clickhouse_options
+      type: DATABASE_API
+      enabled: true
+      authorized: true
+      adapter: pcs.data.clickhouse.PCSClickHouseClient
+      capabilities: [OPTION_HISTORY_QUOTES, OPTION_CURRENT_QUOTES, COVERAGE_PROBE]
+      priority: 2
+    - source_id: massive_option_contracts
+      type: API
+      enabled: false
+      authorized: false
+      reference_only: true
+      adapter: pcs.data.massive_client.MassiveCompatibleClient
+      priority: 99
+      capabilities: [OPTION_CONTRACT_REFERENCE]
+  vix:
+    - source_id: cboe_vix
+      type: API_FILE
+      enabled: true
+      authorized: true
+      adapter: pcs.data.vix_history.capabilities
+      capabilities: [VIX_HISTORY]
+      authority: vix_history_primary
+      priority: 1

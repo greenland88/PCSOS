@@ -33,6 +33,12 @@ def test_stock_daily_uses_private_gateway_and_normalizes_bars():
     assert session.calls[0][1]["apiKey"] == "secret"
 
 
+def test_daily_safety_window_is_bounded():
+    client = MassiveCompatibleClient(GatewayConfig("secret"), Session())
+    frame = client.fetch_daily_safety_window("AAPL", "2025-11-05", window_days=2)
+    assert len(frame) == 1
+
+
 def test_pagination_rejects_public_or_foreign_next_url():
     class PagingResponse(Response):
         def json(self):

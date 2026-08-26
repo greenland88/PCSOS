@@ -1,0 +1,51 @@
+spec_id: PLTR_COVERED_CALL_RESEARCH_V1
+symbol: PLTR
+status: FROZEN
+data_source: PCS_CANONICAL_DATA
+final_oos_access: false
+position_model:
+  shares_per_call: 100
+  max_short_calls: 3
+  shares_remain_long: true
+  report_call_overlay_separately: true
+  assignment_model: early_and_expiry_itm
+  assignment_resolution: buy_to_close_or_roll_only
+  forced_stock_sale: false
+execution:
+  allowed_actions: [HOLD, BUY_TO_CLOSE, ROLL, EXPIRE]
+  entry_price: bid
+  buyback_price: ask
+  roll_requires_same_day_buyback_and_sale: true
+  include_commission: true
+  include_slippage: true
+  missing_quote_policy: BLOCK
+  cross_year_positions: true
+  year_end_forced_close: false
+parameters:
+  entry_dte: [[7, 14], [14, 30], [30, 45], [45, 60]]
+  short_call_delta: [0.10, 0.15, 0.20, 0.25, 0.30]
+  strike_distance: [ATR, PERCENT, PRIOR_HIGH_RESISTANCE]
+  entry_timing: [UP_DAY, STRONG_INTRADAY_HIGH, IV_RISING, POST_EARNINGS, RESISTANCE_NEAR]
+  profit_take: [0.50, 0.65, 0.75, 0.85]
+  manage_at_dte: [21, 14, 7, 3]
+  roll_trigger: [DELTA, PRICE_NEAR_OR_ABOVE_STRIKE, EXTRINSIC_VALUE, DTE]
+  roll_target_dte: [30, 45, 60, 90, 120]
+  independent_rule: HIGHEST_STRIKE_ROLL
+data_split:
+  train: [2020-10-20, 2024-12-31]
+  historical_holdout: [2025-01-01, 2025-12-31]
+  validation: [2026-01-01, 2026-07-31]
+  final_oos: SEALED
+metrics:
+  - call_premium_net_income
+  - buyback_and_roll_cost
+  - call_overlay_pnl
+  - annual_return
+  - breakout_rate
+  - itm_rate
+  - assignment_rate
+  - net_debit_to_avoid_stock_sale
+  - upside_capped_opportunity_cost
+  - max_drawdown
+  - yearly_stability
+  - buy_and_hold_total_asset_comparison

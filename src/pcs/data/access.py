@@ -311,6 +311,8 @@ class PCSDataAccess:
         # A readiness/executable window may begin before a ticker's physical
         # route starts. Clamp the lower bound to available canonical coverage;
         # retain fail-closed behavior for an end date beyond source coverage.
+        if end_date is not None and pd.Timestamp(end_date) < lo:
+            raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if start_date is not None and pd.Timestamp(start_date) < lo:
             if self.routing_mode == "canonical":
                 start_date = lo
@@ -631,6 +633,15 @@ class PCSDataAccess:
 
     def read_prices(self, symbol: str, start_date=None, end_date=None) -> pd.DataFrame:
         return self.read("daily", symbol, start_date, end_date)
+
+    def read_daily(self, symbol: str, start_date=None, end_date=None) -> pd.DataFrame:
+        """Backward-compatible alias for the canonical daily read API.
+
+        ``read_prices`` is the formal implementation.  Keeping this alias as
+        a direct delegation preserves the same route, validation, date
+        boundaries, price-basis handling, and provenance behavior.
+        """
+        return self.read_prices(symbol, start_date, end_date)
 
     def write(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False) -> Path:
         symbol = self._symbol(symbol)

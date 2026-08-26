@@ -135,7 +135,7 @@ class MassiveCompatibleClient:
             if not next_url:
                 return
             if page_number + 1 == max_pages:
-                return
+                raise MarketGatewayError(f"API_PARTIAL: pagination limit reached before next_url was consumed: {path}")
             page_params = {}
 
     def stock_daily(self, ticker: str, start_date: str, end_date: str, *, limit: int = 120) -> pd.DataFrame:
@@ -150,6 +150,39 @@ class MassiveCompatibleClient:
         frame = pd.DataFrame(rows)
         frame["date"] = pd.to_datetime(frame["date"], unit="ms", errors="coerce")
         return normalize_daily_frame(frame)
+
+    # Control-plane adapter surface. These methods keep provider mechanics
+    # behind one stable interface and never write canonical storage.
+    def health_check(self) -> str:
+        try:
+            self.market_status()
+            return "REACHABLE"
+        except MarketGatewayError:
+            return "UNAVAILABLE"
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"DAILY_HISTORY": True, "DAILY_CURRENT": True,
+                "OPTION_CONTRACT_REFERENCE": True,
+                "OPTION_HISTORY_QUOTES": False}
+
+    def probe_daily_coverage(self, ticker: str, start_date: str, end_date: str) -> dict[str, Any]:
+        frame = self.stock_daily(ticker, start_date, end_date)
+        return {"source_id": "private_massive_gateway", "symbol": ticker.upper(),
+                "dataset": "daily", "min_date": str(frame.date.min().date()),
+                "max_date": str(frame.date.max().date()), "row_count": len(frame),
+                "status": "API_COMPLETE"}
+
+    def fetch_daily_range(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+        return self.stock_daily(ticker, start_date, end_date, limit=50000)
+
+    def fetch_daily_safety_window(self, ticker: str, target_date: str, window_days: int = 3) -> pd.DataFrame:
+        target = pd.Timestamp(target_date)
+        if window_days < 1 or window_days > 10:
+            raise ValueError("window_days must be between 1 and 10")
+        return self.fetch_daily_range(ticker, str((target - pd.Timedelta(days=window_days)).date()), str((target + pd.Timedelta(days=window_days)).date()))
+
+    def fetch_option_contracts(self, ticker: str, as_of: str | None = None, **kwargs):
+        return self.option_contracts(ticker, **kwargs)
 
     def option_contracts(self, underlying_ticker: str, *, contract_type: str = "call",
                          expiration_date_gte: str | None = None, limit: int = 10) -> list[dict[str, Any]]:

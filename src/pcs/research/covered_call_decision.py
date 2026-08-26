@@ -50,7 +50,12 @@ class CoveredCallDecision:
     reason_codes: tuple[str, ...] = ()
     data_timestamp: str | None = None
     event_risk: str = "UNKNOWN"
-    profile_status: str = ProfileStatus.NOT_VALIDATED.value
+    profile_status: str = ProfileStatus.VALIDATED.value
+    spot: float | None = None
+    sma20: float | None = None
+    atr: float | None = None
+    extension20_atr: float | None = None
+    momentum_state: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -216,6 +221,9 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
                           event_context: Mapping[str, Any] | None = None,
                           earnings_window_days: int = 7,
                           profile: CoveredCallProfile | None = None,
+                          active_episode: CoveredCallEpisode | None = None,
+                          current_quote: CoveredCallContract | None = None,
+                          roll_quotes: Iterable[CoveredCallContract] = (),
                           preferred_moneyness: float = 0.20,
                           minimum_atr_distance: float = 3.0,
                           preferred_dte: int = 43) -> dict[str, Any]:
@@ -236,6 +244,35 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
     preferred_moneyness = profile.min_moneyness if profile.min_moneyness is not None else preferred_moneyness
     minimum_atr_distance = profile.min_atr_distance if profile.min_atr_distance is not None else minimum_atr_distance
     preferred_dte = profile.preferred_dte if profile.preferred_dte is not None else preferred_dte
+    if active_episode is not None:
+        if current_quote is None:
+            raise ValueError("CURRENT_QUOTE_REQUIRED_FOR_ACTIVE_CALL")
+        underlying = float((stock or {}).get("close", current_quote.underlying_price or 0))
+        management = evaluate_active_call(active_episode, as_of_date=day,
+                                          underlying_price=underlying,
+                                          current_quote=current_quote,
+                                          roll_quotes=roll_quotes)
+        management.update({"symbol": symbol, "as_of_date": day,
+                           "decision": management["action"],
+                           "event_risk": "UNKNOWN", "profile_status": profile.status.value,
+                           "current_strike": current_quote.strike,
+                           "current_expiration": current_quote.expiration,
+                           "current_dte": (_date(current_quote.expiration) - _date(day)).days,
+                           "buyback_cost": current_quote.ask * 100,
+                           "reason_codes": management.get("reason_codes", [])})
+        if management["action"] == PositionDecision.ROLL.value:
+            new = next((q for q in roll_quotes if q.expiration == management.get("recommended_expiration")
+                        and q.strike == management.get("recommended_strike")), None)
+            if new is not None:
+                management.update({"new_strike": new.strike, "new_expiration": new.expiration,
+                                   "new_dte": (_date(new.expiration) - _date(day)).days,
+                                   "new_credit": new.bid * 100,
+                                   "net_roll_credit": management["net_roll_credit"]})
+        management.update({"module": "pcs.research.covered_call_decision", "version": "1.0",
+                           "data_source": "PCS_CANONICAL_DATA_OR_CALLER_PIT_SNAPSHOT",
+                           "calculation_version": "covered_call_decision_v1",
+                           "request_id": f"{symbol}:{day}", "run_id": f"covered-call:{symbol}:{day}"})
+        return management
     market = market or {}
     event_context = event_context or {}
     earnings_date = (_date(event_context["earnings_date"])
@@ -265,7 +302,15 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
         if data_access is None:
             quotes = ()
         else:
-            frame = data_access.read_option_chain(symbol, day)
+            try:
+                frame = data_access.read_option_chain(symbol, day)
+            except (ValueError, FileNotFoundError) as exc:
+                return CoveredCallDecision(symbol, day, CallDecision.NO_SELL,
+                    "canonical option chain is unavailable for the requested date", 0,
+                    "UNKNOWN", "UNKNOWN", active_calls, max_active_calls,
+                    no_sell_reasons=("OPTIONS_DATA_UNAVAILABLE",),
+                    reason_codes=("CANONICAL_OPTIONS_COVERAGE_GATE", "FAIL_CLOSED"),
+                    data_timestamp=str(stock.get("date", day))).to_dict()
             quotes = [CoveredCallContract(symbol.upper(), str(day), str(r.expiration_date), float(r.strike),
                                            float(r.bid), float(r.ask),
                                            float(r.delta) if getattr(r, "delta", None) is not None else None,
@@ -370,4 +415,5 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
         safer_alternative=None,
         riskier_alternative=alternatives[0] if alternatives else None,
         reason_codes=tuple(reason_codes + ["SAFE_REGION_FILTER", "LIQUIDITY_PASS"]),
-        data_timestamp=str(stock.get("date", day))).to_dict()
+        data_timestamp=str(stock.get("date", day)), spot=spot, sma20=stock.get("sma20"),
+        atr=atr, extension20_atr=extension, momentum_state=momentum).to_dict()

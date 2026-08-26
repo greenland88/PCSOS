@@ -133,6 +133,17 @@ def onboarding_status(args):
     print(json.dumps(OnboardingEngine(args.symbol, args.state_root).progress(), sort_keys=True, default=str))
 
 
+def market_data_status(args):
+    from pcs.data.control_plane import ImportCoordinator, MarketDataControlPlane, default_import_handlers, get_market_data_status
+    requirements = {"symbol": args.symbol, "required_start": args.start, "required_end": args.end,
+                    "datasets": tuple(args.dataset or ("daily", "options"))}
+    if args.execute:
+        result = ImportCoordinator(MarketDataControlPlane(), handlers=default_import_handlers()).run(requirements)
+        print(json.dumps(result, sort_keys=True, default=str))
+    else:
+        print(json.dumps(get_market_data_status(requirements).to_dict(), sort_keys=True, default=str))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="pcs-lite")
     sub = parser.add_subparsers(required=True)
@@ -202,6 +213,21 @@ def main():
     status_cmd.add_argument("symbol")
     status_cmd.add_argument("--state-root", default="data/onboarding")
     status_cmd.set_defaults(func=onboarding_status)
+
+    md_status = sub.add_parser("market-data-status", help="inspect canonical coverage and produce an import plan")
+    md_status.add_argument("symbol")
+    md_status.add_argument("--start")
+    md_status.add_argument("--end")
+    md_status.add_argument("--dataset", action="append", choices=["daily", "options"], default=[])
+    md_status.add_argument("--execute", action="store_true", help="execute registered import handlers for missing data")
+    md_status.set_defaults(func=market_data_status)
+
+    md_import = sub.add_parser("import-market-data", help="plan and execute registered market-data imports")
+    md_import.add_argument("symbol")
+    md_import.add_argument("--start")
+    md_import.add_argument("--end")
+    md_import.add_argument("--dataset", action="append", choices=["daily", "options"], default=[])
+    md_import.set_defaults(func=lambda args: (setattr(args, "execute", True), market_data_status(args))[1])
 
     args = parser.parse_args()
     args.func(args)

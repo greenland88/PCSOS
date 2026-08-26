@@ -13,6 +13,10 @@ from pathlib import Path
 import pandas as pd
 
 from .daily_provider import DailyDataError, normalize_daily_frame
+
+
+def capabilities() -> dict[str, bool]:
+    return {"DAILY_HISTORY": True}
 from .parquet_store import read_daily_source
 from .storage_schema import DAILY_FIELDS
 

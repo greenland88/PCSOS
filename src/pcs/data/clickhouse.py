@@ -145,3 +145,52 @@ class PCSClickHouseClient:
             return "REACHABLE"
         except ClickHouseError:
             return "UNAVAILABLE"
+
+    def health_check(self) -> str:
+        return self.health()
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"OPTION_HISTORY_QUOTES": True, "OPTION_CURRENT_QUOTES": True,
+                "COVERAGE_PROBE": True}
+
+    def probe_options_coverage(self, symbol: str, table: str = "firstrate.options_kline_1d") -> dict[str, Any]:
+        escaped = str(symbol).replace("'", "''")
+        sql = (f"SELECT min(TradeDate), max(TradeDate), count(), uniqExact(TradeDate) "
+               f"FROM {table} WHERE Symbol = '{escaped}' FORMAT JSONEachRow")
+        diag = self.query(sql, ticker=symbol, operation="probe_options_coverage")
+        import json
+        rows = [json.loads(line) for line in diag.response_body.splitlines() if line.strip()]
+        row = rows[0] if rows else {}
+        return {"source_id": "clickhouse_options", "symbol": symbol.upper(),
+                "dataset": "options", "min_date": row.get("min(TradeDate)"),
+                "max_date": row.get("max(TradeDate)"), "row_count": row.get("count()", 0),
+                "distinct_trade_dates": row.get("uniqExact(TradeDate)", 0),
+                "status": "API_COMPLETE"}
+
+    def _fetch_options(self, symbol: str, predicate: str, *, operation: str,
+                       table: str = "firstrate.options_kline_1d"):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix="pcs_ch_options_") as directory:
+            output = Path(directory) / "options.parquet"
+            escaped = str(symbol).replace("'", "''")
+            select = ("Symbol AS symbol, TradeDate AS trade_date, ExpiryDate AS expiration_date, "
+                      "Strike AS strike, CallPut AS call_put, LastTradePrice AS last, BidPrice AS bid, "
+                      "AskPrice AS ask, BidImpliedVolatilities AS bid_iv, AskImpliedVolatilities AS ask_iv, "
+                      "OpenInterest AS open_interest, Volume AS volume, Delta AS delta, Gamma AS gamma, "
+                      "Vega AS vega, Theta AS theta, Rho AS rho")
+            sql = f"SELECT {select} FROM {table} WHERE Symbol = '{escaped}' AND {predicate} FORMAT Parquet"
+            self.query(sql, ticker=symbol, operation=operation, output=output)
+            import pandas as pd
+            return pd.read_parquet(output)
+
+    def fetch_options_quarter(self, symbol: str, year: int, quarter: int):
+        return self._fetch_options(symbol, f"toYear(TradeDate) = {int(year)} AND toQuarter(TradeDate) = {int(quarter)}", operation="fetch_options_quarter")
+
+    def fetch_options_range(self, symbol: str, start: str, end: str):
+        return self._fetch_options(symbol, f"TradeDate BETWEEN '{start}' AND '{end}'", operation="fetch_options_range")
+
+    def fetch_options_dates(self, symbol: str, dates: list[str]):
+        if not dates: return __import__("pandas").DataFrame()
+        values = ",".join("'" + str(item).replace("'", "''") + "'" for item in dates)
+        return self._fetch_options(symbol, f"TradeDate IN ({values})", operation="fetch_options_dates")

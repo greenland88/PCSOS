@@ -68,6 +68,24 @@ New ticker admission is fail-closed and follows:
 See [`docs/architecture/ticker_onboarding.md`](docs/architecture/ticker_onboarding.md)
 and [`docs/architecture/pcs_ticker_readiness.md`](docs/architecture/pcs_ticker_readiness.md).
 
+### Unified market-data import control plane
+
+All consumers declare requirements through:
+
+```python
+from pcs.data.control_plane import get_market_data_status, ensure_market_data
+status = get_market_data_status("PLTR", {"start": "2018-01-01", "end": "2026-08-26"})
+result = ensure_market_data("PLTR", {"datasets": {"daily": {"required": True}}})
+```
+
+Use `pcs-lite market-data-status SYMBOL` for a read-only plan or
+`pcs-lite import-market-data SYMBOL` to execute registered import handlers.
+The source allowlist is [`config/market_data_source_registry.yaml`](config/market_data_source_registry.yaml),
+the remediation registry is [`config/data_remediation_registry.yaml`](config/data_remediation_registry.yaml),
+and the derived catalog is `data/manifests/canonical_data_catalog.parquet`.
+Provider calls and canonical writes are restricted to the control-plane/data
+adapter boundary; consumers must not call providers or edit raw/canonical files.
+
 ## Guarded research runner
 
 All new research uses a validated `ResearchSpec` through one entry point:

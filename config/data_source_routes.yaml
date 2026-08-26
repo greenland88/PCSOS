@@ -13,13 +13,13 @@ options:
       manifest_path: data/manifests/storage_manifest_options_v2.csv
       parquet_root: data/parquet
     TSLA:
-      dataset: options_v2
-      manifest_path: data/manifests/storage_manifest_options_v2.csv
-      parquet_root: data/parquet
+      dataset: options
+      manifest_path: data\manifests\storage_manifest.csv
+      parquet_root: data\parquet
     AMZN:
-      dataset: options_v2
-      manifest_path: data/manifests/storage_manifest_options_v2.csv
-      parquet_root: data/parquet
+      dataset: options
+      manifest_path: data\manifests\storage_manifest.csv
+      parquet_root: data\parquet
     COST:
       dataset: options_v2
       manifest_path: data\manifests\storage_manifest_options_v2.csv
@@ -47,6 +47,10 @@ options:
     XOM:
       dataset: options
       manifest_path: data\manifests\storage_manifest_options_v2.csv
+      parquet_root: data\parquet
+    PLTR:
+      dataset: options
+      manifest_path: data\manifests\storage_manifest.csv
       parquet_root: data\parquet
 executable_boundary:
   default_start_date: '2018-01-01'

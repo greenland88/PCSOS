@@ -98,7 +98,10 @@ def main() -> None:
     symbol = str(args.symbol).strip().upper()
     access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=Path(args.root).parent)
     partition = "year=2026/quarter=3"
-    filename = f"{symbol}_2026_q3.parquet"
+    # Keep the historical Q3 partition immutable.  The incremental file is
+    # deliberately a separate manifest-backed file in the same logical
+    # quarter; its dates begin after the existing canonical coverage.
+    filename = f"{symbol}_2026_q3_incremental_{start}_{end}.parquet"
     target = Path(args.root) / f"symbol={symbol}" / partition / filename
     select = ", ".join(f"{source} AS {dest}" for source, dest in MAP.items())
     escaped = symbol.replace("'", "''")
@@ -117,10 +120,7 @@ def main() -> None:
         source_frame["trade_date"] = pd.to_datetime(source_frame["trade_date"]).dt.date
         source_frame["expiration_date"] = pd.to_datetime(source_frame["expiration_date"]).dt.date
         source_frame, physical, unique_keys, duplicates_removed = _dedupe(source_frame)
-        existing = access.read_partition(args.dataset, symbol, partition, filename)
-        combined = pd.concat([existing, source_frame], ignore_index=True) if len(existing) else source_frame
-        combined, _, _, _ = _dedupe(combined)
-        rows_written = len(combined)
+        rows_written = len(source_frame)
         source_version = f"clickhouse:{SOURCE}:{start}:{end}:sha256:{source_hash}"
         record = {
             "source": "ClickHouse", "source_table": SOURCE, "symbol": symbol,
@@ -134,7 +134,7 @@ def main() -> None:
         print(f"source={SOURCE}\nquery_start={start}\nquery_end={end}\nphysical_rows={physical}\nunique_keys={unique_keys}\nduplicates_removed={duplicates_removed}\nrows_written={rows_written}\nchecksum_sha256={source_hash}\ndry_run={not args.apply}")
         if not args.apply:
             return
-        access.write_partition(combined, args.dataset, symbol, partition, source_version=source_version, allow_overwrite=True, replace_manifest=True, filename=filename)
+        access.write_partition(source_frame, args.dataset, symbol, partition, source_version=source_version, allow_overwrite=False, replace_manifest=False, filename=filename)
         access.record_provenance(record, args.provenance_path)
         print(f"updated={target}")
 
