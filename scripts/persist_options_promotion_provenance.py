@@ -19,4 +19,6 @@ def main():
         pd.concat([d,pd.DataFrame(rows)],ignore_index=True).to_csv(path,index=False)
     print({'status':'COMPLETED','records_added':len(rows)})
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+ from pcs.data.import_boundary import reject_legacy_import_entrypoint
+ reject_legacy_import_entrypoint()

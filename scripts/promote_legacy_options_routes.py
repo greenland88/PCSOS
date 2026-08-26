@@ -29,4 +29,6 @@ def main():
    results.append({'symbol':symbol,'partition':part,'source':str(source),'target':str(target),'rows':len(frame),'exact_duplicates_removed':policy.exact_duplicates_removed,'conflicts_resolved':policy.conflicts_resolved,'status':status})
   activate_authoritative_route(symbol,dataset='options_v2',manifest_path='data/manifests/storage_manifest_options_v2.csv',parquet_root='data/parquet')
  out=ROOT/'research_outputs/pcs_canonical_data_repair'; out.mkdir(parents=True,exist_ok=True); (out/'options_route_promotion.json').write_text(json.dumps({'policy':'EXISTING_APPROVED_LEGACY_CANONICAL_PROMOTION','results':results,'strategy_changed':False},indent=2,default=str),encoding='utf-8'); print(json.dumps({'status':'COMPLETED','promoted':sum(x.get('status')=='PROMOTED' for x in results),'already_present':sum(x.get('status')=='ALREADY_PRESENT' for x in results)},indent=2))
-if __name__=='__main__': main()
+if __name__=='__main__':
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

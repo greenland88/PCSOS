@@ -17,4 +17,6 @@ def main():
   d=pd.concat([d,pd.DataFrame([record])],ignore_index=True); d.to_csv(p,index=False)
   print(json.dumps({'status':'COMPLETED','symbol':'AMD','rows':int(row.rows_written),'source_sha256':record['source_sha256']}))
  else: print(json.dumps({'status':'ALREADY_PRESENT','symbol':'AMD'}))
-if __name__=='__main__': main()
+if __name__=='__main__':
+ from pcs.data.import_boundary import reject_legacy_import_entrypoint
+ reject_legacy_import_entrypoint()

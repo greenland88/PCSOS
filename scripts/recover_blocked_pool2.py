@@ -30,4 +30,6 @@ def main():
                     tmp=raw.with_suffix('.tmp'); tmp.write_bytes(z.read(member)); os.replace(tmp,raw)
                 f=read_raw(raw,s); a=PCSDataAccess(manifest_path=MANIFEST,parquet_root="data/parquet",source_routes={}); path=a.write_partition(f,DATASET,s,f"year=2026/quarter={q}",source_version=str(zpath),filename=f"{s}_2026_q{q}.parquet"); results.append({"symbol":s,"quarter":q,"status":"IMPORTED","rows":len(f),"path":str(path)})
     out=pd.DataFrame(results); out.to_csv(ROOT/"pool_2_options"/"blocked_recovery_imports.csv",index=False); print(out.to_string(index=False)); print('RECOVERED',len(out))
-if __name__=='__main__': main()
+if __name__=='__main__':
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

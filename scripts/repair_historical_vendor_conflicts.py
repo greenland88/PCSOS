@@ -34,6 +34,5 @@ def repair(symbol):
     return provenance
 
 if __name__=='__main__':
-    rows=[repair(s) for s in ('TSLA','AMZN')]
-    Path('data/manifests/options_v2_historical_vendor_q3_repair_20260820.json').write_text(json.dumps(rows,indent=2),encoding='utf-8')
-    for r in rows: print(f"{r['symbol']} | {r['raw_rows']} | {r['exact_duplicate_rows_removed']} | {r['conflicting_identity_keys']} | {r['final_rows']} | {r['resolution_policy']} | PASS")
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()
