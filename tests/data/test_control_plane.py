@@ -134,6 +134,49 @@ def test_options_handler_uses_registered_client_and_exact_coverage(tmp_path):
     assert len(access.read("options", "NVDL")) == 1
 
 
+def test_ensure_market_data_auto_wires_registered_clickhouse(monkeypatch, tmp_path):
+    from pcs.data.access import PCSDataAccess
+    import pcs.data.clickhouse as clickhouse
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    class Client:
+        def fetch_options_coverage(self, symbol, start, end):
+            return {"symbol": symbol, "requested_start": start, "requested_end": end,
+                    "source_min_date": start, "source_max_date": end, "physical_rows": 1,
+                    "unique_contract_keys": 1, "put_rows": 0, "call_rows": 1,
+                    "source_table": "test.options", "status": "READY", "reason_codes": []}
+        def fetch_options_range(self, symbol, start, end):
+            return pd.DataFrame({"symbol": [symbol], "trade_date": pd.to_datetime([start]),
+                "expiration_date": pd.to_datetime(["2023-10-27"]), "strike": [100.], "call_put": ["c"],
+                "last": [1.], "bid": [.9], "ask": [1.1], "bid_iv": [.2], "ask_iv": [.21],
+                "open_interest": [100], "volume": [10], "delta": [.2], "gamma": [.01],
+                "vega": [.1], "theta": [-.1], "rho": [.01]})
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "secret")
+    monkeypatch.setattr(clickhouse, "PCSClickHouseClient", lambda *args, **kwargs: Client())
+    result = __import__("pcs.data.control_plane", fromlist=["ensure_market_data"]).ensure_market_data(
+        "NVDL", {"start": "2023-09-26", "end": "2023-12-31", "datasets": {"options": {"required": True}}}, access=access)
+    assert result.status == "ALREADY_COMPLETE"
+    assert result.selected_source == ("clickhouse_options",)
+    assert result.promoted_partitions
+    assert access.read("options", "NVDL").shape[0] == 1
+
+
+def test_options_handler_zero_rows_is_authorized_source_block(monkeypatch, tmp_path):
+    from pcs.data.access import PCSDataAccess
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    class Client:
+        def fetch_options_coverage(self, symbol, start, end):
+            return {"symbol": symbol, "requested_start": start, "requested_end": end,
+                    "source_min_date": None, "source_max_date": None, "physical_rows": 0,
+                    "unique_contract_keys": 0, "put_rows": 0, "call_rows": 0,
+                    "source_table": "test.options", "status": "BLOCKED",
+                    "reason_codes": ["AUTHORIZED_SOURCE_NO_ROWS"]}
+    result = __import__("pcs.data.control_plane", fromlist=["default_import_handlers"]).default_import_handlers(
+        clickhouse_client=Client(), access=access)["options"](
+            MarketDataRequirements("NVDL", "2023-09-26", "2023-12-31", ("options",)))
+    assert result["status"] == "BLOCKED"
+    assert result["reason_codes"] == ["AUTHORIZED_SOURCE_NO_ROWS"]
+
+
 def test_massive_daily_handler_uses_canonical_incremental_writer(tmp_path):
     from pcs.data.access import PCSDataAccess
     access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
