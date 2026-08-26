@@ -334,6 +334,7 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
             current_client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", "hisdata230"), password)
         if current_client is not None and req.required_start and req.required_end:
             from .incremental_update import update_ticker
+            from .control_plane import ImportEngine
             start = req.required_start
             try:
                 existing = access.read("options", req.symbol)
@@ -355,10 +356,23 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
             # canonical policy; different payloads for one contract identity
             # remain fail-closed in PCSDataAccess.validate_schema().
             frame = frame.drop_duplicates(keep="last").reset_index(drop=True)
-            return {"status": "IMPORTED", "provider_coverage": coverage, "selected_source": "clickhouse_options", "promotion": update_ticker(req.symbol, options_frame=frame,
-                parquet_root=kwargs.get("parquet_root", "data/parquet"),
-                options_manifest_path=options_manifest_path,
-                source_version=f"clickhouse_incremental:{req.required_start}:{req.required_end}")}
+            frame["symbol"] = frame["symbol"].astype(str).str.upper()
+            if set(frame["symbol"].unique()) != {req.symbol}:
+                return {"status": "BLOCKED", "reason_codes": ["TICKER_ISOLATION_FAILED"], "selected_source": "clickhouse_options"}
+            # Stage every partition first. Nothing is promoted until the full
+            # provider response has passed identity and quote validation.
+            engine = ImportEngine(access=access)
+            staged = []
+            for (year, quarter), part in frame.groupby([pd.to_datetime(frame.trade_date).dt.year,
+                                                          ((pd.to_datetime(frame.trade_date).dt.quarter))]):
+                partition = f"year={int(year)}/quarter={int(quarter)}"
+                staged.append(engine.stage(part.reset_index(drop=True), symbol=req.symbol,
+                    dataset="options", partition=partition, source_id="clickhouse_options"))
+            promotions = [engine.promote(item, source_version=f"clickhouse:{coverage.get('source_table')}:{req.required_start}:{req.required_end}") for item in staged]
+            blocked = [x for x in promotions if x.get("status") != "IMPORTED"]
+            return {"status": "BLOCKED" if blocked else "IMPORTED", "provider_coverage": coverage,
+                    "selected_source": "clickhouse_options", "promoted_partitions": promotions,
+                    "reason_codes": ["PROMOTION_FAILED"] if blocked else []}
         loader = kwargs.get("clickhouse_loader")
         periods = kwargs.get("periods")
         if loader is not None and periods:
