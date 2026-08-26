@@ -205,13 +205,20 @@ class ImportEngine:
 
     def stage(self, frame: pd.DataFrame, *, symbol: str, dataset: str, partition: str, source_id: str, request_id: str | None = None):
         rid = request_id or uuid.uuid4().hex
+        symbol = str(symbol).strip().upper()
+        if frame is None or frame.empty:
+            raise DataAccessError("STAGE_EMPTY_PAYLOAD")
+        checked = frame.copy()
+        if "symbol" not in checked.columns or set(checked["symbol"].astype(str).str.upper()) != {symbol}:
+            raise DataAccessError("TICKER_ISOLATION_FAILED")
+        checked = self.access.validate_schema(checked, dataset)
         target = self.staging_root / rid / symbol.upper() / dataset / partition
         target.mkdir(parents=True, exist_ok=True)
         path = target / "payload.parquet"
-        frame.to_parquet(path, index=False)
+        checked.to_parquet(path, index=False)
         verify = pd.read_parquet(path)
-        if len(verify) != len(frame): raise DataAccessError("STAGE_ROW_COUNT_MISMATCH")
-        return {"status": "STAGED", "path": str(path), "symbol": symbol.upper(), "dataset": dataset, "partition": partition, "source_id": source_id, "request_id": rid, "row_count": len(frame)}
+        if len(verify) != len(checked): raise DataAccessError("STAGE_ROW_COUNT_MISMATCH")
+        return {"status": "STAGED", "path": str(path), "symbol": symbol, "dataset": dataset, "partition": partition, "source_id": source_id, "request_id": rid, "row_count": len(checked)}
 
     def promote(self, staged: dict[str, Any], *, source_version: str):
         path = Path(staged["path"]); frame = pd.read_parquet(path)
@@ -352,7 +359,7 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                     start = max(pd.Timestamp(start).date(), latest + pd.Timedelta(days=1).to_pytimedelta()).isoformat()
             except Exception:
                 pass
-            if str(start) > str(plan.requirements.required_end):
+            if str(start) > str(req.required_end):
                 return {"status": "REUSED", "reason_codes": ["CURRENT_OPTIONS_ALREADY_COVERED"], "requested_start": start}
             coverage = current_client.fetch_options_coverage(req.symbol, str(start), req.required_end)
             if coverage.get("status") != "READY":
