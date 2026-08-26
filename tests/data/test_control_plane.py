@@ -154,9 +154,10 @@ def test_ensure_market_data_auto_wires_registered_clickhouse(monkeypatch, tmp_pa
     monkeypatch.setattr(clickhouse, "PCSClickHouseClient", lambda *args, **kwargs: Client())
     result = __import__("pcs.data.control_plane", fromlist=["ensure_market_data"]).ensure_market_data(
         "NVDL", {"start": "2023-09-26", "end": "2023-12-31", "datasets": {"options": {"required": True}}}, access=access)
-    assert result.status == "ALREADY_COMPLETE"
+    assert result.status == "PARTIAL"
     assert result.selected_source == ("clickhouse_options",)
     assert result.promoted_partitions
+    assert result.import_outcomes[0]["status"] == "IMPORTED"
     assert access.read("options", "NVDL").shape[0] == 1
 
 
