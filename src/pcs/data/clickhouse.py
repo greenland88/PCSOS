@@ -187,8 +187,10 @@ class PCSClickHouseClient:
         rows = [json.loads(line) for line in diag.response_body.splitlines() if line.strip()]
         row = rows[0] if rows else {}
         physical = int(row.get("physical_rows") or 0)
+        source_min = row.get("source_min_date") if physical else None
+        source_max = row.get("source_max_date") if physical else None
         return {"symbol": ticker, "requested_start": str(start)[:10], "requested_end": str(end)[:10],
-                "source_min_date": row.get("source_min_date"), "source_max_date": row.get("source_max_date"),
+                "source_min_date": source_min, "source_max_date": source_max,
                 "physical_rows": physical, "unique_contract_keys": int(row.get("unique_contract_keys") or 0),
                 "put_rows": int(row.get("put_rows") or 0), "call_rows": int(row.get("call_rows") or 0),
                 "status": "READY" if physical else "BLOCKED",
