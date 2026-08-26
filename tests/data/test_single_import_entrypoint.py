@@ -54,3 +54,11 @@ def test_no_script_can_write_canonical_without_explicit_entrypoint_policy():
         if path.name in fixture_only or not any(token in source for token in tokens):
             continue
         assert "reject_legacy_import_entrypoint" in source, path.name
+
+
+def test_data_package_exports_only_control_plane_import_api():
+    import pcs.data as data
+    for legacy in ("import_daily_snapshot", "import_option_archives", "ensure_daily_data", "update_live_daily"):
+        assert legacy not in data.__all__
+    for public in ("get_market_data_status", "ensure_market_data", "require_market_data"):
+        assert public in data.__all__
