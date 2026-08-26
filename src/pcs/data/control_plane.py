@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -76,6 +76,13 @@ class MarketDataResult:
     imported_periods: tuple[str, ...] = ()
     repaired_periods: tuple[str, ...] = ()
     blocked_periods: tuple[str, ...] = ()
+    initial_plan: dict[str, Any] = field(default_factory=dict)
+    selected_source: tuple[str, ...] = ()
+    provider_coverage: tuple[dict[str, Any], ...] = ()
+    import_outcomes: tuple[dict[str, Any], ...] = ()
+    promoted_partitions: tuple[dict[str, Any], ...] = ()
+    blocked_partitions: tuple[dict[str, Any], ...] = ()
+    final_canonical_status: str = ""
     def to_dict(self): return asdict(self)
 
 class MarketDataSourceAdapter(Protocol):
@@ -581,16 +588,26 @@ class MarketDataControlPlane:
                 return {"status": ImportStatus.BLOCKED.value, "reason_codes": ["AUTHORIZED_SOURCE_QUOTE_GAPS"], "source_status": "AUTHORIZED_SOURCE_QUOTE_GAP", "missing_keys": sorted(wanted - actual)}
             repair = self.repair_exact_option_quotes(req.symbol, selected, source_version="clickhouse_exact_key_auto_repair", expected_keys=list(wanted))
             return {"status": ImportStatus.READY.value, "source_status": "CANONICAL_INGESTION_GAP_AUTO_REPAIRABLE", "repair": repair, "repaired_keys": sorted(actual)}
-        result = self.get_market_data_status(requirements, symbol)
+        result = self.get_market_data_status(req)
         if result.status == ImportStatus.PARTIAL:
             if importer:
-                importer(self.plan(requirements, symbol))
+                importer(self.plan(req))
             else:
                 # Default execution is still routed through the registered
                 # repository importers; no provider is guessed by callers.
                 coordinator = ImportCoordinator(self, handlers=default_import_handlers(access=self.access))
-                coordinator.run(requirements, symbol)
-            result = self.get_market_data_status(requirements, symbol)
+                envelope = coordinator.run(req)
+                result = self.get_market_data_status(req)
+                payload = envelope.get("result", {})
+                return replace(result,
+                    initial_plan=payload.get("initial_plan", {}),
+                    selected_source=tuple(payload.get("selected_source", ())),
+                    provider_coverage=tuple(payload.get("provider_coverage", ())),
+                    import_outcomes=tuple(payload.get("import_outcomes", envelope.get("outcomes", ()))),
+                    promoted_partitions=tuple(payload.get("promoted_partitions", ())),
+                    blocked_partitions=tuple(payload.get("blocked_partitions", ())),
+                    final_canonical_status=payload.get("final_canonical_status", result.status))
+            result = self.get_market_data_status(req)
         return result
     def require_market_data(self, symbol, requirements):
         req = requirements if isinstance(requirements, MarketDataRequirements) else MarketDataRequirements.from_mapping(symbol, requirements)
