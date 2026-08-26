@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 import hashlib
 import json
+import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -248,6 +250,38 @@ class ImportEngine:
             if path.exists(): path.replace(quarantine.with_suffix(".parquet"))
             return {"status": "QUARANTINED", "reason_codes": [type(exc).__name__], "detail": str(exc), "request_id": staged["request_id"]}
 
+    def promote_batch(self, staged: list[dict[str, Any]], *, source_version: str):
+        """Promote a set of partitions as one recoverable transaction."""
+        if not staged:
+            return []
+        symbol = str(staged[0]["symbol"]).upper()
+        dataset = str(staged[0]["dataset"])
+        if any(str(item["symbol"]).upper() != symbol or str(item["dataset"]) != dataset for item in staged):
+            return [{"status": "QUARANTINED", "reason_codes": ["BATCH_TICKER_OR_DATASET_MISMATCH"]}]
+        canonical_root = Path(self.access.parquet_root) / dataset / f"symbol={symbol}"
+        files = [self.access.manifest_path, self.access.provenance_manifest_path,
+                 self.catalog.path, self.ledger.path]
+        with tempfile.TemporaryDirectory(prefix="pcs_import_txn_") as backup:
+            backup_root = Path(backup)
+            file_state = []
+            for index, path in enumerate(files):
+                path = Path(path); copy = backup_root / f"file_{index}"
+                if path.exists(): shutil.copy2(path, copy)
+                file_state.append((path, copy, path.exists()))
+            tree_backup = backup_root / "canonical"
+            tree_exists = canonical_root.exists()
+            if tree_exists: shutil.copytree(canonical_root, tree_backup)
+            results = [self.promote(item, source_version=source_version) for item in staged]
+            if all(item.get("status") == "IMPORTED" for item in results):
+                return results
+            if canonical_root.exists(): shutil.rmtree(canonical_root)
+            if tree_exists: shutil.copytree(tree_backup, canonical_root)
+            for path, copy, existed in file_state:
+                if existed: shutil.copy2(copy, path)
+                elif path.exists(): path.unlink()
+            return [{"status": "QUARANTINED", "reason_codes": ["BATCH_PROMOTION_ROLLED_BACK"],
+                     "partitions": results}]
+
 
 def repair_daily_session(symbol: str, target_date: str, window: pd.DataFrame, *, access=None,
                          source_version="daily_safety_window") -> dict[str, Any]:
@@ -417,7 +451,7 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                 partition = f"year={int(year)}/quarter={int(quarter)}"
                 staged.append(engine.stage(part.reset_index(drop=True), symbol=req.symbol,
                     dataset="options", partition=partition, source_id="clickhouse_options"))
-            promotions = [engine.promote(item, source_version=f"clickhouse:{coverage.get('source_table')}:{req.required_start}:{req.required_end}") for item in staged]
+            promotions = engine.promote_batch(staged, source_version=f"clickhouse:{coverage.get('source_table')}:{req.required_start}:{req.required_end}")
             blocked = [x for x in promotions if x.get("status") != "IMPORTED"]
             return {"status": "BLOCKED" if blocked else "IMPORTED", "provider_coverage": coverage,
                     "selected_source": "clickhouse_options", "promoted_partitions": promotions,

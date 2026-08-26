@@ -214,6 +214,30 @@ def test_promotion_failure_quarantines_and_removes_new_canonical(tmp_path):
     assert not list((tmp_path / "parquet").rglob("*.parquet"))
 
 
+def test_batch_promotion_rolls_back_all_partitions_on_late_failure(tmp_path):
+    from pcs.data.access import PCSDataAccess
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    engine = ImportEngine(access=access, staging_root=tmp_path / "staging",
+                           catalog=CanonicalDataCatalog(tmp_path / "catalog.parquet"),
+                           ledger=RequestLedger(tmp_path / "ledger.jsonl"))
+    def frame(date):
+        return pd.DataFrame({"symbol": ["TEST"], "date": pd.to_datetime([date]),
+            "open": [1.], "high": [1.], "low": [1.], "close": [1.], "volume": [1.]})
+    first = engine.stage(frame("2025-01-02"), symbol="TEST", dataset="daily", partition="year=2025", source_id="fixture")
+    second = engine.stage(frame("2025-04-02"), symbol="TEST", dataset="daily", partition="year=2025", source_id="fixture")
+    original = engine.promote
+    calls = {"count": 0}
+    def fail_late(item, *, source_version):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            return {"status": "QUARANTINED", "reason_codes": ["TEST_LATE_FAILURE"]}
+        return original(item, source_version=source_version)
+    engine.promote = fail_late
+    result = engine.promote_batch([first, second], source_version="fixture-v1")
+    assert result[0]["reason_codes"] == ["BATCH_PROMOTION_ROLLED_BACK"]
+    assert not list((tmp_path / "parquet").rglob("*.parquet"))
+
+
 def test_public_two_argument_status_contract(tmp_path):
     from pcs.data.access import PCSDataAccess
     from pcs.data.control_plane import get_market_data_status, ensure_market_data
