@@ -298,4 +298,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from .import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

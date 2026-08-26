@@ -29,5 +29,5 @@ def loader(sym: str, year: int, quarter: int):
         return pq.ParquetFile(path).read().to_pandas()[OPTION_FIELDS]
 
 if __name__ == "__main__":
-    print(onboard_ticker_to_readiness(symbol, periods, loader, adapter=adapter, access=access,
-        dataset="options", workers=8, resume=True).to_dict())
+    from pcs.data.import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()
