@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
+from pcs.data.control_plane import require_market_data
 from pcs.data.executable_boundary import resolve_executable_start_date
 from pcs.entry.contract_v2 import nearby_strikes, later_expirations
 from pcs.entry.gates import EventGate, LiquidityGate, RegimeGate, SafeStrikeGate, CreditEfficiencyGate, DTEGate
@@ -128,6 +129,10 @@ def run_current_strategy_replay(spec, *, output_dir: str | Path = "research_outp
     # setup eligibility; delayed dates are checked only by execution gates.
     track_a_execution_only = bool(spec.signal_definition.get("track_a_execution_only", False))
     access = data_access or PCSDataAccess()
+    require_market_data(spec.ticker, {"start": spec.date_range.get("start"),
+                                      "end": spec.date_range.get("end"),
+                                      "datasets": {"daily": {"required": True}, "options": {"required": True}},
+                                      "consumer": "CURRENT_STRATEGY_REPLAY"}, access=access)
     assert_research_ready(spec.ticker, access=access)
     configured_start = pd.Timestamp(spec.date_range.get("start")) if spec.date_range.get("start") else None
     boundary_start = pd.Timestamp(resolve_executable_start_date(spec.ticker, access.source_routes))

@@ -11,6 +11,7 @@ import json
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
+from pcs.data.control_plane import require_market_data
 from pcs.strategies.research_templates.catalog import (
     GENERAL_PCS_RESEARCH_STRATEGIES, Evaluation, evaluate,
 )
@@ -30,6 +31,9 @@ def evaluate_general_pcs(ticker: str, train_start: str = "2018-01-01",
     """
     if mode not in {"FIXED", "ADAPTIVE"}: raise ValueError(f"UNKNOWN_STRATEGY_MODE:{mode}")
     access = data_access or PCSDataAccess.canonical()
+    require_market_data(ticker, {"start": train_start, "end": train_end,
+                                 "datasets": {"daily": {"required": True}, "options": {"required": True}},
+                                 "consumer": "GENERAL_PCS"}, access=access)
     daily = access.read_prices(ticker, train_start, train_end)
     if mode == "ADAPTIVE":
         frozen = load_frozen_strategy_config(ticker)

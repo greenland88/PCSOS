@@ -6,6 +6,7 @@ from typing import Any
 import json
 import pandas as pd
 from pcs.data.access import PCSDataAccess, DataAccessError, DataQualityError
+from pcs.data.control_plane import require_market_data
 from pcs.strategies.research_templates.catalog import get_strategy
 
 @dataclass(frozen=True)
@@ -32,6 +33,9 @@ def _features(d: pd.DataFrame, return_windows: tuple[int, ...] = ()) -> pd.DataF
 def run_transfer(request: TransferRequest, *, data_access: PCSDataAccess | None = None, output_dir: str | Path | None = None) -> dict[str, Any]:
     spec = get_strategy(request.strategy_id); ticker = request.ticker.upper(); access = data_access or PCSDataAccess()
     try:
+        require_market_data(ticker, {"start": request.train_start, "end": request.train_end,
+                                     "datasets": {"daily": {"required": True}, "options": {"required": True}},
+                                     "consumer": "STRATEGY_TRANSFER"}, access=access)
         daily = access.read_prices(ticker, request.train_start, request.train_end)
         access.validate_schema(daily, "daily"); access.validate_coverage(daily, ticker, request.train_start, request.train_end, "date")
         if daily.empty or daily.date.duplicated().any(): raise DataQualityError("daily duplicate keys or empty coverage")

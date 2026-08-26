@@ -4,6 +4,7 @@ import argparse, csv, json, time
 from pathlib import Path
 import pandas as pd
 from pcs.data.access import PCSDataAccess
+from pcs.data.control_plane import require_market_data
 from pcs.research.credit_stop import run_backtest, summarize
 from pcs.research.controlled_analysis import controlled_groups, matched_aggregate
 from pcs.research.backend import resolve_option_backend
@@ -36,6 +37,12 @@ def main(argv=None):
     # explicitly here before any research data is loaded.
     assert_research_ready(args.symbol)
     assert_research_ready(args.benchmark)
+    require_market_data(args.symbol, {"start": args.start_date, "end": args.end_date,
+                                      "datasets": {"daily": {"required": True}, "options": {"required": True}},
+                                      "consumer": "PCS_BACKTEST"})
+    require_market_data(args.benchmark, {"start": args.start_date, "end": args.end_date,
+                                         "datasets": {"daily": {"required": True}},
+                                         "consumer": "PCS_BACKTEST_BENCHMARK"})
     print(json.dumps({"backend_requested":args.backend,"backend_resolved":backend}),flush=True)
     run_dir = Path(args.output_dir) / args.run_label; run_dir.mkdir(parents=True, exist_ok=True)
     access = PCSDataAccess()
