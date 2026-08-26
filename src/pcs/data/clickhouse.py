@@ -167,6 +167,33 @@ class PCSClickHouseClient:
                 "distinct_trade_dates": row.get("uniqExact(TradeDate)", 0),
                 "status": "API_COMPLETE"}
 
+    def fetch_options_coverage(self, symbol: str, start: str, end: str,
+                               table: str = "firstrate.options_kline_1d") -> dict[str, Any]:
+        import json
+        ticker = str(symbol).strip().upper()
+        escaped = ticker.replace("'", "''")
+        sql = ("SELECT min(TradeDate) AS source_min_date, max(TradeDate) AS source_max_date, "
+               "count() AS physical_rows, uniqExact(tuple(TradeDate, ExpiryDate, Strike, CallPut)) AS unique_contract_keys, "
+               "countIf(lower(CallPut) IN ('p','put')) AS put_rows, countIf(lower(CallPut) IN ('c','call')) AS call_rows "
+               f"FROM {table} WHERE Symbol = '{escaped}' AND TradeDate BETWEEN '{str(start)[:10]}' AND '{str(end)[:10]}' FORMAT JSONEachRow")
+        try:
+            diag = self.query(sql, ticker=ticker, operation="fetch_options_coverage")
+        except ClickHouseError as exc:
+            message = str(exc).lower()
+            reason = ("CLICKHOUSE_SOURCE_TABLE_UNAVAILABLE" if "unknown table" in message or "not exist" in message
+                      else "CLICKHOUSE_CONNECTION_FAILED")
+            return {"symbol": ticker, "requested_start": str(start)[:10], "requested_end": str(end)[:10],
+                    "status": "BLOCKED", "reason_codes": [reason], "source_table": table, "detail": str(exc)}
+        rows = [json.loads(line) for line in diag.response_body.splitlines() if line.strip()]
+        row = rows[0] if rows else {}
+        physical = int(row.get("physical_rows") or 0)
+        return {"symbol": ticker, "requested_start": str(start)[:10], "requested_end": str(end)[:10],
+                "source_min_date": row.get("source_min_date"), "source_max_date": row.get("source_max_date"),
+                "physical_rows": physical, "unique_contract_keys": int(row.get("unique_contract_keys") or 0),
+                "put_rows": int(row.get("put_rows") or 0), "call_rows": int(row.get("call_rows") or 0),
+                "status": "READY" if physical else "BLOCKED",
+                "reason_codes": [] if physical else ["AUTHORIZED_SOURCE_NO_ROWS"], "source_table": table}
+
     def _fetch_options(self, symbol: str, predicate: str, *, operation: str,
                        table: str = "firstrate.options_kline_1d"):
         import tempfile

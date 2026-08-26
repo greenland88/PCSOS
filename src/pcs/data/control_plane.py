@@ -273,15 +273,22 @@ class ImportCoordinator:
                 outcomes.append({"dataset": action["dataset"], "status": "BLOCKED", "reason_codes": ["IMPORT_HANDLER_NOT_REGISTERED"]}); continue
             try:
                 value = handler(plan)
-                outcomes.append({"dataset": action["dataset"], "status": "IMPORTED", "result": value})
+                status = "IMPORTED" if not isinstance(value, dict) or value.get("status") in {"IMPORTED", "READY", "ALREADY_COMPLETE"} else "BLOCKED"
+                outcomes.append({"dataset": action["dataset"], "status": status, "result": value})
             except Exception as exc:
                 outcomes.append({"dataset": action["dataset"], "status": "BLOCKED", "reason_codes": [type(exc).__name__], "detail": str(exc)})
-        final = self.control_plane.get_market_data_status(plan.requirements)
-        payload = final.to_dict()
+        try:
+            final = self.control_plane.get_market_data_status(plan.requirements)
+            payload = final.to_dict()
+        except Exception as exc:
+            payload = {"status": "BLOCKED", "symbol": plan.requirements.symbol,
+                       "requirements": asdict(plan.requirements),
+                       "reason_codes": ["FINAL_CANONICAL_STATUS_UNAVAILABLE"],
+                       "detail": str(exc)}
         payload["imported_periods"] = tuple(x["dataset"] for x in outcomes if x["status"] == "IMPORTED")
         payload["blocked_periods"] = tuple(x["dataset"] for x in outcomes if x["status"] == "BLOCKED")
         payload["stages"] = {**payload.get("stages", {}), **{x["dataset"]: x["status"] for x in outcomes}}
-        return {"status": final.status, "result": payload, "outcomes": outcomes}
+        return {"status": payload.get("status", "BLOCKED"), "result": payload, "outcomes": outcomes}
 
 
 def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
@@ -318,6 +325,13 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
     def options(plan):
         req = plan.requirements if hasattr(plan, "requirements") else plan
         current_client = kwargs.get("clickhouse_client")
+        if current_client is None:
+            import os
+            password = os.getenv("CLICKHOUSE_PASSWORD")
+            if not password:
+                return {"status": "BLOCKED", "reason_codes": ["CLICKHOUSE_CREDENTIALS_MISSING"], "selected_source": "clickhouse_options"}
+            from .clickhouse import PCSClickHouseClient
+            current_client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", "hisdata230"), password)
         if current_client is not None and req.required_start and req.required_end:
             from .incremental_update import update_ticker
             start = req.required_start
@@ -330,16 +344,21 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                 pass
             if str(start) > str(plan.requirements.required_end):
                 return {"status": "REUSED", "reason_codes": ["CURRENT_OPTIONS_ALREADY_COVERED"], "requested_start": start}
+            coverage = current_client.fetch_options_coverage(req.symbol, str(start), req.required_end)
+            if coverage.get("status") != "READY":
+                return {**coverage, "selected_source": "clickhouse_options"}
             frame = current_client.fetch_options_range(req.symbol, str(start), req.required_end)
+            if frame.empty:
+                return {**coverage, "status": "BLOCKED", "reason_codes": ["AUTHORIZED_SOURCE_NO_ROWS"], "selected_source": "clickhouse_options"}
             # ClickHouse may repeat an identical quote row in the current
             # source.  Exact full-row duplicates are safe to remove under the
             # canonical policy; different payloads for one contract identity
             # remain fail-closed in PCSDataAccess.validate_schema().
             frame = frame.drop_duplicates(keep="last").reset_index(drop=True)
-            return update_ticker(req.symbol, options_frame=frame,
+            return {"status": "IMPORTED", "provider_coverage": coverage, "selected_source": "clickhouse_options", "promotion": update_ticker(req.symbol, options_frame=frame,
                 parquet_root=kwargs.get("parquet_root", "data/parquet"),
                 options_manifest_path=options_manifest_path,
-                source_version=f"clickhouse_incremental:{req.required_start}:{req.required_end}")
+                source_version=f"clickhouse_incremental:{req.required_start}:{req.required_end}")}
         loader = kwargs.get("clickhouse_loader")
         periods = kwargs.get("periods")
         if loader is not None and periods:
@@ -348,7 +367,7 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                 adapter=HistoricalTxtZipAdapter(archive_root or r"K:\BaiduNetdiskDownload\USDailyOptions"),
                 access=kwargs.get("access") or PCSDataAccess.canonical(),
                 workers=kwargs.get("workers", 4), resume=True).__dict__
-        return {"status": "BLOCKED", "reason_codes": ["CLICKHOUSE_LOADER_REQUIRED", "LEGACY_IMPORT_FALLBACK_DISABLED"], "detail": "Control plane cannot bypass overlap, staging, manifest, provenance, and readiness validation."}
+        return {"status": "BLOCKED", "reason_codes": ["OPTIONS_REQUEST_WINDOW_REQUIRED"], "selected_source": "clickhouse_options"}
 
     return {"daily": daily, "options": options,
             PlanAction.REPAIR_DAILY_FROM_GATEWAY.value: daily,
