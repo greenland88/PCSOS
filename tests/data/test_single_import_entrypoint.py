@@ -40,3 +40,17 @@ def test_legacy_canonical_mutators_are_explicitly_closed():
     for name in scripts:
         source = (root / "scripts" / name).read_text(encoding="utf-8")
         assert "reject_legacy_import_entrypoint" in source, name
+
+
+def test_no_script_can_write_canonical_without_explicit_entrypoint_policy():
+    root = Path(__file__).parents[2]
+    # This acceptance harness writes only into a temporary fixture store; it
+    # is not a production market-data entrypoint.
+    fixture_only = {"run_pcs_lifecycle_acceptance.py"}
+    tokens = ("access.write_partition(", "access.write(", "access.update_manifest(",
+              "access.record_provenance(")
+    for path in (root / "scripts").glob("*.py"):
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        if path.name in fixture_only or not any(token in source for token in tokens):
+            continue
+        assert "reject_legacy_import_entrypoint" in source, path.name
