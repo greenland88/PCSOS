@@ -32,6 +32,20 @@ class DataQualityError(DataAccessError):
     """Canonical data violates identity, schema, or quote-quality rules."""
 
 
+class CanonicalFileAccessError(DataQualityError):
+    """Registered canonical files exist but cannot be opened by this process."""
+
+    reason_code = "CANONICAL_FILE_ACCESS_DENIED"
+
+    def __init__(self, dataset: str, symbol: str, failures: list[dict[str, str]]):
+        self.dataset = str(dataset)
+        self.symbol = str(symbol).upper()
+        self.failures = tuple(dict(item) for item in failures)
+        super().__init__(
+            f"{self.reason_code}:{self.dataset}:{self.symbol}:{list(self.failures)[:3]}"
+        )
+
+
 @dataclass(frozen=True)
 class SourceSpec:
     dataset: str
@@ -369,9 +383,7 @@ class PCSDataAccess:
                 except (OSError, PermissionError) as exc:
                     unreadable.append({"path": str(candidate), "error": str(exc)})
             if unreadable:
-                raise DataQualityError(
-                    f"canonical option partition unreadable for {symbol}: {unreadable[:3]}"
-                )
+                raise CanonicalFileAccessError("options", symbol, unreadable)
             # Pass an explicit file list to DuckDB; this is the authoritative
             # discovery result and cannot be re-expanded recursively.
             path = Path(";".join(str(x) for x in sorted(active_files)))
@@ -589,9 +601,32 @@ class PCSDataAccess:
         finally:
             con.close()
         quarantine_files = list((self.parquet_root / "quarantine" / spec.dataset / f"symbol={str(symbol).upper()}").rglob("*.parquet"))
+        if start_date is not None or end_date is not None:
+            q_start = pd.Timestamp(start_date or spec.first_date).to_period("Q")
+            q_end = pd.Timestamp(end_date or spec.last_date).to_period("Q")
+            quarantine_files = [
+                path for path in quarantine_files
+                if any(
+                    part.startswith("year=") and pd.Period(
+                        f"{part.split('=', 1)[1]}Q{quarter.split('=', 1)[1]}"
+                    ) in set(pd.period_range(q_start, q_end, freq="Q"))
+                    for part in [path.parent.parent.name]
+                    for quarter in [path.parent.name]
+                )
+            ]
         quarantined_rows = 0; reason_breakdown = {}; affected_dates = set(); affected_partitions = set()
         for path in quarantine_files:
-            qf = pd.read_parquet(path, columns=["reason_code", "trade_date", "partition"])
+            try:
+                qf = pd.read_parquet(path, columns=["reason_code", "trade_date", "partition"])
+            except (OSError, PermissionError) as exc:
+                # Quarantine evidence is diagnostic and must not make a
+                # readable executable canonical population look unavailable.
+                # Preserve the access failure as an audit reason instead.
+                reason_breakdown["QUARANTINE_FILE_ACCESS_DENIED"] = int(
+                    reason_breakdown.get("QUARANTINE_FILE_ACCESS_DENIED", 0) + 1
+                )
+                affected_partitions.add(str(path.parent.relative_to(self.parquet_root)))
+                continue
             quarantined_rows += len(qf)
             reason_breakdown.update({k: int(reason_breakdown.get(k, 0) + v) for k, v in qf["reason_code"].value_counts().items()})
             affected_dates.update(str(x) for x in qf["trade_date"].dropna().unique())
@@ -672,9 +707,35 @@ class PCSDataAccess:
             tmp.unlink(missing_ok=True)
             raise DataQualityError("row-count verification failed after write")
         os.replace(tmp, path)
+        # Publish the partition only after the final NTFS object is readable
+        # by the current PCS process identity.  A rename alone is not proof
+        # that a private/protected ACL did not follow the file into canonical.
+        try:
+            self._assert_canonical_file_readable(path, dataset, symbol)
+        except CanonicalFileAccessError:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         if update_manifest:
             self.update_manifest(dataset, symbol, checked, path, source_version, partition, replace_existing=replace_manifest)
         return path
+
+    @staticmethod
+    def _assert_canonical_file_readable(path: Path, dataset: str, symbol: str) -> None:
+        """Fail closed when the final canonical file cannot be opened."""
+        try:
+            with Path(path).open("rb"):
+                pass
+        except (OSError, PermissionError) as exc:
+            raise CanonicalFileAccessError(str(dataset), str(symbol), [{
+                "path": str(Path(path).resolve()),
+                "operation": "open(rb)",
+                "errno": str(getattr(exc, "errno", "")),
+                "winerror": str(getattr(exc, "winerror", "")),
+                "error": str(exc),
+            }]) from exc
 
     def append(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str) -> Path:
         if (self.parquet_root / dataset / f"symbol={self._symbol(symbol)}" / partition).exists():

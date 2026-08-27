@@ -111,7 +111,9 @@ def main() -> None:
         "ORDER BY TradeDate, Symbol, ExpiryDate, Strike FORMAT Parquet"
     )
     sync_timestamp = datetime.now(timezone.utc).isoformat()
-    with tempfile.TemporaryDirectory(prefix="pcs_clickhouse_sync_") as temp_dir:
+    shared_staging = Path("data/staging/clickhouse_sync")
+    shared_staging.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pcs_clickhouse_sync_", dir=shared_staging) as temp_dir:
         source_path = Path(temp_dir) / "source.parquet"
         _query(args.host, user, password, sql, source_path)
         source_hash = _sha256(source_path)

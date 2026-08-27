@@ -16,13 +16,18 @@ def test_general_family_contains_all_registered_archetypes():
     assert len(get_strategy_family("GENERAL_PCS")) == 5
 
 
-def test_overlapping_signals_preserve_attribution_without_duplicate_trade_policy():
+def test_overlapping_signals_preserve_attribution_without_duplicate_trade_policy(monkeypatch):
     class FakeAccess:
+        def resolve_source(self, dataset, symbol, start=None, end=None):
+            from pcs.data.access import SourceSpec
+            return SourceSpec(dataset, symbol, "fixture", "fixture", "2020-01-01", "2026-01-01", 220, "fixture-v1")
+
         def read_prices(self, ticker, start, end):
             close = pd.Series(range(100, 320), dtype=float)
             volume = pd.Series(range(1000, 1220), dtype=float)
             return pd.DataFrame({"symbol": [ticker] * 220, "date": pd.date_range("2020-01-01", periods=220, freq="D"),
                                  "open": close, "high": close + 1, "low": close - 1, "close": close, "volume": volume})
+    monkeypatch.setattr("pcs.research.general_pcs_runner.require_market_data", lambda *args, **kwargs: None)
     result = evaluate_general_pcs("META", data_access=FakeAccess())
     assert set(result["strategies"]) == set(GENERAL_PCS_RESEARCH_STRATEGIES)
     assert result["economic_trade_policy"].startswith("one canonical selected trade")
@@ -37,10 +42,11 @@ def test_general_replay_passes_injected_access_to_research_runner(monkeypatch, t
             volume = pd.Series(range(1000, 1220), dtype=float)
             return pd.DataFrame({"symbol": [ticker] * 220, "date": pd.date_range("2020-01-01", periods=220, freq="D"),
                                  "open": close, "high": close + 1, "low": close - 1, "close": close, "volume": volume})
-        def resolve_source(self, dataset, ticker):
+        def resolve_source(self, dataset, ticker, start=None, end=None):
             from pcs.data.access import SourceSpec
             return SourceSpec("options_v2", ticker, "fixture", "fixture", "2020-01-01", "2026-01-01", 1, "fixture-v1")
     access = FakeAccess(); seen = {}
+    monkeypatch.setattr(module, "require_market_data", lambda *args, **kwargs: None)
     class FakeRunner:
         def __init__(self, spec, *, output_dir): self.spec = spec
         def execute_current_strategy_replay(self, *, data_access=None):

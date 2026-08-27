@@ -1,4 +1,5 @@
-from pcs.data.control_plane import CanonicalDataCatalog, ImportCoordinator, ImportEngine, MarketDataControlPlane, MarketDataRequirements, PlanAction, RequestLedger, SourceResolver, repair_daily_session
+from pcs.data.control_plane import CanonicalDataCatalog, CoveragePlan, ImportCoordinator, ImportEngine, MarketDataControlPlane, MarketDataRequirements, PlanAction, RequestLedger, SourceResolver, repair_daily_session
+from pcs.data.access import CanonicalFileAccessError
 import pandas as pd
 
 
@@ -36,6 +37,19 @@ def test_registered_adapter_can_be_loaded():
     assert adapter.__name__ == "MassiveCompatibleClient"
 
 
+def test_palantir_event_adapter_requires_and_returns_pit_evidence():
+    from pcs.data.palantir_events import RELEASES, fetch_pltr_earnings_events
+    def fetcher(url):
+        announced, event, slug = next(row for row in RELEASES if row[2] in url)
+        event_text = pd.Timestamp(event).strftime("%B %d, %Y").replace(" 0", " ")
+        return f"published {pd.Timestamp(announced).strftime('%m/%d/%Y')} event {event_text}"
+    frame = fetch_pltr_earnings_events(fetcher=fetcher)
+    assert len(frame) == 13
+    assert (pd.to_datetime(frame.event_asof, utc=True).dt.tz_localize(None) <
+            pd.to_datetime(frame.event_date)).all()
+    assert set(frame.event_type) == {"EARNINGS"}
+
+
 def test_enabled_registry_adapters_pass_contract_validation():
     results = SourceResolver().validate_registry()
     assert results and all(item["status"] == "READY" for item in results)
@@ -49,6 +63,60 @@ def test_status_is_machine_readable_and_fail_closed(tmp_path):
     assert result.status == "PARTIAL"
     assert result.module == "pcs.data.control_plane"
     assert result.coverage_plan["actions"][0]["action"] == PlanAction.REPAIR_DAILY_FROM_GATEWAY
+
+
+def test_existing_unreadable_canonical_file_is_permission_repair_not_download(tmp_path):
+    path = tmp_path / "parquet" / "options" / "symbol=QQQ" / "year=2020" / "quarter=4" / "q.parquet"
+    path.parent.mkdir(parents=True)
+    path.touch()
+
+    class Access:
+        parquet_root = tmp_path / "parquet"
+        def resolve_source(self, dataset, symbol, start=None, end=None):
+            raise CanonicalFileAccessError(dataset, symbol, [{"path": str(path), "error": "Access denied"}])
+
+    result = MarketDataControlPlane(access=Access()).get_market_data_status(
+        MarketDataRequirements("QQQ", "2020-10-20", "2023-12-31", ("options",)))
+    action = result.coverage_plan["actions"][0]
+    assert result.reason_codes == ("CANONICAL_FILE_ACCESS_DENIED",)
+    assert action["action"] == PlanAction.REPAIR_CANONICAL_FILE_ACCESS
+    assert action["selected_sources"] == []
+
+
+def test_permission_action_dispatches_before_generic_options_importer(tmp_path):
+    seen = []
+    class ControlPlane:
+        access = type("Access", (), {"parquet_root": tmp_path})()
+        def plan(self, requirements, symbol=None):
+            req = MarketDataRequirements("QQQ", datasets=("options",))
+            return CoveragePlan(req, {}, ({"dataset": "options", "action": PlanAction.REPAIR_CANONICAL_FILE_ACCESS.value},))
+        def get_market_data_status(self, requirements):
+            raise RuntimeError("expected synthetic final status failure")
+    handlers = {
+        "options": lambda plan: seen.append("download"),
+        PlanAction.REPAIR_CANONICAL_FILE_ACCESS.value: lambda plan: seen.append("acl"),
+    }
+    ImportCoordinator(ControlPlane(), handlers=handlers).run({})
+    assert seen == ["acl"]
+
+
+def test_failed_permission_repair_surfaces_owner_blocker_without_provider(tmp_path, monkeypatch):
+    path = tmp_path / "parquet" / "options" / "symbol=QQQ" / "q.parquet"
+    path.parent.mkdir(parents=True)
+    path.touch()
+    class Access:
+        parquet_root = tmp_path / "parquet"
+        def resolve_source(self, dataset, symbol, start=None, end=None):
+            raise CanonicalFileAccessError(dataset, symbol, [{"path": str(path), "error": "Access denied"}])
+    import pcs.data.control_plane as module
+    monkeypatch.setattr(module, "repair_canonical_file_access", lambda *args, **kwargs: {
+        "status": "BLOCKED", "reason_codes": ["CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER"],
+        "provider_download_attempted": False})
+    result = MarketDataControlPlane(access=Access()).ensure_market_data(
+        MarketDataRequirements("QQQ", datasets=("options",)))
+    assert result.status == "BLOCKED"
+    assert "CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER" in result.reason_codes
+    assert result.selected_source == ()
 
 
 def test_require_blocks_partial_data(tmp_path):
@@ -79,6 +147,24 @@ def test_import_engine_stages_outside_canonical_and_quarantines_failed_promotion
     assert str(tmp_path / "parquet") not in staged["path"]
     result = engine.promote(staged, source_version="fixture-v1")
     assert result["status"] == "IMPORTED"
+
+
+def test_canonical_write_permission_gate_fails_before_manifest_publish(tmp_path, monkeypatch):
+    from pcs.data.access import PCSDataAccess
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    frame = pd.DataFrame({"symbol": ["TEST"], "date": pd.to_datetime(["2025-01-02"]),
+                         "open": [1.], "high": [1.], "low": [1.], "close": [1.], "volume": [1.]})
+    def deny(path, dataset, symbol):
+        raise CanonicalFileAccessError(dataset, symbol, [{"path": str(path), "operation": "open(rb)"}])
+    monkeypatch.setattr(access, "_assert_canonical_file_readable", deny)
+    try:
+        access.write(frame, "daily", "TEST", "year=2025", source_version="fixture-v1")
+    except CanonicalFileAccessError as exc:
+        assert exc.reason_code == "CANONICAL_FILE_ACCESS_DENIED"
+    else:
+        raise AssertionError("unreadable canonical output must fail closed")
+    assert not list((tmp_path / "parquet").rglob("*.parquet"))
+    assert not (tmp_path / "manifest.csv").exists()
 
 
 def test_import_coordinator_dispatches_only_missing_dataset(tmp_path):

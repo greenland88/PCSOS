@@ -4,6 +4,9 @@ import uuid
 import hashlib
 import json
 import shutil
+import os
+import subprocess
+import stat
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -11,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 import pandas as pd
-from .access import PCSDataAccess, DataAccessError
+from .access import PCSDataAccess, DataAccessError, CanonicalFileAccessError
 
 class ImportStatus(StrEnum):
     READY = "READY"
@@ -26,6 +29,8 @@ class PlanAction(StrEnum):
     IMPORT_HISTORICAL_OPTIONS = "IMPORT_HISTORICAL_ZIP_WITH_CLICKHOUSE_OVERLAP"
     BLOCKED_NO_AUTHORIZED_SOURCE = "BLOCKED_NO_AUTHORIZED_SOURCE"
     REPAIR_EXACT_OPTIONS_GAP = "REPAIR_EXACT_OPTIONS_GAP"
+    REPAIR_CANONICAL_FILE_ACCESS = "REPAIR_CANONICAL_FILE_ACCESS"
+    IMPORT_PIT_EVENTS = "IMPORT_PIT_EVENTS"
 
 @dataclass(frozen=True)
 class MarketDataRequirements:
@@ -261,7 +266,9 @@ class ImportEngine:
         canonical_root = Path(self.access.parquet_root) / dataset / f"symbol={symbol}"
         files = [self.access.manifest_path, self.access.provenance_manifest_path,
                  self.catalog.path, self.ledger.path]
-        with tempfile.TemporaryDirectory(prefix="pcs_import_txn_") as backup:
+        transaction_root = self.staging_root / ".transactions"
+        transaction_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="pcs_import_txn_", dir=transaction_root) as backup:
             backup_root = Path(backup)
             file_state = []
             for index, path in enumerate(files):
@@ -304,6 +311,65 @@ def repair_daily_session(symbol: str, target_date: str, window: pd.DataFrame, *,
         return {"status": "BLOCKED", "reason_codes": [type(exc).__name__], "detail": str(exc), "target_date": str(target)}
 
 
+def repair_canonical_file_access(paths: list[str] | tuple[str, ...], *, canonical_root: str | Path) -> dict[str, Any]:
+    """Repair access to exact canonical files without contacting a provider.
+
+    Targets must already exist beneath the configured canonical root. On
+    Windows, ownership/ACL repair is attempted only after the ordinary chmod
+    path fails. A privilege failure remains a permission blocker and must not
+    be reclassified as a data gap.
+    """
+    root = Path(canonical_root).resolve()
+    repaired: list[str] = []
+    blocked: list[dict[str, Any]] = []
+    for raw in paths:
+        target = Path(raw)
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        target = target.resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            blocked.append({"path": str(target), "reason_code": "CANONICAL_PERMISSION_TARGET_OUTSIDE_ROOT"})
+            continue
+        if not target.exists():
+            blocked.append({"path": str(target), "reason_code": "CANONICAL_FILE_DISAPPEARED"})
+            continue
+        commands: list[dict[str, Any]] = []
+        try:
+            target.chmod(target.stat().st_mode | stat.S_IREAD | stat.S_IWRITE)
+        except OSError as exc:
+            commands.append({"command": "chmod", "returncode": None, "detail": str(exc)})
+        try:
+            with target.open("rb"):
+                pass
+            repaired.append(str(target))
+            continue
+        except OSError:
+            pass
+        if os.name == "nt":
+            username = os.environ.get("USERNAME", "")
+            attempts = (["takeown", "/f", str(target)],
+                        ["icacls", str(target), "/inheritance:e"],
+                        ["icacls", str(target), "/grant:r", f"{username}:(R)"])
+            for command in attempts:
+                completed = subprocess.run(command, capture_output=True, text=True, shell=False)
+                commands.append({"command": command[0], "returncode": completed.returncode,
+                                 "detail": (completed.stdout + completed.stderr).strip()})
+        try:
+            with target.open("rb"):
+                pass
+            repaired.append(str(target))
+        except OSError as exc:
+            blocked.append({"path": str(target),
+                            "reason_code": "CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER",
+                            "detail": str(exc), "attempts": commands})
+    return {"status": "AUTO_REPAIRED" if not blocked else "BLOCKED",
+            "reason_codes": [] if not blocked else ["CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER"],
+            "repaired_paths": repaired, "blocked_paths": blocked,
+            "provider_download_attempted": False}
+
+
 class ImportCoordinator:
     """Execute a plan through injected, already-authorized import handlers."""
     def __init__(self, control_plane=None, engine=None, handlers=None):
@@ -316,7 +382,10 @@ class ImportCoordinator:
         outcomes = []
         for action in plan.actions:
             if action["action"] == PlanAction.REUSE_CANONICAL.value: outcomes.append({"dataset": action["dataset"], "status": "REUSED"}); continue
-            handler = self.handlers.get(action["dataset"]) or self.handlers.get(action["action"])
+            # Action-specific remediation must win over a generic dataset
+            # importer. In particular, unreadable existing files may never be
+            # routed to the options download handler.
+            handler = self.handlers.get(action["action"]) or self.handlers.get(action["dataset"])
             if handler is None:
                 outcomes.append({"dataset": action["dataset"], "status": "BLOCKED", "reason_codes": ["IMPORT_HANDLER_NOT_REGISTERED"]}); continue
             try:
@@ -458,10 +527,56 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                     "reason_codes": ["PROMOTION_FAILED"] if blocked else []}
         return {"status": "BLOCKED", "reason_codes": ["OPTIONS_REQUEST_WINDOW_REQUIRED"], "selected_source": "clickhouse_options"}
 
-    return {"daily": daily, "options": options,
+    def events(plan):
+        req = plan.requirements if hasattr(plan, "requirements") else plan
+        resolver = kwargs.get("resolver") or SourceResolver(kwargs.get("source_registry_path"))
+        approved = {str(item.get("source_id")) for item in resolver.resolve("events")}
+        if "palantir_ir_earnings" not in approved:
+            return {"status": "BLOCKED", "reason_codes": ["SOURCE_NOT_AUTHORIZED"],
+                    "selected_source": "palantir_ir_earnings"}
+        if req.symbol != "PLTR":
+            return {"status": "BLOCKED", "reason_codes": ["EVENT_PIT_SOURCE_UNAVAILABLE"],
+                    "selected_source": "palantir_ir_earnings"}
+        from .palantir_events import fetch_pltr_earnings_events
+        frame = fetch_pltr_earnings_events(fetcher=kwargs.get("event_fetcher"))
+        frame = frame[(frame["event_date"] >= pd.Timestamp(req.required_start or frame.event_date.min())) &
+                      (frame["event_date"] <= pd.Timestamp(req.required_end or frame.event_date.max()))]
+        if frame.empty:
+            return {"status": "BLOCKED", "reason_codes": ["EVENT_PIT_SOURCE_NO_ROWS"],
+                    "selected_source": "palantir_ir_earnings"}
+        invalid = frame[pd.to_datetime(frame.event_asof, utc=True).dt.tz_localize(None) >=
+                        pd.to_datetime(frame.event_date)]
+        if not invalid.empty:
+            return {"status": "BLOCKED", "reason_codes": ["EVENT_PIT_TIMESTAMP_INVALID"],
+                    "selected_source": "palantir_ir_earnings"}
+        engine = ImportEngine(access=access)
+        staged = []
+        for year, part in frame.groupby(pd.to_datetime(frame.event_date).dt.year):
+            staged.append(engine.stage(part.reset_index(drop=True), symbol=req.symbol,
+                                       dataset="events", partition=f"year={int(year)}",
+                                       source_id="palantir_ir_earnings"))
+        promotions = engine.promote_batch(staged, source_version="palantir_ir_archive_pit_v1")
+        blocked = [x for x in promotions if x.get("status") != "IMPORTED"]
+        return {"status": "BLOCKED" if blocked else "IMPORTED",
+                "reason_codes": ["PROMOTION_FAILED"] if blocked else [],
+                "selected_source": "palantir_ir_earnings",
+                "promoted_partitions": promotions}
+
+    def canonical_file_access(plan):
+        failures = []
+        for item in plan.existing.values():
+            failures.extend(item.get("access_failures", ()))
+        return repair_canonical_file_access(
+            [str(item["path"]) for item in failures if item.get("path")],
+            canonical_root=access.parquet_root,
+        )
+
+    return {"daily": daily, "options": options, "events": events,
             PlanAction.REPAIR_DAILY_FROM_GATEWAY.value: daily,
             PlanAction.IMPORT_HISTORICAL_OPTIONS.value: options,
-            PlanAction.SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE.value: options}
+            PlanAction.SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE.value: options,
+            PlanAction.IMPORT_PIT_EVENTS.value: events,
+            PlanAction.REPAIR_CANONICAL_FILE_ACCESS.value: canonical_file_access}
 
 class MarketDataControlPlane:
     MODULE = "pcs.data.control_plane"; VERSION = "1.0"
@@ -471,8 +586,17 @@ class MarketDataControlPlane:
         out = {}
         for dataset in req.datasets:
             try:
-                spec = self.access.resolve_source(dataset, req.symbol, req.required_start, req.required_end)
+                # Event rows are sparse occurrences, not continuous market
+                # sessions. Their first/last event dates must not be treated
+                # as a coverage gap around an otherwise valid research range.
+                spec = self.access.resolve_source(dataset, req.symbol) if dataset == "events" else self.access.resolve_source(dataset, req.symbol, req.required_start, req.required_end)
                 out[dataset] = {"present": True, **spec.to_dict()}
+            except CanonicalFileAccessError as exc:
+                out[dataset] = {"present": True, "readable": False,
+                                "reason_code": exc.reason_code,
+                                "reason_codes": [exc.reason_code],
+                                "access_failures": list(exc.failures),
+                                "detail": str(exc)}
             except (DataAccessError, FileNotFoundError, ValueError) as exc:
                 # A source may exist while the requested window extends beyond
                 # its actual/listing boundary. Resolve identity without the
@@ -488,6 +612,12 @@ class MarketDataControlPlane:
                     if not (reasons and set(reasons) <= {"PRE_LISTING_NOT_REQUIRED"}):
                         payload["coverage_gap"] = str(exc)
                     out[dataset] = payload
+                except CanonicalFileAccessError as access_exc:
+                    out[dataset] = {"present": True, "readable": False,
+                                    "reason_code": access_exc.reason_code,
+                                    "reason_codes": [access_exc.reason_code],
+                                    "access_failures": list(access_exc.failures),
+                                    "detail": str(access_exc)}
                 except (DataAccessError, FileNotFoundError, ValueError):
                     out[dataset] = {"present": False, "reason_code": "DATASET_UNAVAILABLE", "detail": str(exc)}
         return out
@@ -498,7 +628,16 @@ class MarketDataControlPlane:
         for dataset in req.datasets:
             item = {"status": "UNKNOWN", "reason_codes": []}
             try:
-                frame = self.access.read(dataset, req.symbol, req.required_start, req.required_end)
+                if dataset == "events":
+                    frame = self.access.read(dataset, req.symbol)
+                    event_dates = pd.to_datetime(frame["event_date"])
+                    if req.required_start:
+                        frame = frame[event_dates >= pd.Timestamp(req.required_start)]
+                        event_dates = pd.to_datetime(frame["event_date"])
+                    if req.required_end:
+                        frame = frame[event_dates <= pd.Timestamp(req.required_end)]
+                else:
+                    frame = self.access.read(dataset, req.symbol, req.required_start, req.required_end)
                 if dataset == "daily":
                     required = {"symbol", "date", "open", "high", "low", "close", "volume"}
                     missing = sorted(required - set(frame.columns))
@@ -520,7 +659,7 @@ class MarketDataControlPlane:
                         if missing_sessions: item["reason_codes"].append("DAILY_SESSION_MISSING")
                     except Exception:
                         item["session_authority"] = "UNAVAILABLE"
-                else:
+                elif dataset == "options":
                     required = {"symbol", "trade_date", "expiration_date", "call_put", "strike", "bid", "ask"}
                     missing = sorted(required - set(frame.columns))
                     duplicate = int(frame.duplicated(["symbol", "trade_date", "expiration_date", "call_put", "strike"]).sum()) if not missing else 0
@@ -530,6 +669,19 @@ class MarketDataControlPlane:
                     if duplicate: item["reason_codes"].append("OPTION_EXACT_DUPLICATES")
                     if sides and "c" not in sides: item["reason_codes"].append("OPTION_CALL_SIDE_MISSING")
                     if sides and "p" not in sides: item["reason_codes"].append("OPTION_PUT_SIDE_MISSING")
+                elif dataset == "events":
+                    required = {"symbol", "event_type", "event_date", "event_asof", "source", "source_id"}
+                    missing = sorted(required - set(frame.columns))
+                    item.update({"row_count": len(frame), "missing_fields": missing})
+                    if missing:
+                        item["reason_codes"].append("EVENT_PIT_REQUIRED_FIELD_MISSING")
+                    elif frame[list(required)].isna().any().any():
+                        item["reason_codes"].append("EVENT_PIT_NULL_FIELD")
+                    elif (pd.to_datetime(frame.event_asof, utc=True).dt.tz_localize(None) >=
+                          pd.to_datetime(frame.event_date)).any():
+                        item["reason_codes"].append("EVENT_PIT_TIMESTAMP_INVALID")
+                else:
+                    item["reason_codes"].append("DATASET_VALIDATOR_NOT_REGISTERED")
                 item["status"] = "READY" if not item["reason_codes"] else "BLOCKED"
             except Exception as exc: item.update(status="BLOCKED", reason_codes=["DATASET_UNAVAILABLE"], detail=str(exc))
             report[dataset] = item
@@ -542,11 +694,18 @@ class MarketDataControlPlane:
                 actions.append({"dataset": dataset, "action": PlanAction.REPAIR_EXACT_OPTIONS_GAP.value,
                                 "reason": "exact execution quote keys require source-level probe"})
                 continue
+            if existing[dataset].get("reason_code") == "CANONICAL_FILE_ACCESS_DENIED":
+                actions.append({"dataset": dataset,
+                                "action": PlanAction.REPAIR_CANONICAL_FILE_ACCESS.value,
+                                "selected_sources": [],
+                                "reason": "registered canonical files exist but are unreadable"})
+                continue
             if existing[dataset]["present"] and "coverage_gap" not in existing[dataset]:
                 actions.append({"dataset": dataset, "action": PlanAction.REUSE_CANONICAL.value, "reason": "validated canonical source exists"})
             else:
                 sources = self.resolver.resolve(dataset)
                 if dataset == "daily": action = PlanAction.REPAIR_DAILY_FROM_GATEWAY if sources else PlanAction.BLOCKED_NO_AUTHORIZED_SOURCE
+                elif dataset == "events": action = PlanAction.IMPORT_PIT_EVENTS if sources else PlanAction.BLOCKED_NO_AUTHORIZED_SOURCE
                 elif sources and req.required_start:
                     # Historical quarters require the approved ZIP + ClickHouse
                     # overlap path; dates in the current calendar year use the
@@ -637,7 +796,19 @@ class MarketDataControlPlane:
                 envelope = coordinator.run(req)
                 result = self.get_market_data_status(req)
                 payload = envelope.get("result", {})
+                outcome_reasons = tuple(dict.fromkeys(
+                    code
+                    for outcome in envelope.get("outcomes", ())
+                    if outcome.get("status") == "BLOCKED"
+                    for code in (outcome.get("reason_codes", ()) or
+                                 outcome.get("result", {}).get("reason_codes", ()))
+                ))
+                permission_reasons = tuple(code for code in outcome_reasons
+                                           if code == "CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER")
                 return replace(result,
+                    status=ImportStatus.BLOCKED.value if permission_reasons else result.status,
+                    reason_codes=tuple(dict.fromkeys((*result.reason_codes, *permission_reasons))),
+                    remaining_blockers=tuple(dict.fromkeys((*result.remaining_blockers, *permission_reasons))),
                     initial_plan=payload.get("initial_plan", {}),
                     selected_source=tuple(payload.get("selected_source", ())),
                     provider_coverage=tuple(payload.get("provider_coverage", ())),
