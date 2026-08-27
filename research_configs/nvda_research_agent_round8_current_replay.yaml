@@ -1,0 +1,29 @@
+research_id: nvda_research_agent_round8_current_replay
+ticker: NVDA
+research_mode: CURRENT_STRATEGY_REPLAY
+hypothesis: Research-only replay of H004/H005 candidate dates after split-scale adjudication.
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition: {creates_new_entry_dates: true, purpose: descriptive_candidate_replay}
+entry_date_rule: {rule: research_only_h004_h005_predicate}
+date_range: {start: '2020-01-02', end: '2025-12-31'}
+split_policy: {train_end: '2023-12-31', validation_start: '2024-01-01', validation_end: '2025-12-31'}
+contract_selection_policy: {mode: RULE_SET, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: canonical_lifecycle_adapter, no_future_selection: true}
+frozen_parameters: {source_scale_factors: [40, 10, 1]}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false
+rules:
+  dte_min: 30
+  dte_max: 45
+  safe_strike_atr: 2.3
+  allowed_widths: [5, 10, 2]
+  width_mode: ALL
+  min_credit_width_ratio: 0.10
+  trend_gate: true
+  pullback_gate: true
+  support_gate: true
+  regime_gate: false
+  event_gate: true
+  liquidity_gate: true
+  predictability_gate: true

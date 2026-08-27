@@ -8,8 +8,11 @@ class StrikeScorer:
     def score(self, c: TradeCandidate) -> tuple[float, list[str]]:
         flags = []
         buffer = c.underlying_price - c.short_strike
-        required = self.rules["min_buffer_days"] * c.normal_daily_move
-        target = self.rules["target_buffer_days"] * c.normal_daily_move
+        move = c.expected_move_1d if c.expected_move_1d is not None else c.normal_daily_move
+        if move is None or move <= 0:
+            return 0, ["expected 1-day move unavailable"]
+        required = self.rules["min_buffer_days"] * move
+        target = self.rules["target_buffer_days"] * move
         if buffer < required:
             return 0, ["insufficient 3-5 day strike buffer"]
         buffer_score = min(100, 60 + (buffer - required) / max(target - required, 1) * 40)

@@ -155,7 +155,14 @@ def ingest_offline_raw(raw_root: str | Path, output_dir: str | Path) -> dict:
             required={"event_date","event_type","source_url_or_source_id","source_name","source_version","provenance_status"}
             missing=required-set(d)
             if missing: raise ValueError(f"{p} missing provenance fields: {sorted(missing)}")
-            frames.append(normalize_source_events(d, d.source_name.iloc[0], str(d.source_version.iloc[0]), str(d.source_url_or_source_id.iloc[0])))
+            # A combined export can contain multiple issuers and sources. Do
+            # not stamp the first row's provenance across the whole file.
+            for (source_name, source_version, source_id), group in d.groupby(
+                ["source_name", "source_version", "source_url_or_source_id"], dropna=False
+            ):
+                frames.append(normalize_source_events(
+                    group, str(source_name), str(source_version), str(source_id)
+                ))
             inventory[-1]["status"]="PARSED"
     events=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame(columns=VERSIONED_COLUMNS)
     result=write_versioned_calendar(events,output_dir) if len(events) else {"rows":0,"validation_failures":0}

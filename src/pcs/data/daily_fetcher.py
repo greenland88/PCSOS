@@ -4,6 +4,9 @@ import pandas as pd
 from .daily_provider import DailyDataError, normalize_daily_frame
 
 class YahooDailyFetcher:
+    @staticmethod
+    def capabilities() -> dict[str, bool]:
+        return {"DAILY_HISTORY": True, "DAILY_CURRENT": True}
     def __init__(self, completed_daily_only=True, downloader=None):
         self.completed_daily_only = completed_daily_only
         self._downloader = downloader

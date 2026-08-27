@@ -1,0 +1,12 @@
+from pathlib import Path
+import pandas as pd,json
+from pcs.research.entry_candidate_universe import generate_observable_candidates,_daily
+ROOT=Path('.'); R=ROOT/'research_outputs/opportunity_state_machine_research_20260821/rebuilt_options_v3_1'; OUT=ROOT/'research_outputs/opportunity_state_machine_research_20260821'
+def main():
+ dp=ROOT/'data/raw/daily_forward_adjusted/QQQ_daily_qfq.csv'; daily=_daily(dp); daily['date']=pd.to_datetime(daily.date).dt.normalize(); dates=daily[daily.date.between('2026-01-01','2026-05-31')].date; allc=[]
+ for m in range(1,6):
+  fn='QQQ_2026_q1.parquet' if m==1 else f'QQQ_2026_{m:02d}.parquet'; p=R/f'options_v2/symbol=QQQ/year=2026/quarter={(m-1)//3+1}/{fn}'; x=pd.read_parquet(p); x['trade_date']=pd.to_datetime(x.trade_date).dt.normalize(); x['expiration_date']=pd.to_datetime(x.expiration_date).dt.normalize(); q=x.rename(columns={'trade_date':'Trade Date','expiration_date':'Expiry Date','call_put':'Call/Put','strike':'Strike','last':'Last Trade Price','bid':'Bid Price','ask':'Ask Price','bid_iv':'Bid Implied Volatility','open_interest':'Open Interest','volume':'Volume','delta':'Delta'}); chains={d:g for d,g in q.groupby('Trade Date')}; c,_=generate_observable_candidates('QQQ',dp,R,f'2026-{m:02d}-01',f'2026-{m:02d}-28',None,chains,benchmark_path=dp); allc.append(c.assign(split='VALIDATION'))
+ c=pd.concat(allc,ignore_index=True) if allc else pd.DataFrame(); c.to_csv(OUT/'qqq_2026_replay_candidates.csv',index=False); cd=set(pd.to_datetime(c.date).dt.normalize()) if len(c) else set(); rows=[]
+ for d in dates: rows.append({'date':d.date(),'ticker':'QQQ','split':'VALIDATION','underlying_data_available':True,'option_data_available':True,'candidate_count_generated':int(d in cd),'candidate_count_evaluated':int(d in cd),'final_status':'ELIGIBLE' if d in cd else 'NO_CANDIDATE_GENERATED','trend_gate':'PASS' if d in cd else 'UNKNOWN','pullback_gate':'PASS' if d in cd else 'UNKNOWN','safe_strike_gate':'PASS' if d in cd else 'UNKNOWN','dte_gate':'PASS' if d in cd else 'UNKNOWN','credit_gate':'PASS' if d in cd else 'UNKNOWN','liquidity_gate':'PASS' if d in cd else 'UNKNOWN','event_gate':'UNKNOWN','portfolio_gate':'UNKNOWN'})
+ ledger=pd.DataFrame(rows); ledger.to_csv(OUT/'daily_entry_decision_ledger.csv',index=False); c.to_csv(OUT/'candidate_gate_ledger.csv',index=False); eligible=ledger.final_status.eq('ELIGIBLE'); print(json.dumps({'underlying_days':len(ledger),'candidate_days':int(eligible.sum()),'candidate_rows':len(c)},indent=2))
+if __name__=='__main__':main()

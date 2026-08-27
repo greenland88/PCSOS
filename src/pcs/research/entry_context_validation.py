@@ -39,11 +39,6 @@ def _load_trades(path: Path) -> pd.DataFrame:
 
 def _daily_context(symbol: str) -> pd.DataFrame:
     d = _daily(symbol).copy()
-    raw = pd.read_csv(ROOT / "data" / "raw" / "daily_forward_adjusted" / f"{symbol}_daily_qfq.csv")
-    raw["date"] = pd.to_datetime(raw["日期"])
-    raw = raw.sort_values("date").drop_duplicates("date").set_index("date")
-    for out, col in [("open", "开盘价"), ("high", "最高价"), ("low", "最低价"), ("volume", "成交量")]:
-        d[out] = pd.to_numeric(raw[col], errors="coerce").reindex(d.index)
     prev = d["close"].shift(1)
     d["ma20"] = d.close.rolling(20, min_periods=20).mean()
     d["ma50"] = d.close.rolling(50, min_periods=50).mean()

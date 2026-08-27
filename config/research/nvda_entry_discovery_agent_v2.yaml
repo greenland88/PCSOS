@@ -1,0 +1,24 @@
+research_id: nvda_entry_discovery_agent_v2
+ticker: NVDA
+research_mode: NEW_ENTRY
+agent_scope: NVDA_MODE_DISCOVERY_ONLY
+hypothesis: Discover materially different NVDA PCS trading modes from the authoritative broad outcome universe
+authoritative_train_universe: {executable_dates: 623, source: existing_broad_authoritative_nvda_pcs_outcome_universe, reuse_only: true}
+preserved_rule_families: [PCS_TREND_CONTINUATION, PCS_CONSTRUCTIVE_RECOVERY]
+preserved_rule_policy: {definitions_frozen: true, threshold_tuning: false, validation_reuse_for_improvement: false, register_as_reusable: true}
+excluded_workstreams: [AMZN_DATA_QUALITY_REPAIR, SPY_BROAD_MAP_PERFORMANCE_ENGINEERING, CROSS_TICKER_INFRASTRUCTURE_MAINTENANCE, CROSS_TICKER_TRANSFER]
+discovery_policy: {baseline_framework_reuse: false, materially_different_structure_required: true, minor_variants_of_preserved_families: forbidden, candidate_modes: [PULLBACK_PCS, SUPPORT_RECLAIM_PCS, POST_SELLOFF_PCS, RANGE_CONSOLIDATION_PCS, VOLATILITY_OPPORTUNITY_PCS, MARKET_CONFIRMED_PCS, EVIDENCE_DERIVED_OTHER]}
+bad_case_policy: {outcomes: [NORMAL_LOSS, STOP_LOSS, TAIL_LOSS], allowed_conclusions: [CAUTION, SETUP_SPECIFIC_NO_TRADE, GLOBAL_NO_TRADE, NO_RELIABLE_FILTER], force_no_trade: false}
+promotion_gate: [AUTHORITATIVE_REPLAY, INDEPENDENT_EPISODE_ANALYSIS, MULTI_YEAR_STABILITY, LEAVE_ONE_EPISODE_OUT, PNL_CONCENTRATION, TAIL_RISK, STRUCTURAL_SENSITIVITY]
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition: {precursor: ALL_PIT_FEATURE_READY_TRAIN_DATES, confirmation: BROAD_OUTCOME_MAP_DESCRIPTIVE_ONLY, creates_new_entry_dates: true}
+entry_date_rule: {rule: each_pit_feature_ready_train_date, entry_date_need_not_remain_baseline_setup: true}
+date_range: {start: '2020-01-02', end: '2023-12-31'}
+split_policy: {train_end: '2023-12-31', validation_start: '2024-01-01', validation_end: '2025-12-31'}
+contract_selection_policy: {mode: AUTHORITATIVE_CURRENT_STRATEGY_SELECTOR_WITHOUT_ENTRY_GATES, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: AUTHORITATIVE_CURRENT_LIFECYCLE, no_future_selection: true}
+frozen_parameters: {dte_min: 30, dte_max: 45, standardized_width: 5}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false
+frozen_artifacts_write_allowed: false

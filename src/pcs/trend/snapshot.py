@@ -8,7 +8,7 @@ import pandas as pd
 from pcs.trend.cleanliness import TrendCleanlinessResult, analyze_trend_cleanliness
 from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.indicators import calculate_base_indicators
-from pcs.trend.market_structure import MarketStructureResult, analyze_market_structure
+from pcs.trend.market_structure import ConfirmedSwing, MarketStructureResult, analyze_market_structure
 from pcs.trend.models import TrendIndicatorValidationError
 from pcs.trend.moving_averages import MAStructureResult, analyze_ma_structure
 from pcs.trend.pullback import PullbackResult, analyze_pullback
@@ -38,6 +38,9 @@ def build_trend_snapshot(
     as_of_date: object | None = None,
     symbol: str | None = None,
     benchmark: str | None = None,
+    precomputed_indicators: pd.DataFrame | None = None,
+    precomputed_swings: tuple[ConfirmedSwing, ...] | None = None,
+    precomputed_relative_strength: dict | None = None,
 ) -> TrendSnapshotResult:
     config = config or TrendIndicatorConfig()
     config.validate()
@@ -45,17 +48,23 @@ def build_trend_snapshot(
         raise TrendIndicatorValidationError("OHLCV input must be a pandas DataFrame")
     source = ohlcv_df.copy(deep=True)
     cutoff = _resolve_cutoff(source, as_of_date)
-    indicators = calculate_base_indicators(source, config)
+    indicators = (precomputed_indicators.copy(deep=True)
+                   if precomputed_indicators is not None
+                   else calculate_base_indicators(source, config))
+    if len(indicators) != len(source) or not indicators.index.equals(source.index):
+        raise TrendIndicatorValidationError("precomputed indicators must align with OHLCV input")
     asof_source, asof_indicators = _slice_as_of(source, indicators, cutoff)
 
     ma_input = pd.concat([asof_source[["close"]], asof_indicators], axis=1)
     ma_structure = analyze_ma_structure(ma_input, config)
-    market_structure = analyze_market_structure(source, config, cutoff)
+    market_structure = analyze_market_structure(source, config, cutoff, precomputed_swings=precomputed_swings)
     cleanliness = analyze_trend_cleanliness(source, indicators, config, cutoff)
     pullback = analyze_pullback(source, indicators, ma_structure, market_structure, config, cutoff)
     support = analyze_support(source, indicators, market_structure, config, cutoff)
 
-    if benchmark_df is None:
+    if precomputed_relative_strength is not None:
+        relative_strength = precomputed_relative_strength
+    elif benchmark_df is None:
         relative_strength = _unavailable_relative_strength()
     else:
         relative_strength = analyze_relative_strength(source, benchmark_df, config, cutoff)

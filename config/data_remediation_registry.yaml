@@ -1,0 +1,8 @@
+DAILY_SESSION_MISSING: {action: FETCH_DAILY_SAFETY_WINDOW, sources: [private_massive_gateway, yahoo_daily]}
+DAILY_HISTORY_MISSING: {action: IMPORT_DAILY_HISTORY, sources: [purchased_qfq, daily_snapshot, private_massive_gateway]}
+DAILY_STALE: {action: FETCH_CURRENT_DAILY, sources: [private_massive_gateway, yahoo_daily]}
+HISTORICAL_OPTION_QUARTER_MISSING: {action: IMPORT_ZIP_WITH_CLICKHOUSE_OVERLAP, required_sources: [purchased_option_zip, clickhouse_options]}
+CURRENT_OPTION_DATES_MISSING: {action: CLICKHOUSE_INCREMENTAL_SYNC, sources: [clickhouse_options]}
+OPTION_EXACT_DUPLICATES: {action: APPLY_APPROVED_DEDUPE_POLICY}
+OPTION_CONFLICT_UNRESOLVED: {action: BLOCK, automatic_repair: false}
+PRICE_BASIS_CONFLICT: {action: BLOCK, automatic_repair: false}

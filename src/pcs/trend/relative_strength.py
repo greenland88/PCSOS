@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import pandas as pd
+import math
 
 from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.models import REQUIRED_OHLCV_COLUMNS, TrendIndicatorValidationError
@@ -44,8 +45,10 @@ def analyze_relative_strength(
 
     values: dict[str, float] = {}
     for window in (5, 20, 60):
-        stock_return = float(aligned["close_stock"].iloc[-1] / aligned["close_stock"].iloc[-1 - window] - 1.0)
-        benchmark_return = float(aligned["close_benchmark"].iloc[-1] / aligned["close_benchmark"].iloc[-1 - window] - 1.0)
+        stock_return = _safe_return(aligned["close_stock"].iloc[-1], aligned["close_stock"].iloc[-1 - window])
+        benchmark_return = _safe_return(aligned["close_benchmark"].iloc[-1], aligned["close_benchmark"].iloc[-1 - window])
+        if stock_return is None or benchmark_return is None:
+            return _unavailable_result()
         values[f"stock_return_{window}d"] = stock_return
         values[f"benchmark_return_{window}d"] = benchmark_return
         values[f"relative_return_{window}d"] = stock_return - benchmark_return
@@ -118,3 +121,15 @@ def _is_stock_specific_weakness(values: dict[str, float], config: TrendIndicator
 
 def _unavailable_result() -> RelativeStrengthResult:
     return RelativeStrengthResult(False, None, None, None, None, None, None, None, None, None, None, None)
+
+
+def _safe_return(current: object, denominator: object) -> Optional[float]:
+    """Compute a price return, failing closed for unusable historical prices."""
+    try:
+        current_value = float(current)
+        denominator_value = float(denominator)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(current_value) or not math.isfinite(denominator_value) or denominator_value <= 0:
+        return None
+    return current_value / denominator_value - 1.0

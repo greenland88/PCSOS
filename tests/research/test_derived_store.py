@@ -8,6 +8,7 @@ def test_derived_round_trip_and_versioned_cache(tmp_path):
     assert got.iloc[0].atr14==4.2
     assert cache_matches("daily_indicators",{"symbol":"QQQ"},{"calculation_version":"v1","source_data_version":"raw-a"},tmp_path)
     assert not cache_matches("daily_indicators",{"symbol":"QQQ"},{"calculation_version":"v2"},tmp_path)
+    assert not cache_matches("daily_indicators",{"symbol":"QQQ"},{"missing_version":"v1"},tmp_path)
 
 def test_backtest_trade_round_trip(tmp_path):
     trades=[{"date":"2026-06-30","events":{"profit50":"2026-07-01"},"realized_pnl":12.0}]

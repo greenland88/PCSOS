@@ -13,6 +13,10 @@ from pathlib import Path
 import pandas as pd
 
 from .daily_provider import DailyDataError, normalize_daily_frame
+
+
+def capabilities() -> dict[str, bool]:
+    return {"DAILY_HISTORY": True}
 from .parquet_store import read_daily_source
 from .storage_schema import DAILY_FIELDS
 
@@ -512,4 +516,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from .import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

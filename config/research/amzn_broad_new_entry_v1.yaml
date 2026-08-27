@@ -1,0 +1,15 @@
+research_id: amzn_broad_new_entry_v1
+ticker: AMZN
+research_mode: NEW_ENTRY
+hypothesis: Broad AMZN PCS outcome universe from all PIT feature-ready TRAIN dates
+population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}
+signal_definition: {precursor: FEATURE_READY_DAILY_CALENDAR, confirmation: BROAD_EXECUTABLE_PCS, creates_new_entry_dates: true}
+entry_date_rule: {rule: every_feature_ready_train_date_with_executable_pcs, entry_date_need_not_remain_baseline_setup: true}
+date_range: {start: '2022-06-06', end: '2025-12-31'}
+split_policy: {name: TRAIN_ONLY, train_end: '2025-12-31'}
+contract_selection_policy: {mode: AUTHORITATIVE_CURRENT_STRATEGY_SELECTOR, width_priority: [5, 10, 2], as_of_only: true}
+lifecycle_policy: {source: AUTHORITATIVE_CURRENT_LIFECYCLE, no_future_selection: true}
+frozen_parameters: {dte_min: 30, dte_max: 45, safe_strike_atr: 2.3, canonical_widths: [5, 10, 2]}
+allowed_parameters: {research_only: true}
+final_oos_access: false
+production_changes_allowed: false

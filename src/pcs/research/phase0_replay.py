@@ -34,11 +34,12 @@ def resolve_canonical_source(ticker: str, manifest_path: str | Path = "data/mani
     access = PCSDataAccess(manifest_path=manifest_path, parquet_root=Path(parquet_root).parent)
     spec = access.resolve_source("options", ticker)
     provenance = access.get_provenance("options", ticker)
+    resolved_manifest = str(spec.source_version).split(":", 1)[1] if ":" in str(spec.source_version) else str(manifest_path)
     return {"ticker": spec.symbol, "backend": spec.backend, "glob": spec.path,
             "min_date": spec.first_date, "max_date": spec.last_date,
             "imported_row_count": spec.row_count,
             "expected_partitions": [{"year": r.get("year"), "quarter": r.get("quarter")} for r in provenance],
-            "manifest_path": str(manifest_path), "source_version": spec.source_version,
+            "manifest_path": resolved_manifest, "source_version": spec.source_version,
             "schema_version": spec.schema_version}
 
 

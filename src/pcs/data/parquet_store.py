@@ -1,12 +1,13 @@
 """Parquet derived storage; raw files remain authoritative."""
 from pathlib import Path
 import pandas as pd
-from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, option_schema_map
+from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, option_schema_map, canonicalize_option_frame
 from .access import PCSDataAccess
 
 
 def read_option_source(path, symbol):
     df = pd.read_csv(path).rename(columns=option_schema_map())
+    df = df.loc[:, ~df.columns.astype(str).str.match(r"^Unnamed")]
     df["symbol"] = symbol.upper()
     for col in ("trade_date", "expiration_date"):
         df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
@@ -14,7 +15,7 @@ def read_option_source(path, symbol):
         if col in df: df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in OPTION_FIELDS:
         if col not in df: df[col] = None
-    return df[OPTION_FIELDS]
+    return canonicalize_option_frame(df)
 
 
 def write_option_partition(source_path, symbol, output_root, year, quarter):

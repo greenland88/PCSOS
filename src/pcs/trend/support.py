@@ -54,7 +54,7 @@ def analyze_support(
     current_atr = float(indicators["atr14"].iloc[-1])
     sma20 = float(indicators["sma20"].iloc[-1])
     sma50 = float(indicators["sma50"].iloc[-1])
-    if any(pd.isna(value) for value in (current_close, current_atr, sma20, sma50)) or current_atr <= 0:
+    if any(pd.isna(value) for value in (current_close, current_atr, sma20, sma50)) or current_close <= 0 or current_atr <= 0:
         return _unavailable_result()
 
     candidates = [("sma20", sma20), ("sma50", sma50)]

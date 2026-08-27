@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -42,13 +43,12 @@ def _trades(path: Path) -> pd.DataFrame:
 
 
 def _daily(symbol: str) -> pd.DataFrame:
-    p = ROOT / "data" / "raw" / "daily_forward_adjusted" / f"{symbol}_daily_qfq.csv"
-    df = pd.read_csv(p)
-    df["date"] = pd.to_datetime(df["日期"])
-    df["close"] = pd.to_numeric(df["收盘价"], errors="coerce")
+    df = PCSDataAccess().read_prices(symbol).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
     df = df.sort_values("date").drop_duplicates("date").set_index("date")
     prev = df["close"].shift(1)
-    tr = pd.concat([pd.to_numeric(df["最高价"])-pd.to_numeric(df["最低价"]), (pd.to_numeric(df["最高价"])-prev).abs(), (pd.to_numeric(df["最低价"])-prev).abs()], axis=1).max(axis=1)
+    tr = pd.concat([pd.to_numeric(df["high"])-pd.to_numeric(df["low"]), (pd.to_numeric(df["high"])-prev).abs(), (pd.to_numeric(df["low"])-prev).abs()], axis=1).max(axis=1)
     # Use the existing trade ATR where available; this is only for derived fields.
     df["atr14_calc"] = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     df["atr_pct_calc"] = df["atr14_calc"] / df["close"]

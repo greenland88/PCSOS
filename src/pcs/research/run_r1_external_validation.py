@@ -2,14 +2,13 @@
 from pathlib import Path
 import json, numpy as np, pandas as pd
 from .r1_frozen_validation import R1_FROZEN_V1
+from pcs.data.access import PCSDataAccess
 
 ROOT=Path(__file__).resolve().parents[3]; OUT=ROOT/"research_outputs"; DEV=set(R1_FROZEN_V1["development_symbols"])
 
 def _daily(symbol):
-    p=ROOT/"data/parquet/daily"/f"symbol={symbol}"
-    d=pd.read_parquet(p)
-    rename={"日期":"date","开盘价":"open","最高价":"high","最低价":"low","收盘价":"close","成交量":"volume"}
-    d=d.rename(columns=rename); d["date"]=pd.to_datetime(d["date"]); cols=["date","open","high","low","close","volume"]
+    d=PCSDataAccess().read_prices(symbol)
+    d["date"]=pd.to_datetime(d["date"]); cols=["date","open","high","low","close","volume"]
     d=d[cols].apply(pd.to_numeric,errors="coerce") if False else d
     for c in cols[1:]: d[c]=pd.to_numeric(d[c],errors="coerce")
     return d.sort_values("date").drop_duplicates("date").set_index("date")

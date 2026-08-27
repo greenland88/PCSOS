@@ -2,6 +2,7 @@
 from pathlib import Path
 from collections import deque
 import pandas as pd, numpy as np
+from pcs.data.access import PCSDataAccess
 from .batch_trend_history_fast import build_fast_batch_trend_history
 
 BATCH_A='SPY SMH XLK XLF XLE IWM GLD TLT JPM BAC GS XOM CAT BA GE COST HD DIS NFLX CRM ORCL CSCO TSM MRVL LLY UNH COIN HOOD F GM'.split()
@@ -9,7 +10,7 @@ OUT=Path('research_outputs/batch_a_r1_validation'); OUT.mkdir(parents=True,exist
 CHECK=OUT/'ticker_results.csv'; FS=['atr_expansion','drawdown20','down_streak','atr_pct','move5_atr']
 
 def daily(s):
- d=pd.read_parquet(Path('data/parquet/daily')/f'symbol={s}').rename(columns={'日期':'date','开盘价':'open','最高价':'high','最低价':'low','收盘价':'close','成交量':'volume'}); d.date=pd.to_datetime(d.date); return d.sort_values('date').drop_duplicates('date')
+ d=PCSDataAccess().read_prices(s); d.date=pd.to_datetime(d.date); return d.sort_values('date').drop_duplicates('date')
 def feat(d):
  d=d.copy(); p=d.close.shift(); tr=pd.concat([d.high-d.low,(d.high-p).abs(),(d.low-p).abs()],axis=1).max(axis=1); d['atr14']=tr.ewm(alpha=1/14,adjust=False,min_periods=14).mean(); d['atr_pct']=d.atr14/d.close; d['atr_expansion']=d.atr14/d.atr14.rolling(60,min_periods=20).median(); d['drawdown20']=1-d.close/d.close.rolling(20,min_periods=5).max(); down=d.close.diff().lt(0); d['down_streak']=down.groupby((~down).cumsum()).cumsum().astype(float); d['move5_atr']=(d.close-d.close.shift(5)).abs()/d.atr14; return d
 def states(d):

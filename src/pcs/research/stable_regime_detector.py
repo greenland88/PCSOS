@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 
 REQUIRED = {"date", "open", "high", "low", "close", "volume"}
@@ -144,6 +145,8 @@ def analyze_symbol(df: pd.DataFrame, ticker: str, confirmation_days: int = 30) -
 
 
 def load_symbol_csv(symbol: str, root: str | Path = "data/raw/daily_forward_adjusted") -> pd.DataFrame:
+    if Path(root) == Path("data/raw/daily_forward_adjusted"):
+        return PCSDataAccess().read_prices(symbol)
     p = Path(root) / f"{symbol.upper()}_daily_qfq.csv"
     d = pd.read_csv(p)
     rename = {"日期":"date", "开盘价":"open", "最高价":"high", "最低价":"low", "收盘价":"close", "成交量":"volume"}

@@ -40,6 +40,7 @@ def analyze_market_structure(
     ohlcv_df: pd.DataFrame,
     config: TrendIndicatorConfig | None = None,
     as_of_date: object | None = None,
+    precomputed_swings: tuple[ConfirmedSwing, ...] | None = None,
 ) -> MarketStructureResult:
     config = config or TrendIndicatorConfig()
     config.validate()
@@ -55,7 +56,9 @@ def analyze_market_structure(
     if len(source) < minimum_rows:
         return _unavailable_result()
 
-    swings = _find_confirmed_swings(source, dates, config)
+    swings = list(precomputed_swings) if precomputed_swings is not None else _find_confirmed_swings(source, dates, config)
+    if precomputed_swings is not None:
+        swings = [s for s in swings if pd.Timestamp(s.confirmed_at) <= pd.Timestamp(as_of_date)]
     highs = [swing for swing in swings if swing.swing_type == "high"]
     lows = [swing for swing in swings if swing.swing_type == "low"]
     if len(highs) < 2 or len(lows) < 2:

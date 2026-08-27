@@ -101,3 +101,36 @@ def test_threshold_changes_can_change_state():
     strict_config = replace(config(), rs_strong_threshold=1.0, rs_improving_threshold=0.5)
     strict = analyze_relative_strength(stock, benchmark, strict_config)
     assert default.rs_state != strict.rs_state
+
+
+def test_zero_historical_denominator_fails_closed_without_warning():
+    import warnings
+    closes = list(range(100, 171))
+    closes[10] = 0.0  # latest row's 60-session denominator
+    stock = make_ohlcv(closes)
+    benchmark = make_ohlcv([100.0] * 71)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = analyze_relative_strength(stock, benchmark, config())
+    assert result.available is False
+    assert len(caught) == 0
+
+
+def test_non_numeric_or_missing_denominator_fails_closed_explicitly():
+    from pcs.trend.relative_strength import _safe_return
+    assert _safe_return(101.0, float("nan")) is None
+    assert _safe_return(101.0, None) is None
+
+
+def test_safe_return_preserves_normal_calculation():
+    from pcs.trend.relative_strength import _safe_return
+    assert _safe_return(105.0, 100.0) == pytest.approx(0.05)
+
+
+def test_zero_denominator_is_evaluated_only_within_pit_cutoff():
+    dates = pd.date_range("2025-01-01", periods=101, freq="D")
+    stock = make_ohlcv(range(100, 201), dates)
+    benchmark = make_ohlcv(range(100, 201), dates)
+    result = analyze_relative_strength(stock, benchmark, config(), as_of_date=dates[80])
+    assert result.available is True
+    assert result.stock_return_5d == pytest.approx(180 / 175 - 1)

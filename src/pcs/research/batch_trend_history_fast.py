@@ -23,6 +23,7 @@ from pcs.trend.moving_averages import analyze_ma_structure
 from pcs.trend.pullback import PullbackResult, _classify as _classify_pullback
 from pcs.trend.relative_strength import (
     RelativeStrengthResult,
+    _safe_return,
     _classify_state as _classify_rs_state,
     _is_stock_specific_weakness,
 )
@@ -59,8 +60,10 @@ def _aligned_returns(stock, benchmark, cutoff, windows=(5, 20, 60)):
     values = {}
     for window in windows:
         prior = aligned.iloc[-1 - window]
-        sr = float(current.stock / prior.stock - 1.0)
-        br = float(current.benchmark / prior.benchmark - 1.0)
+        sr = _safe_return(current.stock, prior.stock)
+        br = _safe_return(current.benchmark, prior.benchmark)
+        if sr is None or br is None:
+            return None
         values[f"stock_return_{window}d"] = sr
         values[f"benchmark_return_{window}d"] = br
         values[f"relative_return_{window}d"] = sr - br

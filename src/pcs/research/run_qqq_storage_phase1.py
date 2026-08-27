@@ -1,5 +1,9 @@
 """Controlled QQQ base migration and integrity audit; never runs a backtest."""
 from pathlib import Path
+from pcs.data.import_boundary import reject_legacy_import_entrypoint
+
+reject_legacy_import_entrypoint()
+
 import argparse
 import re
 import csv, hashlib, time
@@ -17,6 +21,7 @@ def _existing(source, path):
         return any(r.get("source_file")==str(source) and r.get("status")=="SUCCESS" and r.get("schema_version")==str(OPTIONS_SCHEMA_VERSION) for r in csv.DictReader(f))
 
 def main(symbol="QQQ", output_prefix=None):
+    raise RuntimeError("LEGACY_STORAGE_READER_DISABLED: use generic canonical onboarding")
     raw_root=Path("data/raw/options")/symbol.upper(); prefix=output_prefix or symbol.lower(); OUT.mkdir(exist_ok=True); started=time.perf_counter(); files=sorted(raw_root.glob(f"{symbol.upper()}_????_q?_option_chain.csv")); progress=[]; before={str(p):(p.stat().st_size,p.stat().st_mtime) for p in files}
     for source in files:
         match=re.search(r"_(\d{4})_q([1-4])_",source.name); year=int(match.group(1)); quarter=int(match.group(2)); target=PARQUET/f"symbol={symbol.upper()}/year={year}/quarter={quarter}/{symbol.upper()}_{year}_q{quarter}.parquet"; t=time.perf_counter()

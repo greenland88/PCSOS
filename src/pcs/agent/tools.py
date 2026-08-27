@@ -6,6 +6,7 @@ from .models import response
 from pcs.data.duckdb_store import connect, refresh_views, query_daily, query_option_chain
 from pcs.data.derived_store import read_derived, read_backtest_trades
 from pcs.research.compatibility import compatibility
+from pcs.data.market_data_service import MarketDataService
 
 def _con(symbols=None):
     con=connect(":memory:"); refresh_views(con, symbols=symbols); return con
@@ -44,3 +45,14 @@ def get_trend_snapshot(symbol, as_of, benchmark=None):
 def get_data_compatibility(symbol, as_of):
     c=compatibility(symbol,as_of)
     return response("AVAILABLE" if c["data_available"] else "UNAVAILABLE",c["reason_code"],c,symbol)
+
+def get_live_stock_market_data(symbol, run_id=None, request_id=None):
+    """Read-only private-gateway stock snapshot for Agent orchestration."""
+    return MarketDataService().get_stock_realtime(symbol, run_id=run_id, request_id=request_id)
+
+def get_live_option_chain(symbol, limit=250, max_pages=4, run_id=None, request_id=None):
+    """Read-only current option chain; capped to bound context and API use."""
+    return MarketDataService().get_option_chain_realtime(
+        symbol, limit=min(int(limit), 250), max_pages=min(int(max_pages), 4),
+        run_id=run_id, request_id=request_id,
+    )

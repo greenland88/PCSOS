@@ -37,4 +37,6 @@ def main():
     if not symbols: parser.error("provide symbols or --universe")
     for result in update_symbols(symbols): print(result)
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    from .import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

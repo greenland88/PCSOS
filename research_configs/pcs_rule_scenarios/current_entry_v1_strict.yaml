@@ -1,0 +1,17 @@
+scenario_id: CURRENT_ENTRY_V1_STRICT
+description: Full current production rule contract; unresolved historical context remains UNKNOWN.
+universe: {tickers: [SPY, QQQ]}
+entry_rule_chain:
+  - {rule_id: trend_gate, enabled: true, version: production_current, params: {}}
+  - {rule_id: support_gate, enabled: true, version: production_current, params: {}}
+  - {rule_id: regime_gate, enabled: true, version: production_current, params: {}}
+  - {rule_id: event_gate, enabled: true, version: production_current, params: {}}
+  - {rule_id: quote_validity, enabled: true, version: research_v1, params: {}}
+  - {rule_id: dte_range, enabled: true, version: production_current, params: {minimum: 30, maximum: 45}}
+  - {rule_id: safe_strike_atr, enabled: true, version: production_current, params: {atr_multiple: 2.3}}
+  - {rule_id: spread_width, enabled: true, version: research_v1, params: {priority: [5, 10, 2]}}
+  - {rule_id: credit_efficiency, enabled: true, version: production_current, params: {minimum_ratio: 0.10}}
+  - {rule_id: liquidity_gate, enabled: true, version: production_current, params: {}}
+  - {rule_id: planned_loss, enabled: true, version: production_current, params: {credit_multiple: 1.0}}
+position_policy: {rule_id: uncapped}
+exit_rule_chain: []

@@ -16,11 +16,6 @@ RELIABLE_START = {"NVDA": "2024-06-10", "QQQ": "2010-11-22", "AMZN": "2022-06-06
 
 def _daily_structural(symbol: str) -> pd.DataFrame:
     d = _daily(symbol).copy()
-    raw = pd.read_csv(ROOT / "data" / "raw" / "daily_forward_adjusted" / f"{symbol}_daily_qfq.csv")
-    raw["date"] = pd.to_datetime(raw["日期"])
-    raw = raw.sort_values("date").drop_duplicates("date").set_index("date")
-    for out, col in [("open", "开盘价"), ("high", "最高价"), ("low", "最低价"), ("volume", "成交量")]:
-        d[out] = pd.to_numeric(raw[col], errors="coerce").reindex(d.index)
     prev = d.close.shift(1)
     d["atr_pct"] = d.atr14_calc / d.close
     d["atr_expansion"] = d.atr14_calc / d.atr14_calc.rolling(60, min_periods=20).median()

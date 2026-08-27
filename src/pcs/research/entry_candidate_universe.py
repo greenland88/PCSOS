@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
-from pcs.research.credit_stop import load_entry_chain, load_quotes
 from pcs.entry.context import build_entry_context
 from pcs.entry.pullback_gate import evaluate_pullback_gate
 from pcs.entry.strike_gate import evaluate_short_strike
@@ -21,6 +21,7 @@ from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.interpretation import interpret_trend
 from pcs.trend.scoring import score_trend
 from pcs.trend.snapshot import build_trend_snapshot
+from pcs.trend.indicators import calculate_base_indicators
 from pcs.trend.models import TrendIndicatorValidationError
 
 
@@ -52,7 +53,20 @@ class DryRunSummary:
 
 
 def _daily(path: str | Path) -> pd.DataFrame:
-    d = pd.read_csv(path)
+    path = Path(path)
+    # Known repository daily paths are compatibility inputs only. Resolve
+    # their ticker through the canonical access boundary so candidate
+    # discovery cannot silently consume a raw export. Temporary fixture paths
+    # remain supported for isolated tests/onboarding.
+    if "data" in path.parts and ("raw" in path.parts or "parquet" in path.parts):
+        stem = path.stem
+        ticker = stem.removesuffix("_daily_qfq").upper()
+        if ticker and ticker != stem.upper():
+            return PCSDataAccess().read_prices(ticker).copy()
+    if path.suffix.lower() == ".parquet":
+        d = pd.read_parquet(path)
+    else:
+        d = pd.read_csv(path)
     d = d.rename(columns={"日期": "date", "开盘价": "open", "最高价": "high", "最低价": "low", "收盘价": "close", "成交量": "volume"})
     d["date"] = pd.to_datetime(d["date"])
     d = d.sort_values("date").drop_duplicates("date").reset_index(drop=True)
@@ -71,7 +85,8 @@ def _quote_ok(row: pd.Series) -> bool:
 
 def build_historical_setup_context(daily: pd.DataFrame, benchmark: pd.DataFrame | None,
                                   day: object, symbol: str, benchmark_symbol: str,
-                                  config: TrendIndicatorConfig | None = None) -> dict[str, Any]:
+                                  config: TrendIndicatorConfig | None = None,
+                                  precomputed_indicators: pd.DataFrame | None = None) -> dict[str, Any]:
     """Build setup context through the production deterministic functions.
 
     This is research-only orchestration.  The persisted trend-history artifact
@@ -89,8 +104,12 @@ def build_historical_setup_context(daily: pd.DataFrame, benchmark: pd.DataFrame 
     if len(stock) < config.sma_long_period or len(bench) < config.sma_long_period:
         return {"available": False, "reason_codes": ["INSUFFICIENT_LOOKBACK"]}
     try:
+        indicators = None
+        if precomputed_indicators is not None:
+            indicators = precomputed_indicators.loc[stock.index]
         snapshot = build_trend_snapshot(stock, bench, config, as_of_date=day,
-                                       symbol=symbol, benchmark=benchmark_symbol)
+                                       symbol=symbol, benchmark=benchmark_symbol,
+                                       precomputed_indicators=indicators)
         interpretation = interpret_trend(snapshot, config)
         trend_score = score_trend(snapshot, interpretation, config)
         trend_gate = evaluate_trend_gate(trend_score, interpretation, snapshot)
@@ -138,6 +157,35 @@ def build_historical_setup_context(daily: pd.DataFrame, benchmark: pd.DataFrame 
         "predictability_state": getattr(snapshot.cleanliness, "cleanliness_state", None),
         "reason_codes": list(dict.fromkeys(reasons)), "warnings": warnings,
     }
+
+
+def build_historical_setup_context_table(
+    daily: pd.DataFrame,
+    benchmark: pd.DataFrame | None,
+    dates: pd.Series | list[object],
+    symbol: str,
+    benchmark_symbol: str,
+    config: TrendIndicatorConfig | None = None,
+) -> dict[pd.Timestamp, dict[str, Any]]:
+    """Build PIT-safe entry-date contexts once for replay and research reuse.
+
+    Only deterministic information available through each date is cached.
+    Indicators are computed on the complete bounded frame once; each context
+    still receives an as-of slice, preserving the original PIT boundary.
+    """
+    config = config or TrendIndicatorConfig()
+    stock = daily.copy()
+    stock["date"] = pd.to_datetime(stock["date"]).dt.normalize()
+    stock = stock.sort_values("date").reset_index(drop=True)
+    indicators = calculate_base_indicators(stock, config)
+    result: dict[pd.Timestamp, dict[str, Any]] = {}
+    for raw_day in dates:
+        day = pd.Timestamp(raw_day).normalize()
+        result[day] = build_historical_setup_context(
+            stock, benchmark, day, symbol, benchmark_symbol, config,
+            precomputed_indicators=indicators,
+        )
+    return result
 
 
 def evaluate_intended_pullback_variant(context: dict[str, Any]) -> dict[str, Any]:
@@ -221,11 +269,13 @@ def setup_only_validation(tickers: dict[str, tuple[str | Path, str | Path]], sta
 
 
 def _cached_chains(option_root: str | Path, start: str, end: str) -> tuple[dict[pd.Timestamp, pd.DataFrame], dict[str, Any]]:
-    """Load and clean a ticker's quarterly CSVs once, then index by trade date."""
+    """Load and clean a ticker's active canonical route once, then index by trade date."""
     key = (str(option_root), str(start), str(end))
     if key in _CHAIN_CACHE:
         return _CHAIN_CACHE[key], {"cache_hit": True, "files_opened": 0, "rows_loaded": sum(map(len, _CHAIN_CACHE[key].values()))}
-    cleaned, meta = load_quotes(str(option_root), pd.Timestamp(start), pd.Timestamp(end))
+    ticker = Path(option_root).name.upper()
+    from .credit_stop import load_quotes_canonical
+    cleaned, meta = load_quotes_canonical(ticker, pd.Timestamp(start), pd.Timestamp(end))
     indexed = {day: frame.copy() for day, frame in cleaned.groupby("Trade Date")}
     _CHAIN_CACHE[key] = indexed
     return indexed, {"cache_hit": False, "files_opened": meta.get("quarter_files_opened", 0), "rows_loaded": meta.get("option_rows_loaded", len(cleaned)), "duplicates_removed": meta.get("duplicate_rows_deduped", 0), "ambiguous_excluded": meta.get("ambiguous_quote_rows_excluded", 0)}
@@ -237,6 +287,10 @@ def generate_observable_candidates(ticker: str, daily_path: str | Path, option_r
                                    benchmark_path: str | Path | None = None,
                                    benchmark_symbol: str = "QQQ",
                                    trend_config: TrendIndicatorConfig | None = None) -> tuple[pd.DataFrame, DryRunSummary]:
+    # Universal admission boundary: candidate discovery is strategy research
+    # and may not run against an unready ticker.
+    from .ticker_readiness import assert_research_ready
+    assert_research_ready(ticker)
     daily = _daily(daily_path)
     daily["atr14_point_in_time"] = _atr14(daily)
     dates = daily.loc[daily.date.between(start, end), "date"]
@@ -248,7 +302,11 @@ def generate_observable_candidates(ticker: str, daily_path: str | Path, option_r
     for day in dates:
         dayrow = daily[daily.date.eq(day)].iloc[0]
         atr = dayrow.atr14_point_in_time
-        chain = chain_index.get(day, pd.DataFrame()) if chain_index is not None else load_entry_chain(str(option_root), day)[0]
+        if chain_index is not None:
+            chain = chain_index.get(day, pd.DataFrame())
+        else:
+            from .credit_stop import load_quotes_canonical
+            chain = load_quotes_canonical(ticker, day, day)[0]
         if chain.empty:
             continue
         raw_dates += 1
@@ -287,7 +345,7 @@ def generate_observable_candidates(ticker: str, daily_path: str | Path, option_r
                         continue
                     after_credit += 1
                     opportunity_dates.add((ticker, str(day.date())))
-            records.append({"date": str(day.date()), "ticker": ticker, "underlying_price": float(dayrow.close), "atr14": float(atr), "trend_state": context.get("trend_state"), "pullback_state": context.get("pullback_state"), "pullback_gate": context["pullback_gate_result"].pullback_gate_result, "trend_gate": context["trend_gate_result"].trend_gate_result, "reason_codes": context.get("reason_codes", []), "expiration": str(expiry.date()), "dte": int((expiry-day).days), "short_strike": float(short.Strike), "long_strike": float(long.Strike), "spread_width": width, "atr_distance": float((dayrow.close-short.Strike)/atr), "short_bid": float(short["Bid Price"]), "short_ask": float(short["Ask Price"]), "short_volume": int(short["Volume"]), "short_oi": int(short["Open Interest"]), "short_delta": float(short["Delta"]) if pd.notna(short["Delta"]) else None, "long_bid": float(long["Bid Price"]), "long_ask": float(long["Ask Price"]), "long_volume": int(long["Volume"]), "long_oi": int(long["Open Interest"]), "credit": credit, "credit_width_ratio": ratio, "event_state": "NOT_INCLUDED", "portfolio_state": "NOT_INCLUDED", "timestamp_validation": "UNAVAILABLE"})
+                    records.append({"date": str(day.date()), "ticker": ticker, "underlying_price": float(dayrow.close), "atr14": float(atr), "trend_state": context.get("trend_state"), "pullback_state": context.get("pullback_state"), "pullback_gate": context["pullback_gate_result"].pullback_gate_result, "trend_gate": context["trend_gate_result"].trend_gate_result, "reason_codes": context.get("reason_codes", []), "expiration": str(expiry.date()), "dte": int((expiry-day).days), "short_strike": float(short.Strike), "long_strike": float(long.Strike), "spread_width": width, "atr_distance": float((dayrow.close-short.Strike)/atr), "short_bid": float(short["Bid Price"]), "short_ask": float(short["Ask Price"]), "short_volume": int(short["Volume"]), "short_oi": int(short["Open Interest"]), "short_delta": float(short["Delta"]) if pd.notna(short["Delta"]) else None, "long_bid": float(long["Bid Price"]), "long_ask": float(long["Ask Price"]), "long_volume": int(long["Volume"]), "long_oi": int(long["Open Interest"]), "credit": credit, "credit_width_ratio": ratio, "event_state": "NOT_INCLUDED", "portfolio_state": "NOT_INCLUDED", "timestamp_validation": "UNAVAILABLE"})
     summary = DryRunSummary(ticker, start, end, len(dates), raw_dates, usable_dates, setup_dates, expirations, before_safe, after_safe, after_long, after_liq, after_credit, len(records), len(opportunity_dates))
     return pd.DataFrame(records), summary
 

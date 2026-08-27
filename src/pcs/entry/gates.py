@@ -23,18 +23,44 @@ class EventGate:
     def evaluate(self, candidate, calendar=None) -> GateResult:
         risk = int(getattr(candidate, "event_risk", 0))
         if calendar is None:
-            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_UNAVAILABLE",))
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_UNAVAILABLE_IGNORED",))
+        if calendar.empty:
+            return GateResult("event", GateStatus.PASS)
+        try:
+            import pandas as pd
+            rows = calendar[(calendar.event_type == "EARNINGS") & ((calendar.symbol == candidate.ticker) | calendar.symbol.isna())]
+        except Exception:
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_NO_TICKER_EVENT",))
+        if rows.empty:
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_NO_TICKER_EVENT",))
+        if "event_date_known_at_entry" not in calendar.columns:
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_PIT_METADATA_MISSING_IGNORED",), {"event_data_available": True, "event_pit_verified": False, "event_gate_applied": False, "event_gate_result": "NOT_AVAILABLE"})
+        known = calendar["event_date_known_at_entry"].astype(str).str.upper()
+        if not known.isin({"YES", "TRUE", "1"}).all():
+            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_PIT_METADATA_UNVERIFIED_IGNORED",), {"event_data_available": True, "event_pit_verified": False, "event_gate_applied": False, "event_gate_result": "NOT_AVAILABLE"})
         if risk > 0:
             return GateResult("event", GateStatus.FAIL, ("EVENT_RISK_PRESENT",))
         try:
             import pandas as pd
             entry = pd.Timestamp(getattr(candidate, "entry_date", None))
             expiry = pd.Timestamp(candidate.expiration)
-            rows = calendar[(calendar.event_type == "EARNINGS") & ((calendar.symbol == candidate.ticker) | calendar.symbol.isna())]
             for date in pd.to_datetime(rows.event_date).dt.normalize():
+                # Historical events strictly before entry cannot create either
+                # expiration exposure or a new-entry blackout.
+                if date < entry:
+                    continue
                 if entry <= date <= expiry:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_EARNINGS_CROSSING",))
-                if 0 <= len(pd.bdate_range(entry, date, inclusive="right")) <= 3:
+                if date > expiry:
+                    continue
+                sessions = getattr(candidate, "trading_sessions", None)
+                if sessions is None:
+                    return GateResult("event", GateStatus.FAIL, ("TRADING_SESSION_CALENDAR_UNAVAILABLE",))
+                session_index = pd.DatetimeIndex(pd.to_datetime(sessions)).normalize()
+                if entry not in session_index or date not in session_index:
+                    return GateResult("event", GateStatus.FAIL, ("TRADING_SESSION_CALENDAR_INVALID",))
+                distance = int(session_index.get_loc(date)) - int(session_index.get_loc(entry))
+                if 0 <= distance <= 3:
                     return GateResult("event", GateStatus.FAIL, ("EVENT_PRE_EARNINGS_BLACKOUT",))
         except Exception:
             return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_INVALID",))
@@ -86,15 +112,25 @@ class LiquidityGate:
 
 
 class SafeStrikeGate:
-    def __init__(self, rules): self.rules = rules["entry"]
+    def __init__(self, rules, price_basis_service=None):
+        self.rules = rules["entry"]
+        self.price_basis_service = price_basis_service
     def evaluate(self, candidate) -> GateResult:
         atr = getattr(candidate, "atr", None)
         if atr is None: return GateResult("safe_strike", GateStatus.FAIL, ("SAFE_STRIKE_ATR_UNAVAILABLE",))
-        buffer = (candidate.underlying_price - candidate.short_strike) / float(atr)
+        comparison = getattr(candidate, "comparison_short_strike", None)
+        if comparison is None and self.price_basis_service is not None:
+            try:
+                comparison = self.price_basis_service.to_comparison_strike(candidate.ticker, candidate.entry_date, candidate.short_strike)
+            except Exception as exc:
+                return GateResult("safe_strike", GateStatus.FAIL, (str(exc),))
+        comparison = candidate.short_strike if comparison is None else comparison
+        buffer = (candidate.underlying_price - comparison) / float(atr)
         required = self.rules["safe_strike_atr"]
         return GateResult("safe_strike", GateStatus.PASS if buffer >= required else GateStatus.FAIL,
                           () if buffer >= required else ("SAFE_STRIKE_BUFFER_INSUFFICIENT",),
-                          {"buffer_atr": buffer, "required_atr": required})
+                          {"buffer_atr": buffer, "required_atr": required, "raw_short_strike": candidate.short_strike,
+                           "comparison_short_strike": comparison, "price_basis": "ANALYTIC_ADJUSTED"})
 
 
 class CreditEfficiencyGate:

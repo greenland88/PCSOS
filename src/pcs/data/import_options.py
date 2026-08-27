@@ -14,4 +14,6 @@ def main(argv=None):
             print({'symbol':a.symbol.upper(),'source_file':str(source),'parquet_path':str(path),'elapsed_seconds':time.perf_counter()-started,'status':'SKIP'}); return
     path,rows=write_option_partition(source,a.symbol,a.output_root,a.year,a.quarter); raw=source.stat(); df=read_option_source(source,a.symbol); append_manifest(a.manifest,{'dataset':'options','symbol':a.symbol.upper(),'source_file':str(source),'source_size':raw.st_size,'source_modified_time':raw.st_mtime,'row_count':rows,'min_date':df.trade_date.min(),'max_date':df.trade_date.max(),'year':a.year,'quarter':a.quarter,'parquet_path':str(path),'schema_version':OPTIONS_SCHEMA_VERSION,'import_timestamp':now_utc(),'status':'SUCCESS'}); print({'symbol':a.symbol.upper(),'source_file':str(source),'year':a.year,'quarter':a.quarter,'rows_read':len(df),'rows_written':rows,'parquet_path':str(path),'elapsed_seconds':time.perf_counter()-started,'status':'SUCCESS'})
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+    from .import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

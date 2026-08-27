@@ -1,0 +1,36 @@
+scenario_id: current_entry_v1_uncapped
+description: Current Entry v1 research definition; execution requires complete historical production inputs.
+universe:
+  tickers: [SPY, QQQ]
+entry_rule_chain:
+  - rule_id: regime_gate
+    enabled: true
+    version: production_current
+    params: {}
+  - rule_id: event_gate
+    enabled: true
+    version: production_current
+    params: {}
+  - rule_id: dte_range
+    enabled: true
+    version: production_current
+    params: {minimum: 30, maximum: 45, preferred_minimum: 30, preferred_maximum: 40}
+  - rule_id: safe_strike_atr
+    enabled: true
+    version: production_current
+    params: {atr_multiple: 2.3}
+  - rule_id: credit_efficiency
+    enabled: true
+    version: production_current
+    params: {minimum_ratio: 0.10}
+  - rule_id: liquidity_gate
+    enabled: true
+    version: production_current
+    params: {}
+  - rule_id: portfolio_risk
+    enabled: true
+    version: production_current
+    params: {}
+position_policy:
+  rule_id: uncapped
+exit_rule_chain: []

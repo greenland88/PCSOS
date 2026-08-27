@@ -1,15 +1,17 @@
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
+import pandas as pd
 
-from pcs.collectors.option_chain_snapshot import OptionChainSnapshotCollector
-from pcs.data.storage import ParquetStore
 from pcs.engine.decision_engine import DecisionEngine, load_rules
 from pcs.providers.hood_trader_provider import HoodTraderProvider, JsonHoodClient
 from pcs.providers.mock_provider import MockProvider
 from pcs.research.youtube_subtitles import DEFAULT_TRANSCRIPT_DIR, download_youtube_subtitles
 from pcs.simulation.paper_trading import run_daily_paper_trading
 from pcs.stress_lab.scenarios import DEFAULT_SYNTHETIC_SCENARIOS, StressLab
+from pcs.data.onboarding_engine import OnboardingEngine
 
 
 def _json_provider(path: str | None):
@@ -75,15 +77,99 @@ def download_subtitles(args):
         print(path)
 
 
+def update_data(args):
+    symbols = [s.upper() for s in args.symbols] if args.symbols else sorted({p.stem.upper() for p in Path(args.daily_root).glob("*.csv")})
+    for symbol in symbols:
+        daily_path = Path(args.daily_root) / f"{symbol}.csv"
+        options_path = Path(args.options_root) / f"{symbol}.parquet"
+        daily = load_source(daily_path, symbol) if daily_path.exists() else None
+        options = load_source(options_path, symbol, options=True) if options_path.exists() else None
+        print(json.dumps(update_ticker(symbol, daily_frame=daily, options_frame=options, parquet_root=args.parquet_root, manifest_path=args.manifest_path, options_manifest_path=args.options_manifest_path, source_version=args.source_version), sort_keys=True))
+
+
+def onboard(args):
+    """Compatibility wrapper for the single market-data import entrypoint."""
+    from pcs.data.access import PCSDataAccess
+    from pcs.data.control_plane import MarketDataControlPlane
+    access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+    control = MarketDataControlPlane(access=access)
+    requirements = {"start": "2018-01-01", "end": pd.Timestamp.now().date().isoformat(),
+                    "datasets": {"options": {"required": True}}, "consumer": "CLI_ONBOARDING"}
+    result = control.ensure_market_data(requirements, symbol=args.symbol)
+    print(json.dumps(result.to_dict() if hasattr(result, "to_dict") else result, sort_keys=True, default=str))
+
+
+def readiness(args):
+    from pcs.data.access import PCSDataAccess
+    from pcs.research.ticker_readiness import preflight_ticker
+    result = preflight_ticker(args.symbol, access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root))
+    print(json.dumps(result.to_dict(), sort_keys=True, default=str))
+
+
+def covered_call_status(args):
+    """One-ticker covered-call admission/decision status.
+
+    This command deliberately stops at the ticker's own profile/readiness
+    gate.  It never scans a sibling ticker or substitutes another ticker's
+    research artifacts.
+    """
+    from pcs.data.access import PCSDataAccess
+    from pcs.research.covered_call_decision import evaluate_covered_call
+    from pcs.research.covered_call_profiles import resolve_covered_call_profile
+    from pcs.research.ticker_readiness import preflight_ticker
+
+    symbol = str(args.symbol).strip().upper()
+    profile = resolve_covered_call_profile(symbol)
+    if profile.status.value != "VALIDATED":
+        result = evaluate_covered_call(
+            symbol=symbol, as_of_date=args.as_of,
+            shares_owned=args.shares_owned, active_calls=args.active_calls,
+            event_context=args.event_context,
+            market_context=args.market_context,
+            profile=profile,
+        )
+        print(json.dumps(result, sort_keys=True, default=str))
+        return
+    access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+    readiness_result = preflight_ticker(symbol, access=access)
+    if readiness_result.PCS_RESEARCH_READY != "YES":
+        result = evaluate_covered_call(
+            symbol=symbol, as_of_date=args.as_of,
+            shares_owned=args.shares_owned, active_calls=args.active_calls,
+            event_context=args.event_context, market_context=args.market_context,
+            profile=profile,
+        )
+        result["reason_codes"] = list(result.get("reason_codes", [])) + ["TICKER_READINESS_NOT_PASSED"]
+        result["readiness"] = readiness_result.to_dict()
+        print(json.dumps(result, sort_keys=True, default=str))
+        return
+    result = evaluate_covered_call(
+        symbol=symbol, as_of_date=args.as_of,
+        shares_owned=args.shares_owned, active_calls=args.active_calls,
+        event_context=args.event_context, market_context=args.market_context,
+        data_access=access, profile=profile,
+    )
+    print(json.dumps(result, sort_keys=True, default=str))
+
+
+def onboarding_status(args):
+    print(json.dumps(OnboardingEngine(args.symbol, args.state_root).progress(), sort_keys=True, default=str))
+
+
+def market_data_status(args):
+    from pcs.data.control_plane import ImportCoordinator, MarketDataControlPlane, default_import_handlers, get_market_data_status
+    requirements = {"symbol": args.symbol, "required_start": args.start, "required_end": args.end,
+                    "datasets": tuple(args.dataset or ("daily", "options"))}
+    if args.execute:
+        result = ImportCoordinator(MarketDataControlPlane(), handlers=default_import_handlers()).run(requirements)
+        print(json.dumps(result, sort_keys=True, default=str))
+    else:
+        print(json.dumps(get_market_data_status(requirements).to_dict(), sort_keys=True, default=str))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="pcs-lite")
     sub = parser.add_subparsers(required=True)
-
-    collect = sub.add_parser("collect-options", help="write read-only option-chain snapshots to Parquet")
-    collect.add_argument("--hood-json", help="local exported Hood payload JSON; omit to use MockProvider")
-    collect.add_argument("--data-root", default="data")
-    collect.add_argument("symbols", nargs="+")
-    collect.set_defaults(func=collect_options)
 
     analyze = sub.add_parser("analyze-mock", help="run local PCS rule engine on mock data")
     analyze.add_argument("--rules", default="config/pcs_rules.yaml")
@@ -112,6 +198,38 @@ def main():
     subtitles.add_argument("--output-dir", default=str(DEFAULT_TRANSCRIPT_DIR))
     subtitles.add_argument("--languages", default="en,en-orig")
     subtitles.set_defaults(func=download_subtitles)
+
+    ready_cmd = sub.add_parser("readiness", help="run the canonical ticker readiness gate")
+    ready_cmd.add_argument("symbol")
+    ready_cmd.add_argument("--parquet-root", default="data/parquet")
+    ready_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    ready_cmd.set_defaults(func=readiness)
+
+    md_status = sub.add_parser("market-data-status", help="inspect canonical coverage and produce an import plan")
+    md_status.add_argument("symbol")
+    md_status.add_argument("--start")
+    md_status.add_argument("--end")
+    md_status.add_argument("--dataset", action="append", choices=["daily", "options"], default=[])
+    md_status.add_argument("--execute", action="store_true", help="execute registered import handlers for missing data")
+    md_status.set_defaults(func=market_data_status)
+
+    md_import = sub.add_parser("import-market-data", help="plan and execute registered market-data imports")
+    md_import.add_argument("symbol")
+    md_import.add_argument("--start")
+    md_import.add_argument("--end")
+    md_import.add_argument("--dataset", action="append", choices=["daily", "options"], default=[])
+    md_import.set_defaults(func=lambda args: (setattr(args, "execute", True), market_data_status(args))[1])
+
+    cc = sub.add_parser("covered-call-status", help="evaluate one ticker's covered-call admission/decision")
+    cc.add_argument("symbol")
+    cc.add_argument("--as-of", required=True)
+    cc.add_argument("--shares-owned", type=int, required=True)
+    cc.add_argument("--active-calls", type=int, required=True)
+    cc.add_argument("--event-context", type=json.loads, required=True)
+    cc.add_argument("--market-context", type=json.loads, required=True)
+    cc.add_argument("--parquet-root", default="data/parquet")
+    cc.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    cc.set_defaults(func=covered_call_status)
 
     args = parser.parse_args()
     args.func(args)

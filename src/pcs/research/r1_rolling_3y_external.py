@@ -5,6 +5,7 @@ import hashlib, json, time
 from collections import deque
 import numpy as np
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 from .batch_trend_history_fast import build_fast_batch_trend_history
 
@@ -16,8 +17,7 @@ FEATURES = ["atr_expansion","drawdown20","down_streak","atr_pct","move5_atr"]
 RESULT_COLS = ["ticker","trend_pass_n","r1_n","non_r1_n","r1_5d_mae","non_r1_5d_mae","diff_5d_mae","r1_10d_mae","non_r1_10d_mae","diff_10d_mae","r1_5d_breach","non_r1_5d_breach","diff_5d_breach_pp","r1_10d_breach","non_r1_10d_breach","diff_10d_breach_pp","status","error"]
 
 def _daily(s):
-    p=Path("data/parquet/daily")/f"symbol={s}"
-    d=pd.read_parquet(p).rename(columns={"日期":"date","开盘价":"open","最高价":"high","最低价":"low","收盘价":"close","成交量":"volume"})
+    d=PCSDataAccess().read_prices(s)
     d["date"]=pd.to_datetime(d["date"]); return d.sort_values("date").drop_duplicates("date")
 
 def _features(d):

@@ -1,0 +1,15 @@
+research_id: contract_variant_study
+ticker: QQQ
+research_mode: CONTRACT_VARIANT
+hypothesis: Compare contract construction for fixed entry dates.
+population_source: {type: frozen_entry_ledger, frozen: true, entry_dates_frozen: true}
+signal_definition: {creates_new_entry_dates: false, purpose: contract_variant}
+entry_date_rule: {rule: preserve_frozen_entry_dates}
+date_range: {start: '2020-02-28', end: '2026-05-31'}
+split_policy: {source: frozen_split_manifest}
+contract_selection_policy: {rule: reselect_contract, allowed: [ATR, strike, delta, DTE, width, credit, liquidity]}
+lifecycle_policy: {rule: preserve_entry_lifecycle}
+frozen_parameters: {entry_dates: true}
+allowed_parameters: {contract_fields: true}
+final_oos_access: false
+production_changes_allowed: false

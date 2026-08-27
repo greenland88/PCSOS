@@ -27,6 +27,7 @@ def _stock(path):
 
 
 def audit_symbol(symbol, option_root="data/raw/options", stock_root="data/raw/daily_forward_adjusted", chunksize=250_000):
+    raise RuntimeError("LEGACY_RESEARCH_READER_DISABLED: use PCSDataAccess canonical audit route")
     symbol = symbol.upper()
     files = quarter_files(option_root, symbol)
     stock = _stock(Path(stock_root) / f"{symbol}_daily_qfq.csv")

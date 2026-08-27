@@ -195,7 +195,11 @@ def import_option_archives(
     sync_parquet: bool = True,
     reprocess: bool = False,
     start_year: int | None = None,
+    _cli_authorized: bool = False,
 ) -> OptionArchiveImportResult:
+    if not _cli_authorized:
+        from .import_boundary import reject_legacy_import_entrypoint
+        reject_legacy_import_entrypoint()
     raw_root = Path(raw_root)
     manifest_path = Path(manifest_path)
     symbols = [symbol.upper() for symbol in (symbols or discover_symbols(raw_root))]
@@ -292,10 +296,12 @@ def main(argv: list[str] | None = None) -> int:
         sync_parquet=not args.no_sync_parquet,
         reprocess=args.reprocess,
         start_year=args.start_year,
+        _cli_authorized=True,
     )
     print(result.to_dict())
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from .import_boundary import reject_legacy_import_entrypoint
+    reject_legacy_import_entrypoint()

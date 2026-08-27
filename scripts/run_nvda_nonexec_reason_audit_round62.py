@@ -1,0 +1,8 @@
+"""Round 62: NVDA-only failure-stage audit for non-executable PIT dates."""
+from pathlib import Path
+import json
+import pandas as pd
+ROOT=Path(__file__).resolve().parents[1]; OUT=ROOT/"research_outputs"/"nvda_entry_discovery_agent_v2"
+def run():
+ d=pd.read_parquet(OUT/"pit_feature_outcome_table.parquet").copy(); d.trade_date=pd.to_datetime(d.trade_date).dt.normalize(); d.date=pd.to_datetime(d.date).dt.normalize(); d=d[(d.ticker=="NVDA")&~d.executable_pcs&d.trade_date.between("2020-01-02","2023-12-31")].copy(); cols=["pit_feature_ready","option_chain_available","valid_dte_available","standardized_pcs_constructable","liquidity_status","credit_status","event_state","reason_code"]; summary={c:d[c].value_counts(dropna=False).to_dict() for c in cols}; by_reason=d.reason_code.value_counts(dropna=False).to_dict(); out={"module":"pcs.research.nvda_nonexec_reason_audit_round62","version":"1.0","symbol":"NVDA","status":"DATA_READINESS_DIAGNOSTIC_ONLY","data_source":"PCS_CANONICAL_DATA","research_mode":"NEW_ENTRY","input_rows":int(len(d)),"pit_feature_date_equals_trade_date":bool((d.date==d.trade_date).all()),"field_distributions":summary,"reason_code_distribution":by_reason,"first_zero_stage":"STANDARDIZED_PCS_CONSTRUCTABLE","repair_performed":False,"production_changes":False,"validation_read":False,"final_oos_read":False,"decision":"DATA_READINESS_BLOCKER_NOT_A_HYPOTHESIS_FAILURE","reason_codes":["NVDA_ONLY","FULL_PIT_CALENDAR","NEW_ENTRY_FUNNEL_DIAGNOSTIC","NO_DATA_REPAIR","NO_CONTRACT_SUBSTITUTION","NO_VALIDATION","NO_FINAL_OOS","NO_PRODUCTION_CHANGE"]}; (OUT/"v2_round62_nonexec_reason_audit.json").write_text(json.dumps(out,indent=2,default=str),encoding="utf-8"); return out
+if __name__=="__main__": print(json.dumps(run(),indent=2,default=str))

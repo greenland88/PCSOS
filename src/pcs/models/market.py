@@ -14,6 +14,8 @@ class MarketState(BaseModel):
     qqq_above_200dma: bool = True
     spy_above_50dma: bool = True
     soxx_above_50dma: bool = True
+    # Legacy field name. Current contract is SPY_QQQ_MARKET_CONFIRMATION:
+    # (SPY close > SPY SMA50) AND (QQQ close > QQQ SMA50).
     breadth_positive: bool = True
     vix: float | None = None
     recent_drawdown_pct: float = 0.0

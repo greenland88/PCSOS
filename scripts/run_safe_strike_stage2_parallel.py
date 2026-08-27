@@ -1,5 +1,6 @@
 import json, os, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 TARGETS=[1.8,2.1,2.2,2.3,2.4,2.6]; ROOT=Path('research_outputs/safe_strike_stage2'); ROOT.mkdir(parents=True,exist_ok=True)
 def run(a):
@@ -9,5 +10,5 @@ def run(a):
   while p.poll() is None:
    time.sleep(10); print(json.dumps({'atr':a,'pid':p.pid,'log':str(log),'status':'RUNNING'}),flush=True)
   print(json.dumps({'atr':a,'pid':p.pid,'exit_code':p.returncode,'log':str(log)}),flush=True); return p.returncode
-with ThreadPoolExecutor(max_workers=6) as ex: codes=list(ex.map(run,TARGETS))
+with ThreadPoolExecutor(max_workers=max(1, int(os.getenv("PCS_WORKERS", "8")))) as ex: codes=list(ex.map(run,TARGETS))
 raise SystemExit(1 if any(c for c in codes) else 0)

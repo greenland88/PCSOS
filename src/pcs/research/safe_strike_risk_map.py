@@ -11,6 +11,7 @@ import time
 
 import numpy as np
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 from .batch_trend_history_fast import build_fast_batch_trend_history
 
@@ -30,19 +31,7 @@ DAILY_DIR = Path("data/parquet/daily")
 
 
 def _daily(symbol: str) -> pd.DataFrame:
-    df = pd.read_parquet(DAILY_DIR / f"symbol={symbol}")
-    df = df.rename(
-        columns={
-            "日期": "date",
-            "开盘价": "open",
-            "最高价": "high",
-            "最低价": "low",
-            "收盘价": "close",
-            "成交量": "volume",
-        }
-    )
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date").drop_duplicates("date").reset_index(drop=True)
+    return PCSDataAccess().read_prices(symbol).sort_values("date").drop_duplicates("date").reset_index(drop=True)
 
 
 def _trend(symbol: str, benchmark: pd.DataFrame) -> pd.DataFrame:

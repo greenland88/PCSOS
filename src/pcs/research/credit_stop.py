@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import duckdb
 from pcs.data.duckdb_store import connect as connect_duckdb, refresh_views as refresh_duckdb_views
-from pcs.data.unified import UnifiedDataAccess
+from pcs.data.access import PCSDataAccess, DataAccessError
 from .ab_comparison import compare_symbol
 from .trend_history import build_trend_history
 from pcs.trend import calculate_base_indicators, TrendIndicatorConfig
@@ -30,6 +30,7 @@ def _quarter_files(root, start, end):
     return paths
 
 def load_quotes(root="data/raw/options/NVDA", start=START, end=END):
+    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_quotes_canonical")
     timing={}; t=time.perf_counter(); paths=_quarter_files(root,start,end); timing["file_discovery_seconds"]=time.perf_counter()-t
     t=time.perf_counter(); parts=[]
     for path in paths:
@@ -45,14 +46,31 @@ def load_quotes(root="data/raw/options/NVDA", start=START, end=END):
     timing["duplicate_validity_seconds"]=time.perf_counter()-t; clean=pd.DataFrame(grouped).reset_index(drop=True); clean["DTE"]=(clean["Expiry Date"]-clean["Trade Date"]).dt.days; clean["mid"]=(clean["Bid Price"]+clean["Ask Price"])/2
     return clean,{"duplicate_rows_deduped":deduped,"ambiguous_quote_rows_excluded":ambiguous,"quarter_files_opened":len(paths),"option_rows_loaded":len(clean),"timing":timing}
 
-def canonical_option_glob(symbol: str, root: str | Path = "data/parquet/options") -> str:
+def canonical_option_glob(symbol: str, root: str | Path | None = None) -> str:
     """Resolve one ticker to the canonical partitioned Parquet source."""
-    return str(Path(root) / f"symbol={symbol.upper()}" / "year=*" / "quarter=*" / "*.parquet").replace("\\", "/")
+    access = PCSDataAccess(parquet_root="data/parquet" if root is None else Path(root).parent)
+    return access.resolve_source("options", symbol, START, END).path
 
-def load_quotes_canonical(symbol: str, start, end, root: str | Path = "data/parquet/options"):
+def load_quotes_canonical(symbol: str, start, end, root: str | Path | None = None):
     """Bounded research read from ticker-partitioned canonical Parquet."""
-    access = UnifiedDataAccess(parquet_root=Path(root).parent)
-    raw = access.load_option_quotes(symbol, start, end)
+    # Candidate generation must read the active logical options route through the
+    # canonical Parquet boundary.  The legacy UnifiedDataAccess compatibility
+    # facade called ``read_quotes(..., dataset='options')`` and could resolve a
+    # legacy CSV manifest for a newly onboarded ticker, causing a binary
+    # Parquet file to be opened by a text reader downstream.
+    access = PCSDataAccess(parquet_root="data/parquet" if root is None else Path(root).parent)
+    try:
+        # Resolve the ticker's configured authoritative dataset first.  This
+        # preserves legacy canonical routes for existing symbols while using
+        # the active logical options route for CAT and future onboarded symbols.
+        resolved = access.resolve_source("options", symbol, start, end)
+        raw = access.read(resolved.dataset, symbol, start, end)
+    except Exception as exc:
+        raise DataAccessError(
+            f"CANONICAL_OPTIONS_READ_ERROR ticker={str(symbol).upper()} "
+            f"partition={pd.Timestamp(start).to_period('Q')}..{pd.Timestamp(end).to_period('Q')} "
+            f"expected_format=parquet reader=PCSDataAccess.read original_exception={exc}"
+        ) from exc
     raw = raw[raw.call_put.astype(str).str.lower().eq("p")]
     raw = raw.rename(columns={"trade_date":"Trade Date", "expiration_date":"Expiry Date",
         "call_put":"Call/Put", "strike":"Strike", "last":"Last Trade Price",
@@ -60,16 +78,23 @@ def load_quotes_canonical(symbol: str, start, end, root: str | Path = "data/parq
         "bid_iv":"Bid Implied Volatility", "ask_iv":"Ask Implied Volatility",
         "open_interest":"Open Interest", "volume":"Volume"})
     glob = canonical_option_glob(symbol, root)
-    clean, meta = _clean_option_frame(_canonical_to_option_frame(raw))
-    meta.update({"source": "canonical_partitioned_parquet", "symbol": symbol.upper(), "path": glob})
+    clean = _clean_option_frame_fast(_canonical_to_option_frame(raw))
+    meta = {"source": "canonical_partitioned_parquet", "symbol": symbol.upper(), "path": glob,
+            "reader": "PCSDataAccess.read_parquet_duckdb", "rows_returned": len(clean)}
     return clean, meta
 
-def load_quotes_canonical_index(symbol: str, start, end, root: str | Path = "data/parquet/options"):
+def load_quotes_canonical_index(symbol: str, start, end, root: str | Path | None = None):
     """Load one bounded ticker slice and index it by trade date for a run."""
     quotes, meta = load_quotes_canonical(symbol, start, end, root)
     index = {day: group.copy() for day, group in quotes.groupby("Trade Date", sort=False)}
     meta = {**meta, "scan_count": 1, "rows_returned": len(quotes), "index_dates": len(index)}
     return index, meta
+
+def load_spread_quotes_canonical(symbol: str, entry_date, tracking_end, expiration, strikes):
+    """Load lifecycle quotes only from the ticker's active canonical route."""
+    quotes, meta = load_quotes_canonical(symbol, entry_date, tracking_end)
+    out = quotes[(quotes["Expiry Date"] == pd.Timestamp(expiration)) & quotes["Strike"].isin(list(strikes))]
+    return out.reset_index(drop=True), {**meta, "rows_returned": len(out)}
 
 def _canonical_to_option_frame(df):
     names={"trade_date":"Trade Date","expiration_date":"Expiry Date","call_put":"Call/Put","strike":"Strike","last":"Last Trade Price","bid":"Bid Price","ask":"Ask Price","delta":"Delta","bid_iv":"Bid Implied Volatility","ask_iv":"Ask Implied Volatility","open_interest":"Open Interest","volume":"Volume"}
@@ -101,6 +126,7 @@ def _clean_option_frame_fast(raw):
     return usable
 
 def load_quotes_duckdb(db_path, symbol, start, end, con=None):
+    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_quotes_canonical")
     own=con is None
     if con is None: con=connect_duckdb(db_path)
     # The monthly option store is queried directly; refreshing the legacy
@@ -174,6 +200,7 @@ def load_spread_quotes_duckdb_view(db_path, symbol, entry_date, tracking_end,
     return clean
 
 def load_spread_quotes(root, entry_date, tracking_end, expiration, strikes):
+    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_spread_quotes_canonical")
     frames=[]
     for path in _quarter_files(root,pd.Timestamp(entry_date),pd.Timestamp(tracking_end)):
         df=pd.read_csv(path,usecols=OPTION_COLUMNS); df["Trade Date"]=pd.to_datetime(df["Trade Date"]); df["Expiry Date"]=pd.to_datetime(df["Expiry Date"])
@@ -183,6 +210,7 @@ def load_spread_quotes(root, entry_date, tracking_end, expiration, strikes):
     out=pd.concat(frames,ignore_index=True).drop_duplicates(["Trade Date","Expiry Date","Strike","Call/Put"]); out["Call/Put"]=out["Call/Put"].str.lower(); out["DTE"]=(out["Expiry Date"]-out["Trade Date"]).dt.days; out["mid"]=(out["Bid Price"]+out["Ask Price"])/2; return out
 
 def load_spread_quotes_duckdb(db_path, symbol, entry_date, tracking_end, expiration, strikes, con=None):
+    raise DataAccessError("LEGACY_RESEARCH_READER_DISABLED: use load_spread_quotes_canonical")
     own=con is None
     if con is None: con=connect_duckdb(db_path)
     root = str(Path("data/parquet/options_monthly") / f"symbol={symbol.upper()}" / "trade_year=*" / "trade_month=*" / "*.parquet").replace("\\", "/")
@@ -256,14 +284,18 @@ def track_trade(entry, quotes, short, long, initial, max_days=20, quote_index=No
     exit_day=events["profit50"] if reason=="PROFIT50" else events["stop"] if reason=="STOP" else valid_days[-1][0]; exit_cost=next(x[2] for x in valid_days if x[0]==exit_day)
     return {"events":events,"exit_reason":reason,"days_held":len([x for x in valid_days if x[0]<=exit_day]),"exit_cost":exit_cost,"realized_pnl":(initial-exit_cost)*100,"invalid_days":invalid}
 
-def run_backtest(stock, benchmark, config=None, option_root="data/raw/options/NVDA", start=START, end=END, progress_callback=None, backend="csv", duckdb_path="data/duckdb/pcs.duckdb", safe_strike_atr=DEFAULT_SAFE_STRIKE_ATR):
+def run_backtest(stock, benchmark, config=None, option_root="data/raw/options/NVDA", start=START, end=END, progress_callback=None, backend="canonical", duckdb_path="data/duckdb/pcs.duckdb", safe_strike_atr=DEFAULT_SAFE_STRIKE_ATR):
+    if backend != "canonical":
+        raise DataAccessError("LEGACY_OPTION_BACKEND_DISABLED: use PCSDataAccess canonical route")
+    from .ticker_readiness import assert_research_ready
+    assert_research_ready(Path(option_root).name)
     start,end=pd.Timestamp(start),pd.Timestamp(end); stock=stock.copy(); t=time.perf_counter(); trend_lookup=precompute_trend_lookup(stock,benchmark,config,start,end); trend_seconds=time.perf_counter()-t; by_date={d:v["row"] for d,v in trend_lookup.items()}; trades=[]; exclusions=Counter(); option_rows_loaded=0; files_opened=set()
     sim_start=time.perf_counter(); option_loading_seconds=0.0; duck_con=None
     if backend=="duckdb":
         duck_con=connect_duckdb(duckdb_path)
     for processed_day,(day,row) in enumerate(by_date.items(), 1):
         if day<start or day>end:continue
-        load_start=time.perf_counter(); day_quotes,quality=(load_entry_chain(option_root,day) if backend=="csv" else load_quotes_duckdb(duckdb_path,Path(option_root).name,day,day,duck_con)); option_loading_seconds+=time.perf_counter()-load_start; option_rows_loaded+=quality.get("option_rows_loaded",0); files_opened.update(_quarter_files(option_root,day,day)); exclusions.update({k:v for k,v in quality.items() if k not in {"timing","quarter_files_opened","option_rows_loaded"}}); exp=select_expiration(day_quotes); stockrow=stock[stock.date==day]
+        load_start=time.perf_counter(); day_quotes,quality=load_quotes_canonical(Path(option_root).name,day,day); option_loading_seconds+=time.perf_counter()-load_start; option_rows_loaded+=quality.get("rows_returned",0); exclusions.update({k:v for k,v in quality.items() if k not in {"timing","rows_returned"}}); exp=select_expiration(day_quotes); stockrow=stock[stock.date==day]
         if progress_callback and (processed_day == 1 or processed_day % 10 == 0): progress_callback(day, processed_day, len(trades), files_opened, sim_start)
         if exp is None or stockrow.empty: exclusions["missing_expiration_or_stock"]=exclusions["missing_expiration_or_stock"]+1; continue
         close=float(stockrow.close.iloc[0]); atr=float(trend_lookup[day]["atr14"])
@@ -276,7 +308,7 @@ def run_backtest(stock, benchmark, config=None, option_root="data/raw/options/NV
         ratio=cons/5
         if ratio<.15: exclusions["credit_width_below_15pct"]=exclusions["credit_width_below_15pct"]+1; continue
         entry={"date":day,"expiration":exp,"short_strike":short.Strike,"long_strike":long.Strike}
-        tracking_end=min(pd.Timestamp(exp),day+pd.Timedelta(days=45)); load_start=time.perf_counter(); spread_quotes=(load_spread_quotes(option_root,day,tracking_end,exp,[short.Strike,long.Strike]) if backend=="csv" else load_spread_quotes_duckdb(duckdb_path,Path(option_root).name,day,tracking_end,exp,[short.Strike,long.Strike],duck_con)); option_loading_seconds+=time.perf_counter()-load_start; path=track_trade(entry,spread_quotes,short,long,cons); trades.append({**row,"expiration":exp,"short_strike":short.Strike,"long_strike":long.Strike,"target_short":close-safe_strike_atr*atr,"target_buffer_atr":safe_strike_atr,"short_buffer_atr":(close-short.Strike)/atr,"short_buffer_pct":(close-short.Strike)/close,"mid_credit":mid,"initial_credit":cons,"credit_width_ratio":ratio,"credit_bucket":credit_bucket(ratio),"buffer_bucket":buffer_bucket((close-short.Strike)/atr),"short_delta":short.get("Delta"),**path})
+        tracking_end=min(pd.Timestamp(exp),day+pd.Timedelta(days=45)); load_start=time.perf_counter(); spread_quotes,spread_meta=load_spread_quotes_canonical(Path(option_root).name,day,tracking_end,exp,[short.Strike,long.Strike]); option_loading_seconds+=time.perf_counter()-load_start; option_rows_loaded+=spread_meta.get("rows_returned",0); path=track_trade(entry,spread_quotes,short,long,cons); trades.append({**row,"expiration":exp,"short_strike":short.Strike,"long_strike":long.Strike,"target_short":close-safe_strike_atr*atr,"target_buffer_atr":safe_strike_atr,"short_buffer_atr":(close-short.Strike)/atr,"short_buffer_pct":(close-short.Strike)/close,"mid_credit":mid,"initial_credit":cons,"credit_width_ratio":ratio,"credit_bucket":credit_bucket(ratio),"buffer_bucket":buffer_bucket((close-short.Strike)/atr),"short_delta":short.get("Delta"),**path})
     if duck_con is not None: duck_con.close()
     return {"trades":trades,"exclusions":dict(exclusions),"quality":{"candidate_days":len(by_date),"option_rows_loaded":option_rows_loaded,"quarter_files_opened":len(files_opened),"timing":{"trend_precompute_seconds":trend_seconds,"option_loading_seconds":option_loading_seconds,"pcs_simulation_seconds":time.perf_counter()-sim_start-option_loading_seconds}}}
 

@@ -1,5 +1,9 @@
 """Copy validated AMD TXT pilot partitions into a fresh onboarding namespace."""
 from pathlib import Path
+from pcs.data.import_boundary import reject_legacy_import_entrypoint
+
+if __name__ == "__main__":
+    reject_legacy_import_entrypoint()
 import pandas as pd
 from pcs.data.access import PCSDataAccess
 
