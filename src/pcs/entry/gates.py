@@ -23,21 +23,21 @@ class EventGate:
     def evaluate(self, candidate, calendar=None) -> GateResult:
         risk = int(getattr(candidate, "event_risk", 0))
         if calendar is None:
-            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_UNAVAILABLE_IGNORED",))
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_UNAVAILABLE",))
         if calendar.empty:
-            return GateResult("event", GateStatus.PASS)
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_EMPTY",)) if risk > 0 else GateResult("event", GateStatus.PASS)
         try:
             import pandas as pd
             rows = calendar[(calendar.event_type == "EARNINGS") & ((calendar.symbol == candidate.ticker) | calendar.symbol.isna())]
         except Exception:
-            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_NO_TICKER_EVENT",))
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_INVALID",))
         if rows.empty:
-            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_NO_TICKER_EVENT",))
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_TICKER_EVENT_UNAVAILABLE",)) if risk > 0 else GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_NO_TICKER_EVENT",))
         if "event_date_known_at_entry" not in calendar.columns:
-            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_PIT_METADATA_MISSING_IGNORED",), {"event_data_available": True, "event_pit_verified": False, "event_gate_applied": False, "event_gate_result": "NOT_AVAILABLE"})
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_PIT_METADATA_MISSING",))
         known = calendar["event_date_known_at_entry"].astype(str).str.upper()
         if not known.isin({"YES", "TRUE", "1"}).all():
-            return GateResult("event", GateStatus.PASS, ("EVENT_CALENDAR_PIT_METADATA_UNVERIFIED_IGNORED",), {"event_data_available": True, "event_pit_verified": False, "event_gate_applied": False, "event_gate_result": "NOT_AVAILABLE"})
+            return GateResult("event", GateStatus.FAIL, ("EVENT_CALENDAR_PIT_METADATA_UNVERIFIED",))
         if risk > 0:
             return GateResult("event", GateStatus.FAIL, ("EVENT_RISK_PRESENT",))
         try:

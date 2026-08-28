@@ -43,20 +43,19 @@ def test_no_events_is_allowed():
     assert EventGate().evaluate(Candidate(), calendar()).status == GateStatus.PASS
 
 
-def test_missing_calendar_is_ignored():
+def test_missing_calendar_is_fail_closed():
     result = EventGate().evaluate(Candidate(), None)
-    assert result.status == GateStatus.PASS
-    assert "EVENT_CALENDAR_UNAVAILABLE_IGNORED" in result.reason_codes
+    assert result.status == GateStatus.FAIL
+    assert "EVENT_CALENDAR_UNAVAILABLE" in result.reason_codes
 
 
-def test_unverified_event_metadata_is_ignored():
+def test_unverified_event_metadata_is_fail_closed():
     result = EventGate().evaluate(Candidate(), pd.DataFrame({
         "symbol": ["NVDA"], "event_type": ["EARNINGS"],
         "event_date": ["2025-01-20"], "event_date_known_at_entry": ["N/A"],
     }))
-    assert result.status == GateStatus.PASS
-    assert "EVENT_CALENDAR_PIT_METADATA_UNVERIFIED_IGNORED" in result.reason_codes
-    assert result.diagnostics["event_gate_applied"] is False
+    assert result.status == GateStatus.FAIL
+    assert "EVENT_CALENDAR_PIT_METADATA_UNVERIFIED" in result.reason_codes
 
 
 def test_missing_calendar_file_is_optional(tmp_path):

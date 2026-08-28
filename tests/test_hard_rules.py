@@ -2,7 +2,7 @@ from pcs.engine.decision_engine import DecisionEngine, load_rules
 from pcs.models.market import MarketState
 from pcs.models.position import PCSPosition
 from pcs.models.trade import TradeCandidate
-from pcs.models.decision import Action
+from pcs.models.decision import Action, SizeClass
 
 
 def candidate(**overrides):
@@ -54,14 +54,15 @@ def test_broken_thesis_closes_not_rolls():
     assert d.action == Action.CLOSE
 
 
-def test_temporary_decline_with_intact_structure_rolls():
+def test_planned_loss_stop_precedes_roll():
     p = PCSPosition(ticker="NVDA", expiration="2026-08-28", short_strike=160, long_strike=155,
                     underlying_price=162, credit_opened=1, current_mark=2, contracts=1, dte=10,
                     planned_risk=500, theoretical_max_loss=400, support_level=160, structure_valid=True,
                     thesis_valid=True, liquidity_score=90, rollability_score=90, decline_temporary=True,
                     candidate_roll={"expiration": "2026-09-25", "net_credit": 0.2})
     d = engine().evaluate_position(p, MarketState(vix=18))
-    assert d.action == Action.ROLL
+    assert d.action == Action.CLOSE
+    assert "planned-loss stop" in d.reason
 
 
 def test_early_profitable_healthy_position_holds():
@@ -79,3 +80,21 @@ def test_reserve_cash_does_not_increase_sizing():
     d = DecisionEngine(rules).evaluate_candidate(candidate(), MarketState(vix=18), {"planned_risk": 0, "bucket_risk": {}})
     assert d.planned_risk <= rules["capital"]["single_ticker"]["conviction_ceiling"]
     assert rules["capital"]["reserve_cash"] == 20000
+
+
+def test_new_position_is_capped_by_remaining_portfolio_capacity():
+    rules = load_rules()
+    c, planned, _, _ = DecisionEngine(rules).sizer.size(
+        candidate(), SizeClass.TWO, {"planned_risk": 9500, "bucket_risk": {}}
+    )
+    assert c >= 0
+    assert planned <= rules["portfolio"]["max_planned_risk"] - 9500
+
+
+def test_invalid_roll_is_rejected():
+    p = PCSPosition(ticker="NVDA", expiration="2026-08-28", short_strike=160, long_strike=155,
+                    underlying_price=162, credit_opened=1, current_mark=1.5, contracts=1, dte=10,
+                    planned_risk=500, theoretical_max_loss=400, support_level=160, structure_valid=True,
+                    thesis_valid=True, liquidity_score=90, rollability_score=90, decline_temporary=True,
+                    candidate_roll={"expiration": "2026-09-25", "net_credit": -0.1})
+    assert engine().evaluate_position(p, MarketState(vix=18)).action == Action.HOLD

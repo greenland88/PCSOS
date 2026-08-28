@@ -237,6 +237,10 @@ class ImportEngine:
     def promote(self, staged: dict[str, Any], *, source_version: str):
         path = Path(staged["path"]); frame = pd.read_parquet(path)
         written = None
+        metadata_files = [Path(self.access.manifest_path), Path(self.access.provenance_manifest_path), Path(self.catalog.path), Path(self.ledger.path)]
+        snapshots = {}
+        for target in metadata_files:
+            snapshots[target] = target.read_bytes() if target.exists() else None
         try:
             written = self.access.write_partition(frame, staged["dataset"], staged["symbol"], staged["partition"], source_version=source_version)
             self.access.record_provenance({"dataset": staged["dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(frame), "status": "PROMOTED"})
@@ -250,6 +254,15 @@ class ImportEngine:
             if written is not None:
                 try: Path(written).unlink(missing_ok=True)
                 except OSError: pass
+            for target, payload in snapshots.items():
+                try:
+                    if payload is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(payload)
+                except OSError:
+                    pass
             quarantine = self.staging_root / "quarantine" / staged["request_id"]
             quarantine.parent.mkdir(parents=True, exist_ok=True)
             if path.exists(): path.replace(quarantine.with_suffix(".parquet"))
@@ -841,8 +854,10 @@ class MarketDataControlPlane:
         checked = checked[checked["symbol"] == symbol]
         checked["trade_date"] = pd.to_datetime(checked["trade_date"]).dt.normalize()
         checked["expiration_date"] = pd.to_datetime(checked["expiration_date"]).dt.normalize()
-        checked["call_put"] = checked["call_put"].astype(str).str.lower().replace({"call": "c"})
-        checked = checked[checked["call_put"] == "c"]
+        checked["call_put"] = (checked["call_put"].astype(str).str.lower()
+                                .replace({"call": "c", "put": "p"}))
+        if not checked["call_put"].isin({"c", "p"}).all():
+            raise DataAccessError("EXACT_OPTIONS_INVALID_CALL_PUT")
         checked = checked.drop_duplicates(keep="last")
         if expected_keys:
             actual = {(str(r.trade_date.date()), str(r.expiration_date.date()), float(r.strike), str(r.call_put)) for r in checked.itertuples()}

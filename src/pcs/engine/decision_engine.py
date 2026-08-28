@@ -90,7 +90,12 @@ class DecisionEngine:
 
     def evaluate_position(self, p, market_state) -> Decision:
         regime, regime_score, flags = self.regime.classify(market_state)
-        action, reason, roll = self.rolls.evaluate(p)
+        stop_multiple = float(self.rules["entry"].get("planned_loss_multiple", 1.0))
+        stop_mark = p.credit_opened * (1.0 + stop_multiple)
+        if p.credit_opened > 0 and p.current_mark >= stop_mark:
+            action, reason, roll = Action.CLOSE, "planned-loss stop reached", None
+        else:
+            action, reason, roll = self.rolls.evaluate(p)
         if action == Action.HOLD and p.profit_capture_pct > 0:
             action, reason = self.profits.evaluate(p)
         scores = ScoreBreakdown(market_regime=regime_score, underlying_quality=80, trend=80 if p.structure_valid else 20,
