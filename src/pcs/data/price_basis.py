@@ -11,6 +11,7 @@ from typing import Iterable
 import pandas as pd
 from pathlib import Path
 import csv
+from typing import Any
 
 
 class PriceBasis(StrEnum):
@@ -26,6 +27,48 @@ class CorporateActionType(StrEnum):
 
 class PriceBasisError(ValueError):
     pass
+
+
+def assert_comparable_contract(*, spot: float, strike: float,
+                               price_basis: PriceBasis,
+                               sane_upper_bound: float = 2.0) -> None:
+    """Fail closed when a spot/strike pair is not economically comparable."""
+    if price_basis == PriceBasis.UNKNOWN:
+        raise PriceBasisError("PRICE_BASIS_UNKNOWN")
+    if float(spot) <= 0 or float(strike) <= 0:
+        raise PriceBasisError("PRICE_BASIS_MISMATCH")
+    ratio = float(strike) / float(spot)
+    if ratio >= float(sane_upper_bound):
+        raise PriceBasisError("PRICE_BASIS_MISMATCH")
+
+
+def transform_frame_to_basis(frame: Any, *, symbol: str, date_column: str,
+                             from_basis: PriceBasis, to_basis: PriceBasis,
+                             registry: "CorporateActionRegistry") -> Any:
+    """Transform absolute price fields while preserving dimensionless features.
+
+    Daily adjusted OHLC, ATR, SMA and price levels are converted to the
+    requested market basis. Option premiums are deliberately excluded: the
+    option source declares its own quote basis and must not be scaled here.
+    """
+    if from_basis == to_basis:
+        return frame.copy()
+    out = frame.copy()
+    absolute = {"open", "high", "low", "close", "adjusted_close", "atr",
+                "atr14", "sma20", "sma50", "sma200", "recent_high",
+                "resistance", "safe_strike"}
+    present = absolute.intersection(out.columns)
+    for idx, value in out[date_column].items():
+        factor = registry.adjustment_factor(symbol, value, from_basis, to_basis)
+        if from_basis == PriceBasis.ANALYTIC_ADJUSTED and to_basis == PriceBasis.MARKET_RAW:
+            factor = 1.0 / factor
+        for column in present:
+            if pd.notna(out.at[idx, column]):
+                out.at[idx, column] = float(out.at[idx, column]) * factor
+    out.attrs = dict(getattr(frame, "attrs", {}))
+    out.attrs.update({"price_basis": str(to_basis), "source_price_basis": str(from_basis),
+                      "corporate_action_transform": "ABSOLUTE_PRICE_FIELDS_ONLY"})
+    return out
 
 
 @dataclass(frozen=True)
@@ -57,7 +100,10 @@ class CorporateActionRegistry:
             return 1.0
         if PriceBasis.UNKNOWN in (from_basis, to_basis):
             raise PriceBasisError("PRICE_BASIS_UNKNOWN")
-        if (from_basis, to_basis) != (PriceBasis.MARKET_RAW, PriceBasis.ANALYTIC_ADJUSTED):
+        if (from_basis, to_basis) not in {
+            (PriceBasis.MARKET_RAW, PriceBasis.ANALYTIC_ADJUSTED),
+            (PriceBasis.ANALYTIC_ADJUSTED, PriceBasis.MARKET_RAW),
+        }:
             raise PriceBasisError(f"unsupported price-basis conversion: {from_basis}->{to_basis}")
         day = pd.Timestamp(date).normalize()
         actions = self.actions_for(symbol)
@@ -67,7 +113,7 @@ class CorporateActionRegistry:
         for action in actions:
             if pd.Timestamp(action.effective_date).normalize() > day:
                 factor *= float(action.ratio)
-        return factor
+        return factor if from_basis == PriceBasis.MARKET_RAW else 1.0 / factor
 
     def to_comparison_strike(self, symbol: str, date, raw_strike: float) -> float:
         return float(raw_strike) / self.adjustment_factor(symbol, date, PriceBasis.MARKET_RAW, PriceBasis.ANALYTIC_ADJUSTED)
