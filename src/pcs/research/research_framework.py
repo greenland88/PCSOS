@@ -21,6 +21,12 @@ class ResearchMode(StrEnum):
     CURRENT_STRATEGY_REPLAY = "CURRENT_STRATEGY_REPLAY"
 
 
+class StrategyType(StrEnum):
+    PUT_CREDIT_SPREAD = "PUT_CREDIT_SPREAD"
+    COVERED_CALL = "COVERED_CALL"
+    CASH_SECURED_PUT = "CASH_SECURED_PUT"
+
+
 class ResearchStatus(StrEnum):
     SPEC_INCOMPLETE = "SPEC_INCOMPLETE"
     DAILY_DATA_MISSING = "DAILY_DATA_MISSING"
@@ -59,7 +65,7 @@ class OnboardingStage(StrEnum):
 
 
 REQUIRED_FIELDS = (
-    "research_id", "ticker", "research_mode", "hypothesis", "population_source",
+    "research_id", "ticker", "strategy_type", "research_mode", "hypothesis", "population_source",
     "signal_definition", "entry_date_rule", "date_range", "split_policy",
     "contract_selection_policy", "lifecycle_policy", "frozen_parameters",
     "allowed_parameters",
@@ -108,6 +114,7 @@ def validate_parameter_experiment(spec: Mapping[str, Any]) -> Mapping[str, Any]:
 class ResearchSpec:
     research_id: str
     ticker: str
+    strategy_type: StrategyType
     research_mode: ResearchMode
     hypothesis: str
     population_source: Mapping[str, Any]
@@ -143,7 +150,9 @@ def _mapping(value: Any, name: str) -> Mapping[str, Any]:
 
 
 def from_mapping(raw: Mapping[str, Any]) -> ResearchSpec:
-    missing = [x for x in REQUIRED_FIELDS if x not in raw]
+    # Preserve the historical structural checks' precedence so callers still
+    # receive the specific routing error when several fields are malformed.
+    missing = [x for x in REQUIRED_FIELDS if x not in raw and x != "strategy_type"]
     if missing:
         raise ResearchSpecError("MISSING_REQUIRED_FIELDS:" + ",".join(missing))
     empty = [x for x in REQUIRED_NONEMPTY_FIELDS if not raw.get(x)]
@@ -153,11 +162,15 @@ def from_mapping(raw: Mapping[str, Any]) -> ResearchSpec:
         mode = ResearchMode(str(raw["research_mode"]).upper())
     except (ValueError, TypeError) as exc:
         raise ResearchSpecError(f"UNKNOWN_RESEARCH_MODE:{raw.get('research_mode')}") from exc
+    try:
+        strategy_type = StrategyType(str(raw["strategy_type"]).upper())
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ResearchSpecError(f"UNKNOWN_STRATEGY_TYPE:{raw.get('strategy_type')}") from exc
     signal = _mapping(raw["signal_definition"], "signal_definition")
     if not signal:
         raise ResearchSpecError("SIGNAL_DEFINITION_REQUIRED")
     return ResearchSpec(
-        research_id=str(raw["research_id"]), ticker=str(raw["ticker"]).upper(),
+        research_id=str(raw["research_id"]), ticker=str(raw["ticker"]).upper(), strategy_type=strategy_type,
         research_mode=mode, hypothesis=str(raw["hypothesis"]),
         population_source=_mapping(raw["population_source"], "population_source"),
         signal_definition=signal, entry_date_rule=_mapping(raw["entry_date_rule"], "entry_date_rule"),

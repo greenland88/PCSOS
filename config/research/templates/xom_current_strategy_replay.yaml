@@ -1,5 +1,6 @@
 research_id: xom_current_strategy_replay_train_20260825
 ticker: XOM
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: CURRENT_STRATEGY_REPLAY
 hypothesis: Canonical TRAIN replay of the unchanged PCS strategy on XOM.
 population_source: {type: ticker_daily_calendar, frozen: false}

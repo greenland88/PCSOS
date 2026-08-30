@@ -7,7 +7,7 @@ from pcs.research.research_framework import (
 
 
 def base(mode="NEW_ENTRY", source=None, signal=None):
-    return dict(research_id="x", ticker="AMD", research_mode=mode,
+    return dict(research_id="x", ticker="AMD", strategy_type="PUT_CREDIT_SPREAD", research_mode=mode,
         hypothesis="h", population_source=source or {"type": "ticker_daily_calendar", "frozen": False},
         signal_definition=signal or {"creates_new_entry_dates": mode == "NEW_ENTRY"},
         entry_date_rule={"rule": "t1"}, date_range={}, split_policy={},

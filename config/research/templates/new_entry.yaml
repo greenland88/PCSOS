@@ -1,5 +1,6 @@
 research_id: amd_early_recovery_new_entry
 ticker: AMD
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: NEW_ENTRY
 hypothesis: Recovery confirmation after a prior breakdown can create a new PCS entry.
 population_source: {type: ticker_daily_calendar, frozen: false, point_in_time: true}

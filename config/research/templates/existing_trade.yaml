@@ -1,5 +1,6 @@
 research_id: existing_trade_diagnosis
 ticker: SPY
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: EXISTING_TRADE
 hypothesis: Diagnose lifecycle outcomes of existing trades.
 population_source: {type: frozen_trade_ledger, frozen: true}

@@ -1,5 +1,6 @@
 research_id: msft_current_strategy_replay_active_options_20260824
 ticker: MSFT
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: CURRENT_STRATEGY_REPLAY
 hypothesis: Plumbing validation of the existing strategy rule set using the active canonical logical options route.
 population_source: {type: ticker_daily_calendar, frozen: false}

@@ -1,5 +1,6 @@
 research_id: amd_current_strategy_replay_train_plumbing
 ticker: AMD
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: CURRENT_STRATEGY_REPLAY
 hypothesis: Plumbing validation of the existing strategy rule set.
 population_source: {type: ticker_daily_calendar, frozen: false}

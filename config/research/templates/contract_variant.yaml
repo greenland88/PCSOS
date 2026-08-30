@@ -1,5 +1,6 @@
 research_id: contract_variant_study
 ticker: QQQ
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: CONTRACT_VARIANT
 hypothesis: Compare contract construction for fixed entry dates.
 population_source: {type: frozen_entry_ledger, frozen: true, entry_dates_frozen: true}

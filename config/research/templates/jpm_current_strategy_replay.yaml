@@ -1,5 +1,6 @@
 research_id: jpm_current_strategy_replay_from_2018_20260825
 ticker: JPM
+strategy_type: PUT_CREDIT_SPREAD
 research_mode: CURRENT_STRATEGY_REPLAY
 hypothesis: Plumbing validation of the existing strategy rule set using the active canonical logical options route from the declared executable data boundary.
 population_source: {type: ticker_daily_calendar, frozen: false}

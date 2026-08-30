@@ -169,8 +169,12 @@ class ResearchRunner:
                                  "FINAL_OOS_NOT_READ", "PRODUCTION_WRITE_BLOCKED"]}
 
     def execute_current_strategy_replay(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
-        if str(self.spec.rules.get("strategy", "")).upper() == "COVERED_CALL":
+        if self.spec.strategy_type.value == "COVERED_CALL":
             return self.execute_covered_call_research(data_access=data_access)
+        if self.spec.strategy_type.value == "CASH_SECURED_PUT":
+            return self.execute_cash_secured_put_research(data_access=data_access)
+        if self.spec.strategy_type.value not in {"PUT_CREDIT_SPREAD"}:
+            raise ResearchSpecError(f"UNSUPPORTED_STRATEGY_TYPE:{self.spec.strategy_type.value}")
         if self.spec.research_mode.value not in {"CURRENT_STRATEGY_REPLAY", "NEW_ENTRY"}:
             raise ResearchSpecError("EXECUTION_ONLY_SUPPORTS_NEW_ENTRY_OR_CURRENT_REPLAY")
         from .ticker_readiness import assert_research_ready
@@ -201,6 +205,17 @@ class ResearchRunner:
                                            price_basis_service=load_corporate_actions())
 
     execute_research_replay = execute_current_strategy_replay
+
+    def execute_cash_secured_put_research(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
+        """Dispatch boundary for the research-only CSP adapter.
+
+        The adapter is intentionally explicit; absent implementation or
+        readiness must fail closed rather than falling into PCS replay.
+        """
+        if self.spec.ticker != "SOXL":
+            raise ResearchSpecError("CASH_SECURED_PUT_PROFILE_NOT_VALIDATED")
+        from .cash_secured_put_runner import CashSecuredPutLifecycleRunner
+        return CashSecuredPutLifecycleRunner(self.spec, data_access=data_access).run()
 
     def execute_covered_call_research(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
         """Execute the covered-call adapter after the normal readiness gates.

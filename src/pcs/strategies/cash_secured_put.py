@@ -21,7 +21,7 @@ class PutLifecycleState(StrEnum):
     HOLD = "HOLD"
     PROFIT_CLOSE = "PROFIT_CLOSE"
     RISK_CLOSE = "RISK_CLOSE"
-    ROLL_DOWN_OUT = "ROLL_DOWN_OUT"
+    ROLL_DOWN_OUT = "ROLL_DOWN_OUT"  # legacy audit label; position remains active after roll
     EXPIRE_WORTHLESS = "EXPIRE_WORTHLESS"
     ASSIGNMENT = "ASSIGNMENT"
 
@@ -74,6 +74,7 @@ class PutSelection:
     contract: ShortPutContract | None
     candidates: tuple[dict[str, Any], ...]
     reason_codes: tuple[str, ...]
+    selected_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,11 +125,12 @@ class ShortPutContractSelector:
                    "open_interest": c.open_interest, "volume": c.volume, "credit": c.credit,
                    "collateral_required": c.collateral_required, "atr_distance": c.atr_distance,
                    "eligible": not rejected, "reason_codes": rejected}
-            if not rejected: rows.append((c, row))
-        if reasons or not rows:
-            return PutSelection(None, tuple(x[1] for x in rows), tuple(reasons or ["NO_LIQUIDITY_ELIGIBLE_PUT"]))
-        chosen = min(rows, key=lambda x: (abs(abs(float(x[0].delta)) - .20), abs(x[0].dte - 21), -x[0].bid))
-        return PutSelection(chosen[0], tuple(x[1] for x in rows), ("PIT_QUOTE_VALIDATED", "DYNAMIC_STRIKE_SELECTED"))
+            rows.append((c, row))
+        eligible = [(c, row) for c, row in rows if row["eligible"]]
+        if reasons or not eligible:
+            return PutSelection(None, tuple(x[1] for x in rows), tuple(reasons or ["NO_LIQUIDITY_ELIGIBLE_PUT"]), None)
+        chosen = min(eligible, key=lambda x: (abs(abs(float(x[0].delta)) - .20), abs(x[0].dte - 21), -x[0].bid))
+        return PutSelection(chosen[0], tuple(x[1] for x in rows), ("PIT_QUOTE_VALIDATED", "DYNAMIC_STRIKE_SELECTED"), "closest_delta_then_dte_then_bid")
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,9 @@ class CashSecuredPutPosition:
     state: PutLifecycleState = PutLifecycleState.OPEN
     roll_count: int = 0
     assignment: AssignmentLedger | None = None
+    roll_history: list[dict[str, Any]] = field(default_factory=list)
+    cumulative_credit: float = 0.0
+    max_rolls: int = 3
 
     def collateral(self) -> float:
         return self.contract.strike * 100 - self.entry_credit * 100
@@ -160,7 +165,7 @@ class CashSecuredPutPosition:
         return (self.entry_credit - buyback_ask) * 100
 
     def hold(self) -> None:
-        if self.state is not PutLifecycleState.OPEN:
+        if self.state not in {PutLifecycleState.OPEN, PutLifecycleState.HOLD}:
             raise ValueError("PUT_NOT_OPEN")
         self.state = PutLifecycleState.HOLD
 
@@ -168,6 +173,8 @@ class CashSecuredPutPosition:
         """Replace the put only with exact quotes and a net positive credit."""
         if self.state not in {PutLifecycleState.OPEN, PutLifecycleState.HOLD}:
             raise ValueError("PUT_NOT_OPEN")
+        if self.roll_count >= int(self.max_rolls):
+            raise ValueError("MAX_ROLLS_EXCEEDED")
         if new_contract.expiration <= self.contract.expiration or new_contract.strike >= self.contract.strike:
             raise ValueError("ROLL_MUST_BE_DOWN_AND_OUT")
         if old_buyback_ask <= 0 or new_contract.bid <= 0 or new_contract.ask < new_contract.bid:
@@ -175,10 +182,16 @@ class CashSecuredPutPosition:
         credit = (new_contract.bid - float(old_buyback_ask)) * 100
         if credit <= 0:
             raise ValueError("ROLL_REJECT_DEBIT")
+        old_contract = self.contract
         self.entry_credit += credit / 100
+        self.cumulative_credit += credit / 100
         self.contract = new_contract
         self.roll_count += 1
-        self.state = PutLifecycleState.ROLL_DOWN_OUT
+        self.roll_history.append({"from_expiration": old_contract.expiration, "from_strike": old_contract.strike,
+                                  "to_expiration": new_contract.expiration, "to_strike": new_contract.strike,
+                                  "old_buyback_ask": float(old_buyback_ask), "new_bid": float(new_contract.bid),
+                                  "net_credit": credit / 100, "roll_number": self.roll_count})
+        self.state = PutLifecycleState.HOLD
         return credit
 
     def expire(self, underlying_close: float, days_held: int) -> float:
@@ -191,6 +204,6 @@ class CashSecuredPutPosition:
         basis = self.contract.strike - self.entry_credit
         self.assignment = AssignmentLedger(self.contract.strike, 100, self.entry_credit * 100,
                                             basis, (float(stock_mark) - basis) * 100,
-                                            self.entry_credit * 100 + (float(stock_mark) - basis) * 100,
+                                            (float(stock_mark) - basis) * 100,
                                             int(days_held))
         return self.assignment

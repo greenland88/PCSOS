@@ -33,15 +33,16 @@ def test_assignment_ledger_and_mtm():
     assert ledger.shares_acquired == 100
     assert ledger.adjusted_stock_cost_basis == 19
     assert ledger.stock_mtm == -100
-    assert ledger.total_economic_pnl == 0
+    assert ledger.total_economic_pnl == -100
 
 
 def test_roll_is_down_and_out_and_credit_only():
     p = CashSecuredPutPosition(contract(), entry_credit=1.0)
     credit = p.roll_down_out(contract(strike=19, expiration="2025-02-06", bid=1.2, ask=1.3), 1.0)
     assert credit == approx(20)
-    assert p.state is PutLifecycleState.ROLL_DOWN_OUT
+    assert p.state is PutLifecycleState.HOLD
     assert p.roll_count == 1
+    assert len(p.roll_history) == 1
 
 
 def test_strategy_type_is_csp():

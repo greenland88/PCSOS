@@ -1,5 +1,6 @@
 research_id: covered_call_{ticker}_baseline
 ticker: NVDA
+strategy_type: COVERED_CALL
 research_mode: NEW_ENTRY
 hypothesis: "Identify PIT-safe dates when selling one call against 100 long shares improves total economic return versus buy-and-hold."
 population_source:
