@@ -1,0 +1,8 @@
+research_id: pltr_frequency_aware_covered_call_v1
+symbol: PLTR
+status: FROZEN
+non_overlapping: true
+TRAIN: {start: "2020-10-20", end: "2023-12-31"}
+HOLDOUT: {start: "2024-01-01", end: "2025-12-31", status: SEALED}
+VALIDATION: {start: "2026-01-01", end: "2026-07-31", status: SEALED}
+FINAL_OOS: {start: null, end: null, status: SEALED, authorized: false}

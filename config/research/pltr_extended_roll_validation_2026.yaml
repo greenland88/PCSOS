@@ -1,0 +1,18 @@
+research_id: pltr_extended_roll_itm_validation_2026_20260827
+ticker: PLTR
+research_mode: NEW_ENTRY
+hypothesis: "Fixed BALANCED entry rules with repeated later-expiration ITM-capable net-credit rolls."
+population_source: {type: ticker_daily_calendar, source: PCSDataAccess, frozen: false}
+signal_definition: {name: frequency_aware_or_signals, creates_new_entry_dates: true, inputs: [ticker_daily_calendar, trailing_price_features, trailing_option_iv]}
+entry_date_rule: {rule: "BALANCED frozen rule", decision_timing: post_close}
+date_range: {start: "2026-01-01", end: "2026-07-31"}
+split_policy: {train: "2020-10-20/2023-12-31", historical_holdout: "2024-01-01/2025-12-31", validation: "2026-01-01/2026-07-31", final_oos: SEALED}
+contract_selection_policy: {source: PCSDataAccess, exact_contract_identity: true, select_after_signal_date: true, execution: {open: bid, close: ask, roll_old_leg: ask, roll_new_leg: bid}}
+lifecycle_policy: {model: LONG_100_SHARES_PLUS_SHORT_1_CALL, default_action: WAIT, continuous_coverage: false, forced_stock_sale: false, terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS], roll_policy: {later_expiration: true, higher_strike: true, net_credit_required: true, exact_quotes_required: true, liquidity_required: true, repeated_rolls: true}}
+frozen_parameters: {shares: 100, multiplier: 100, max_rolls: 10}
+allowed_parameters:
+  candidate_configs:
+    - {config_id: BALANCED_EXTENDED_ROLL, family: BALANCED, dte_min: 21, dte_max: 35, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.08, minimum_premium_yield: 0.006, cooldown_days: 10, max_rolls: 10, defense_budget_ratio: 0.50}
+rules: {strategy: COVERED_CALL, engine: HUMAN_STYLE_OPPORTUNISTIC_V3, event_dataset: null, covered_call_config: {commission_per_contract: 0.65, slippage_per_contract: 0.05}}
+final_oos_access: false
+production_changes_allowed: false

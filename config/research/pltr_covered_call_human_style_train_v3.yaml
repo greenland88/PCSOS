@@ -1,0 +1,60 @@
+research_id: pltr_covered_call_human_style_train_v3_pit_repaired
+ticker: PLTR
+research_mode: NEW_ENTRY
+hypothesis: "WAIT by default; sell calls only after a PIT rally/IV/resistance advantage, with explicit defense budgets and non-continuous coverage."
+population_source:
+  type: ticker_daily_calendar
+  source: PCSDataAccess
+  frozen: false
+signal_definition:
+  name: human_style_opportunistic_covered_call_v3
+  creates_new_entry_dates: true
+  inputs: [ticker_daily_calendar, trailing_price_features, trailing_option_iv, declared_earnings_calendar]
+entry_date_rule:
+  rule: family_specific_rally_iv_or_pit_resistance_with_breakout_and_event_blocks
+  decision_timing: post_close
+date_range: {start: "2020-10-20", end: "2023-12-31"}
+split_policy:
+  train: "2020-10-20/2023-12-31"
+  historical_holdout: SEALED
+  validation: NOT_RUN
+  final_oos: SEALED
+contract_selection_policy:
+  source: PCSDataAccess
+  exact_contract_identity: true
+  select_after_signal_date: true
+  execution: {open: bid, close: ask, roll_old_leg: ask, roll_new_leg: bid}
+lifecycle_policy:
+  model: LONG_100_SHARES_PLUS_SHORT_1_CALL
+  default_action: WAIT
+  continuous_coverage: false
+  forced_stock_sale: false
+  terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS]
+frozen_parameters:
+  shares: 100
+  multiplier: 100
+  min_open_interest: 100
+  min_volume: 1
+  max_spread_pct: 0.20
+  breakout_definition: "close > prior_60d_high * 1.01 and return_5d > 0.06"
+  acceleration_definition: "return_3d > 0.06 or (return_5d > 0.10 and close > lagged_sma20)"
+  earnings_block_calendar_days: 7
+allowed_parameters:
+  candidate_configs:
+    - {config_id: CONSERVATIVE_30_45_50, family: CONSERVATIVE_INCOME, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.10, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: A2_CONSERVATIVE_30_45_65, family: CONSERVATIVE_INCOME, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.65, minimum_moneyness: 0.10, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 0, defense_budget_ratio: 0.50}
+rules:
+  strategy: COVERED_CALL
+  engine: HUMAN_STYLE_OPPORTUNISTIC_V3
+  event_dataset: PCSDataAccess:events
+  mechanical_matrix_artifact: research_outputs/pltr_covered_call_research_v1/train_baseline/train_parameter_matrix_v1.json
+  prior_freeze_artifact: research_outputs/pltr_covered_call_research_v1/train_baseline/train_parameter_candidate_freeze_v2.json
+  mechanical_baseline_artifact: research_outputs/pltr_covered_call_research_v1/train_baseline/baseline_v2.json
+  covered_call_config: {event_window_days: 7, commission_per_contract: 0.65, slippage_per_contract: 0.05}
+  candidate_gate:
+    minimum_positive_years: 2
+    maximum_top_episode_share: 0.50
+    minimum_wealth_ratio: 0.98
+    maximum_assignment_exposure_episodes: 0
+final_oos_access: false
+production_changes_allowed: false

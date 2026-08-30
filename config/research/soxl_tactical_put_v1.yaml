@@ -1,0 +1,89 @@
+research_id: SOXL_TACTICAL_PUT_V1
+ticker: SOXL
+research_mode: NEW_ENTRY
+hypothesis: >-
+  A research-only, point-in-time tactical short-put overlay may improve
+  downside-aware capital efficiency when market, semiconductor, and SOXL
+  context agree, subject to executable option quotes and portfolio risk gates.
+population_source:
+  type: ticker_daily_calendar
+  ticker: SOXL
+  frozen: false
+  point_in_time: true
+  source: PCSDataAccess
+signal_definition:
+  creates_new_entry_dates: true
+  entry_generation: true
+  decision_actions: [SELL_PUT, WAIT, NO_TRADE]
+  context_layers:
+    market: [QQQ, VIX, VXN, breadth]
+    semiconductor: [SOXX, SMH, semiconductor_trend]
+    soxl: [trend, drawdown, atr, support, volume, stabilization]
+  decision_time_only: true
+entry_date_rule:
+  rule: full_pit_calendar_context_decision_date
+  entry_date_need_not_remain_baseline_setup: true
+date_range:
+  start: '2018-01-01'
+  end: '2026-08-18'
+split_policy:
+  train_end: '2025-12-31'
+  validation_start: '2026-01-01'
+  validation_end: '2026-08-18'
+  final_oos_access: false
+contract_selection_policy:
+  mode: DYNAMIC_PIT_SHORT_PUT_SELECTOR
+  as_of_only: true
+  option_type: put
+  dte: {min: 7, max: 45}
+  absolute_delta: {min: 0.08, max: 0.35}
+  atr_distance: {min: 1.0, max: 3.5}
+  required_checks:
+    - valid_bid_ask
+    - spread
+    - open_interest
+    - volume
+    - real_credit
+    - support_distance
+    - atr_distance
+    - assignment_capital
+    - portfolio_risk
+lifecycle_policy:
+  engine: canonical_short_put_lifecycle
+  states: [OPEN, HOLD, CLOSE, ROLL, EXPIRY, ASSIGNMENT]
+  profit_target: {min: 0.40, max: 0.80}
+  roll_window_dte: {min: 3, max: 14}
+  assignment_stock_mtm: true
+  quote_basis: bid_ask_only
+  missing_quote_policy: FAIL_CLOSED
+frozen_parameters:
+  strategy_status: RESEARCH_ONLY_SHADOW
+  legacy_baseline: LEGACY_BASELINE_READ_ONLY
+  final_oos_access: false
+  production_changes_allowed: false
+allowed_parameters:
+  research_only: true
+  broad_parameter_study: true
+  dte: [7, 45]
+  absolute_delta: [0.08, 0.35]
+  atr_distance: [1.0, 3.5]
+  profit_target: [0.40, 0.80]
+  roll_window_dte: [3, 14]
+rules:
+  data_access: PCSDataAccess
+  runner: unified_research_runner
+  canonical_data_only: true
+  legacy_fallback: false
+  final_oos_access: false
+  production_changes_allowed: false
+  comparison_strategies: [ALWAYS_SELL, LEGACY_BASELINE, SOXL_TACTICAL_PUT_V1, WAIT]
+  output_scope: research/shadow
+  required_outputs:
+    - readiness_report.json
+    - daily_decision_packets.parquet
+    - candidate_contracts.parquet
+    - selected_trades.parquet
+    - lifecycle_results.parquet
+    - assignment_ledger.parquet
+    - yearly_metrics.json
+    - strategy_comparison.json

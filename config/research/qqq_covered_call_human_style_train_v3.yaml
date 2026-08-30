@@ -1,0 +1,49 @@
+research_id: qqq_covered_call_human_style_train_v3
+ticker: QQQ
+research_mode: NEW_ENTRY
+hypothesis: "Apply the identical WAIT-first opportunistic covered-call family to QQQ TRAIN without ticker-specific retuning."
+population_source: {type: ticker_daily_calendar, source: PCSDataAccess, frozen: false}
+signal_definition: {name: human_style_opportunistic_covered_call_v3, creates_new_entry_dates: true, inputs: [ticker_daily_calendar, trailing_price_features, trailing_option_iv]}
+entry_date_rule: {rule: family_specific_rally_iv_or_pit_resistance_with_breakout_block, decision_timing: post_close}
+date_range: {start: "2020-10-20", end: "2023-12-31"}
+split_policy: {train: "2020-10-20/2023-12-31", historical_holdout: SEALED, validation: NOT_RUN, final_oos: SEALED}
+contract_selection_policy:
+  source: PCSDataAccess
+  exact_contract_identity: true
+  select_after_signal_date: true
+  execution: {open: bid, close: ask, roll_old_leg: ask, roll_new_leg: bid}
+lifecycle_policy: {model: LONG_100_SHARES_PLUS_SHORT_1_CALL, default_action: WAIT, continuous_coverage: false, forced_stock_sale: false, terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS]}
+frozen_parameters:
+  shares: 100
+  multiplier: 100
+  min_open_interest: 100
+  min_volume: 1
+  max_spread_pct: 0.20
+  breakout_definition: "close > prior_60d_high * 1.01 and return_5d > 0.06"
+  acceleration_definition: "return_3d > 0.06 or (return_5d > 0.10 and close > lagged_sma20)"
+  earnings_block_calendar_days: NOT_APPLICABLE_ETF
+allowed_parameters:
+  candidate_configs:
+    - {config_id: A1_CONSERVATIVE_14_30_50, family: CONSERVATIVE_INCOME, dte_min: 14, dte_max: 30, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.08, minimum_premium_yield: 0.006, cooldown_days: 10, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: A2_CONSERVATIVE_30_45_65, family: CONSERVATIVE_INCOME, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.65, minimum_moneyness: 0.10, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: B1_RALLY_IV_7_21_50, family: RALLY_IV_SPIKE, dte_min: 7, dte_max: 21, delta_min: 0.15, delta_max: 0.20, profit_take: 0.50, minimum_moneyness: 0.05, minimum_premium_yield: 0.006, cooldown_days: 10, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: B2_RALLY_IV_14_30_65, family: RALLY_IV_SPIKE, dte_min: 14, dte_max: 30, delta_min: 0.15, delta_max: 0.20, profit_take: 0.65, minimum_moneyness: 0.06, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: C1_RESISTANCE_14_30_50, family: RESISTANCE_SELLER, dte_min: 14, dte_max: 30, delta_min: 0.10, delta_max: 0.20, profit_take: 0.50, minimum_moneyness: 0.03, minimum_premium_yield: 0.006, cooldown_days: 10, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: C2_RESISTANCE_14_30_65, family: RESISTANCE_SELLER, dte_min: 14, dte_max: 30, delta_min: 0.10, delta_max: 0.20, profit_take: 0.65, minimum_moneyness: 0.05, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: D1_NO_ROLL_14_30, family: NO_ROLL_CONTROL, dte_min: 14, dte_max: 30, delta_min: 0.10, delta_max: 0.20, profit_take: 0.50, minimum_moneyness: 0.06, minimum_premium_yield: 0.006, cooldown_days: 10, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: D2_NO_ROLL_30_45, family: NO_ROLL_CONTROL, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.65, minimum_moneyness: 0.08, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 0, defense_budget_ratio: 0.50}
+    - {config_id: E1_LIMITED_ROLL_1X_50, family: LIMITED_ROLL, dte_min: 14, dte_max: 30, delta_min: 0.10, delta_max: 0.20, profit_take: 0.50, minimum_moneyness: 0.06, minimum_premium_yield: 0.006, cooldown_days: 10, max_rolls: 1, defense_budget_ratio: 0.50}
+    - {config_id: E2_LIMITED_ROLL_1X_75, family: LIMITED_ROLL, dte_min: 14, dte_max: 30, delta_min: 0.10, delta_max: 0.20, profit_take: 0.65, minimum_moneyness: 0.06, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 1, defense_budget_ratio: 0.75}
+    - {config_id: E3_LIMITED_ROLL_2X_50, family: LIMITED_ROLL, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.08, minimum_premium_yield: 0.008, cooldown_days: 10, max_rolls: 2, defense_budget_ratio: 0.50}
+    - {config_id: E4_LIMITED_ROLL_2X_75, family: LIMITED_ROLL, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.65, minimum_moneyness: 0.08, minimum_premium_yield: 0.010, cooldown_days: 15, max_rolls: 2, defense_budget_ratio: 0.75}
+rules:
+  strategy: COVERED_CALL
+  engine: HUMAN_STYLE_OPPORTUNISTIC_V3
+  event_dataset: research_outputs/pltr_covered_call_research_v1/earnings_events.csv
+  mechanical_matrix_artifact: research_outputs/pltr_covered_call_research_v1/train_baseline/train_parameter_matrix_v1.json
+  prior_freeze_artifact: research_outputs/pltr_covered_call_research_v1/train_baseline/train_parameter_candidate_freeze_v2.json
+  mechanical_baseline_artifact: research_outputs/covered_call_qqq_full_baseline_v2/covered_call_entries.json
+  covered_call_config: {event_window_days: 7, commission_per_contract: 0.65, slippage_per_contract: 0.05}
+  candidate_gate: {minimum_positive_years: 2, maximum_top_episode_share: 0.50, minimum_wealth_ratio: 0.98, maximum_assignment_exposure_episodes: 0}
+final_oos_access: false
+production_changes_allowed: false

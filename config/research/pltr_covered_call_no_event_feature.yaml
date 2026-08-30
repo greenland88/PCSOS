@@ -1,0 +1,26 @@
+research_id: pltr_regime_aware_rally_iv_moderate_train_20260827
+ticker: PLTR
+research_mode: NEW_ENTRY
+hypothesis: "WAIT by default; opportunistic covered calls without earnings inputs."
+population_source: {type: ticker_daily_calendar, source: PCSDataAccess, frozen: false}
+signal_definition:
+  name: pltr_human_style_no_event_feature
+  creates_new_entry_dates: true
+  inputs: [ticker_daily_calendar, trailing_price_features, trailing_option_iv]
+entry_date_rule: {rule: "RALLY_IV OR RESISTANCE_STALL OR RICH_PREMIUM", decision_timing: post_close}
+date_range: {start: "2020-10-20", end: "2023-12-31"}
+split_policy: {train: "2020-10-20/2023-12-31", historical_holdout: SEALED, validation: NOT_RUN, final_oos: SEALED}
+contract_selection_policy: {source: PCSDataAccess, exact_contract_identity: true, select_after_signal_date: true, execution: {open: bid, close: ask, roll_old_leg: ask, roll_new_leg: bid}}
+lifecycle_policy: {model: LONG_100_SHARES_PLUS_SHORT_1_CALL, default_action: WAIT, continuous_coverage: false, forced_stock_sale: false, terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS]}
+frozen_parameters: {shares: 100, multiplier: 100, max_rolls: 1, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.20}
+allowed_parameters:
+  candidate_configs:
+    - {config_id: A_CONSERVATIVE_30_45_50, family: RALLY_IV, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.10, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 1, defense_budget_ratio: 0.50}
+    - {config_id: A_MODERATE_30_45_65, family: RALLY_IV, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.20, profit_take: 0.65, minimum_moneyness: 0.08, minimum_premium_yield: 0.008, cooldown_days: 10, max_rolls: 1, defense_budget_ratio: 0.50}
+    - {config_id: B_CONSERVATIVE_30_45_50, family: RESISTANCE_STALL, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.10, minimum_premium_yield: 0.008, cooldown_days: 15, max_rolls: 1, defense_budget_ratio: 0.50}
+    - {config_id: B_MODERATE_30_45_65, family: RESISTANCE_STALL, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.20, profit_take: 0.65, minimum_moneyness: 0.08, minimum_premium_yield: 0.008, cooldown_days: 10, max_rolls: 1, defense_budget_ratio: 0.50}
+    - {config_id: C_CONSERVATIVE_30_45_50, family: RICH_PREMIUM, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.15, profit_take: 0.50, minimum_moneyness: 0.10, minimum_premium_yield: 0.010, cooldown_days: 15, max_rolls: 1, defense_budget_ratio: 0.50}
+    - {config_id: C_MODERATE_30_45_65, family: RICH_PREMIUM, dte_min: 30, dte_max: 45, delta_min: 0.10, delta_max: 0.20, profit_take: 0.65, minimum_moneyness: 0.08, minimum_premium_yield: 0.010, cooldown_days: 10, max_rolls: 1, defense_budget_ratio: 0.50}
+rules: {strategy: COVERED_CALL, engine: HUMAN_STYLE_NO_EVENT_FEATURE, event_dataset: null, candidate_gate: {minimum_completed_lifecycles: 12, minimum_positive_years: 3, minimum_nonnegative_years: 3, maximum_top_episode_share: 0.35, maximum_cost_ratio: 0.40, maximum_assignment_exposure_episodes: 0}, covered_call_config: {commission_per_contract: 0.65, slippage_per_contract: 0.05}}
+final_oos_access: false
+production_changes_allowed: false

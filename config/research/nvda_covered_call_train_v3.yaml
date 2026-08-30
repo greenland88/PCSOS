@@ -1,0 +1,24 @@
+research_id: nvda_covered_call_train_v3
+ticker: NVDA
+research_mode: NEW_ENTRY
+hypothesis: "Opportunistic covered calls on 100 NVDA shares; WAIT is default and assignment/capped upside are explicit risks."
+population_source: {type: ticker_daily_calendar, source: PCSDataAccess, frozen: false}
+signal_definition: {name: opportunistic_covered_call_parameter_matrix, creates_new_entry_dates: true}
+entry_date_rule: {rule: timing_gate_then_exact_option_selection, decision_timing: post_close}
+date_range: {start: "2020-01-02", end: "2023-12-31"}
+split_policy: {train: "2020-01-02..2023-12-31", historical_holdout: "2024-01-01..2025-12-31", validation_2026: "2026-01-01..2026-07-31", final_oos: sealed}
+contract_selection_policy: {source: PCSDataAccess, exact_contract_identity: true, select_after_signal_date: true}
+lifecycle_policy: {model: LONG_100_SHARES_PLUS_SHORT_1_CALL, terminal_states: [BUY_TO_CLOSE, EXPIRE_WORTHLESS, ASSIGNED]}
+frozen_parameters: {shares: 100, multiplier: 100, max_short_calls: 1}
+allowed_parameters:
+  entry_timing: [FIRST_MONTHLY, UP_DAY, IV_RISING, RESISTANCE_NEAR]
+  dte_buckets: [[7,14], [14,30], [30,45], [45,60]]
+  delta: [0.10, 0.15, 0.20, 0.25, 0.30]
+  strike_rule: [HIGHEST_ELIGIBLE, ATR, PRIOR_HIGH_RESISTANCE, PERCENT_ABOVE_SPOT]
+  profit_target: [0.50, 0.65, 0.75, 0.85]
+  roll_trigger: [DTE_ONLY, DTE_OR_ITM, DELTA, PRICE_NEAR_OR_ABOVE_STRIKE, EXTRINSIC_VALUE]
+  roll_target_dte: [30, 45, 60, 90, 120]
+  highest_strike_roll: [true]
+rules: {strategy: COVERED_CALL, engine: BASELINE_PARAMETER_MATRIX_V3, no_final_oos: true}
+final_oos_access: false
+production_changes_allowed: false

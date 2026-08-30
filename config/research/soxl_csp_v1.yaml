@@ -1,0 +1,15 @@
+research_id: SOXL_CSP_V1
+ticker: SOXL
+strategy_type: CASH_SECURED_PUT
+research_mode: NEW_ENTRY
+hypothesis: Research-only dynamic SOXL cash-secured puts using PIT market, semiconductor, and SOXL context.
+population_source: {type: ticker_daily_calendar, ticker: SOXL, frozen: false, point_in_time: true, source: PCSDataAccess}
+signal_definition: {creates_new_entry_dates: true, entry_generation: true, actions: [SELL_PUT, WAIT, NO_TRADE], context_source: PCSDataAccess_and_rhythm}
+entry_date_rule: {rule: PIT_context_decision_date, entry_date_need_not_remain_baseline_setup: true}
+date_range: {start: '2018-01-01', end: '2026-08-18'}
+split_policy: {train_end: '2025-12-31', validation_start: '2026-01-01', validation_end: '2026-08-18', final_oos_access: false}
+contract_selection_policy: {selector: ShortPutContractSelector, dte: [7, 45], absolute_delta: [0.08, 0.35], atr_distance: [1.0, 3.5], dynamic_strike: true, quote_source: PCSDataAccess, quote_validation: canonical}
+lifecycle_policy: {engine: CashSecuredPutLifecycle, states: [OPEN, HOLD, PROFIT_CLOSE, RISK_CLOSE, ROLL_DOWN_OUT, EXPIRE_WORTHLESS, ASSIGNMENT], assignment_stock_mtm: true, quote_basis: bid_ask_only}
+frozen_parameters: {strategy_status: RESEARCH_ONLY_SHADOW, production_changes_allowed: false, final_oos_access: false}
+allowed_parameters: {research_only: true, broad_search_space: true, profit_target: [0.40, 0.80], roll_timing_dte: [3, 14]}
+rules: {runner: unified_research_runner, data_access: PCSDataAccess, canonical_data_only: true, legacy_fallback: false, baseline: ALWAYS_SELL_PUT, comparisons: [ALWAYS_SELL_PUT, SOXL_CSP_V1, WAIT]}
