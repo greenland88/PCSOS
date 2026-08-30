@@ -75,6 +75,35 @@ class ResearchSpecError(ValueError):
         self.reason = reason
 
 
+PARAMETER_FAMILY_KEYS = {
+    "OTM": {"otm", "target_otm", "moneyness", "strike_distance"},
+    "DTE": {"dte", "target_dte", "dte_min", "dte_max"},
+    "DELTA": {"delta", "target_delta"},
+    "ATR": {"atr", "target_atr", "atr_distance"},
+    "WIDTH": {"width", "spread_width"},
+    "CREDIT": {"credit", "debit", "premium"},
+    "LIQUIDITY": {"liquidity", "volume", "open_interest"},
+}
+
+
+def validate_parameter_experiment(spec: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Fail closed when an explicitly declared experiment varies >1 family."""
+    experiment = spec.get("parameter_experiment")
+    if not experiment:
+        return spec
+    if not isinstance(experiment, Mapping):
+        raise ResearchSpecError("PARAMETER_EXPERIMENT_INVALID")
+    declared = str(experiment.get("parameter_family", "")).upper()
+    candidates = experiment.get("candidates", {})
+    if not declared or not isinstance(candidates, Mapping):
+        raise ResearchSpecError("PARAMETER_EXPERIMENT_FAMILY_AND_CANDIDATES_REQUIRED")
+    varied = {family for family, keys in PARAMETER_FAMILY_KEYS.items()
+              if any(key in candidates for key in keys)}
+    if varied != {declared}:
+        raise ResearchSpecError("PARAMETER_EXPERIMENT_MULTIPLE_INDEPENDENT_FAMILIES:" + ",".join(sorted(varied)))
+    return spec
+
+
 @dataclass(frozen=True)
 class ResearchSpec:
     research_id: str

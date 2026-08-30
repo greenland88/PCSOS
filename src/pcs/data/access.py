@@ -61,6 +61,20 @@ class SourceSpec:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+@dataclass(frozen=True)
+class DatasetReadinessResult:
+    """Machine-readable result of generic data-layer admission/recovery."""
+    dataset: str
+    symbol: str
+    status: str
+    reason_codes: tuple[str, ...] = ()
+    coverage: tuple[dict[str, Any], ...] = ()
+    sources_checked: tuple[dict[str, Any], ...] = ()
+    stages: tuple[dict[str, Any], ...] = ()
+    canonical_dataset: str | None = None
+    run_id: str = ""
+    request_id: str = ""
+
 
 class PCSDataAccess:
     """Canonical read/write API for market data and persisted PCS artifacts."""
@@ -90,6 +104,38 @@ class PCSDataAccess:
     def canonical(cls, **kwargs):
         kwargs["routing_mode"] = "canonical"
         return cls(**kwargs)
+
+    def ensure_ready(self, dataset: str, symbol: str, start_date=None,
+                     end_date=None, as_of=None) -> DatasetReadinessResult:
+        """Ensure a dataset through the shared control plane, then re-read it.
+
+        ``options_v2`` is a logical request; routing and source selection remain
+        generic and are owned by ``MarketDataControlPlane``.
+        """
+        from .control_plane import MarketDataControlPlane, ImportStatus
+        logical = "options" if str(dataset) == "options_v2" else str(dataset)
+        req = {"datasets": (logical,), "start": start_date, "end": end_date,
+               "symbol": str(symbol).upper()}
+        result = MarketDataControlPlane(access=self).ensure_market_data(req)
+        status = str(result.status)
+        if status in {ImportStatus.READY.value, ImportStatus.ALREADY_COMPLETE.value}:
+            final = "DATASET_READY"
+        elif "PROVIDER_PROBE_TIMEOUT" in result.reason_codes:
+            final = "PROVIDER_PROBE_TIMEOUT"
+        elif any("SOURCE" in str(x) and "UNAVAILABLE" in str(x) for x in result.reason_codes):
+            final = "SOURCE_TRULY_UNAVAILABLE"
+        elif any("VALID" in str(x) for x in result.reason_codes):
+            final = "VALIDATION_FAILED"
+        elif any("PROMOT" in str(x) for x in result.reason_codes):
+            final = "PROMOTION_FAILED"
+        else:
+            final = "ROUTE_MISSING_RECOVERABLE" if status == ImportStatus.PARTIAL.value else "VALIDATION_FAILED"
+        return DatasetReadinessResult(logical, str(symbol).upper(), final,
+            tuple(dict.fromkeys((final, *result.reason_codes))),
+            tuple(result.provider_coverage), tuple(result.source_inventory),
+            tuple({"dataset": logical, "action": x} for x in result.stages.items()),
+            logical if final == "DATASET_READY" else None,
+            result.run_id, result.request_id)
 
     @classmethod
     def isolated(cls, *, manifest_path, **kwargs):
@@ -891,4 +937,4 @@ class PCSDataAccess:
         return out.reset_index(drop=True)
 
 
-__all__ = ["PCSDataAccess", "SourceSpec", "DataAccessError", "DataQualityError"]
+__all__ = ["PCSDataAccess", "SourceSpec", "DatasetReadinessResult", "DataAccessError", "DataQualityError"]

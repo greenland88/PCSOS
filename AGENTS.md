@@ -11,6 +11,9 @@ Before doing any PCS work, every agent must read, in this order:
 3. `docs/phase0_data_integration.md`
 4. Any relevant task-specific contract, strategy, or replay documentation.
 5. `docs/research/UNIFIED_RESEARCH_RUNNER.md` before starting or modifying research.
+6. `docs/research/PARAMETER_EXPERIMENT_STANDARD.md` and `config/research/parameter_experiment_policy.yaml` before performing any strategy parameter research.
+
+All agents performing strategy parameter research MUST follow the parameter experiment standard and machine policy: vary one independent parameter family at a time, freeze unrelated parameters, use the minimum necessary candidate set, pass data/accounting validity gates, reuse valid artifacts, and stop after the scoped decision question. The unified runner must reject explicitly declared experiments that vary more than one family.
 
 ## Capability and change control
 

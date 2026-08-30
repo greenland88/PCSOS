@@ -126,7 +126,8 @@ def run_baseline(symbol: str = "PLTR", *, start: str | None = None, end: str | N
     if event_path.exists():
         events = pd.read_csv(event_path)
         if {"symbol", "event_date"}.issubset(events.columns):
-            earnings_dates = set(pd.to_datetime(events.loc[events.symbol.astype(str).str.upper().eq(symbol), "event_date"]).dt.normalize())
+            event_symbol = {"NVDL": "NVDA"}.get(str(symbol).upper(), str(symbol).upper())
+            earnings_dates = set(pd.to_datetime(events.loc[events.symbol.astype(str).str.upper().eq(event_symbol), "event_date"]).dt.normalize())
     daily = daily.sort_values("date").copy()
     prev_close = daily.close.shift(1)
     daily["true_range"] = pd.concat([daily.high - daily.low, (daily.high - prev_close).abs(), (daily.low - prev_close).abs()], axis=1).max(axis=1)

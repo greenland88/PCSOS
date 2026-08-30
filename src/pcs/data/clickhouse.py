@@ -21,6 +21,7 @@ class ClickHouseConfig:
     max_attempts: int = 4
     connect_timeout: float = 10.0
     read_timeout: float = 1800.0
+    total_timeout: float = 120.0
     body_limit: int = MAX_BODY
     backoff_base: float = 1.0
 
@@ -32,6 +33,7 @@ class ClickHouseConfig:
             max_attempts=int(os.getenv("PCS_CLICKHOUSE_MAX_ATTEMPTS", "4")),
             connect_timeout=float(os.getenv("PCS_CLICKHOUSE_CONNECT_TIMEOUT", "10")),
             read_timeout=float(os.getenv("PCS_CLICKHOUSE_READ_TIMEOUT", "1800")),
+            total_timeout=float(os.getenv("PCS_CLICKHOUSE_TOTAL_TIMEOUT", "120")),
         )
 
 
@@ -53,6 +55,8 @@ class ClickHouseDiagnostics:
     concurrency: int = 0
     failure_class: str | None = None
     bytes_received: int = 0
+    attempt_timestamps: list[dict[str, Any]] = field(default_factory=list)
+    timeout_code: str | None = None
 
 
 class ClickHouseError(RuntimeError):
@@ -103,9 +107,11 @@ class PCSClickHouseClient:
             with self._active_lock: self._active += 1; d.concurrency = self._active
             try:
                 for attempt in range(1, max(1, self.config.max_attempts) + 1):
+                    attempt_started = time.time()
                     d.attempt = attempt
                     try:
-                        response = self.session.post(self.url, params=params, data=sql.encode(), headers={"X-ClickHouse-Query-Id": request_id}, timeout=(self.config.connect_timeout, self.config.read_timeout), stream=True)
+                        remaining = max(0.001, self.config.total_timeout - (time.perf_counter() - start_all))
+                        response = self.session.post(self.url, params=params, data=sql.encode(), headers={"X-ClickHouse-Query-Id": request_id}, timeout=(min(self.config.connect_timeout, remaining), min(self.config.read_timeout, remaining)), stream=True)
                         d.http_status = response.status_code; d.response_headers = {str(k): str(v) for k, v in response.headers.items()}
                         chunks = []; total = 0
                         sink = output.open("wb") if output is not None else None
@@ -119,13 +125,21 @@ class PCSClickHouseClient:
                         body = b"".join(chunks); d.bytes_received = total; d.response_body = self._body(body, self.config.body_limit)
                         d.clickhouse_code, d.clickhouse_message = self._exception_fields(d.response_body)
                         if response.ok:
+                            d.attempt_timestamps.append({"attempt": attempt, "started_at": attempt_started, "ended_at": time.time(), "status": "SUCCESS"})
                             self._metrics["success"] += 1; return self._finish(d, start_all)
                         d.failure_class = self._classify(response.status_code); self._metrics["5xx"] += int(response.status_code in RETRYABLE_STATUS)
                         if response.status_code not in RETRYABLE_STATUS or attempt >= self.config.max_attempts: break
                     except requests.exceptions.RequestException as exc:
                         d.failure_class = self._classify(None, exc); self._metrics["timeouts"] += int(isinstance(exc, (requests.exceptions.Timeout,)))
+                        d.attempt_timestamps.append({"attempt": attempt, "started_at": attempt_started, "ended_at": time.time(), "status": "ERROR", "error": d.failure_class})
                         if attempt >= self.config.max_attempts: break
+                    if time.perf_counter() - start_all >= self.config.total_timeout:
+                        d.failure_class = "PROVIDER_PROBE_TIMEOUT"; d.timeout_code = "PROVIDER_PROBE_TIMEOUT"
+                        break
                     self._metrics["retried"] += 1; time.sleep(self.config.backoff_base * (2 ** (attempt - 1)) + random.uniform(0, .25))
+                    if time.perf_counter() - start_all >= self.config.total_timeout:
+                        d.failure_class = "PROVIDER_PROBE_TIMEOUT"; d.timeout_code = "PROVIDER_PROBE_TIMEOUT"
+                        break
                 self._metrics["failed"] += 1; self._metrics["retry_exhausted"] += 1
                 raise ClickHouseError(f"ClickHouse request failed: {d.failure_class} HTTP {d.http_status}", self._finish(d, start_all))
             finally:
@@ -180,7 +194,8 @@ class PCSClickHouseClient:
             diag = self.query(sql, ticker=ticker, operation="fetch_options_coverage")
         except ClickHouseError as exc:
             message = str(exc).lower()
-            reason = ("CLICKHOUSE_SOURCE_TABLE_UNAVAILABLE" if "unknown table" in message or "not exist" in message
+            reason = ("PROVIDER_PROBE_TIMEOUT" if getattr(exc.diagnostics, "timeout_code", None) == "PROVIDER_PROBE_TIMEOUT"
+                      else "CLICKHOUSE_SOURCE_TABLE_UNAVAILABLE" if "unknown table" in message or "not exist" in message
                       else "CLICKHOUSE_CONNECTION_FAILED")
             return {"symbol": ticker, "requested_start": str(start)[:10], "requested_end": str(end)[:10],
                     "status": "BLOCKED", "reason_codes": [reason], "source_table": table, "detail": str(exc)}

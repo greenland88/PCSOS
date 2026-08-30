@@ -1,0 +1,22 @@
+version: 1
+standard: docs/research/PARAMETER_EXPERIMENT_STANDARD.md
+enforcement:
+  one_parameter_family_at_a_time: true
+  freeze_unrelated_parameters: true
+  minimum_necessary_candidate_set: true
+  separate_profit_and_risk: true
+  require_data_and_accounting_validity: true
+  reuse_existing_valid_artifacts: true
+  automatic_expansion: false
+  automatic_other_tickers: false
+  automatic_timing: false
+  automatic_roll: false
+  stop_after_decision_question: true
+parameter_families:
+  COVERED_CALL: [OTM, DTE, DELTA, ATR, WIDTH, CREDIT, LIQUIDITY]
+  PCS: [DTE, DELTA, WIDTH, DEBIT, CREDIT, BUFFER, LIQUIDITY]
+  CASH_SECURED_PUT: [DTE, DELTA, STRIKE, CREDIT, LIQUIDITY]
+existing_examples:
+  NVDA:
+    OTM: {candidates: [0.075, 0.10, 0.125, 0.15], recorded_best_balanced: 0.125}
+    DTE: {candidates: [14, 21, 30], current_finalists: [21, 30]}

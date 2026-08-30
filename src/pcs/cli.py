@@ -114,11 +114,20 @@ def covered_call_status(args):
     research artifacts.
     """
     from pcs.data.access import PCSDataAccess
-    from pcs.research.covered_call_decision import evaluate_covered_call
+    from pcs.research.covered_call_decision import evaluate_covered_call, evaluate_nvdl_research, build_pit_entry_features
     from pcs.research.covered_call_profiles import resolve_covered_call_profile
     from pcs.research.ticker_readiness import preflight_ticker
 
     symbol = str(args.symbol).strip().upper()
+    if symbol == "NVDL" and args.research_only:
+        access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+        stock = build_pit_entry_features(access.read_prices(symbol, end_date=args.as_of), as_of_date=args.as_of)
+        from pcs.research.covered_call_research import read_pit_call_chain
+        result = evaluate_nvdl_research(as_of_date=args.as_of, stock=stock,
+            quotes=read_pit_call_chain(symbol, args.as_of, data_access=access),
+            shares_owned=args.shares_owned, active_calls=args.active_calls)
+        print(json.dumps(result, sort_keys=True, default=str))
+        return
     profile = resolve_covered_call_profile(symbol)
     if profile.status.value != "VALIDATED":
         result = evaluate_covered_call(
@@ -225,8 +234,9 @@ def main():
     cc.add_argument("--as-of", required=True)
     cc.add_argument("--shares-owned", type=int, required=True)
     cc.add_argument("--active-calls", type=int, required=True)
-    cc.add_argument("--event-context", type=json.loads, required=True)
-    cc.add_argument("--market-context", type=json.loads, required=True)
+    cc.add_argument("--event-context", type=json.loads, default=None)
+    cc.add_argument("--market-context", type=json.loads, default=None)
+    cc.add_argument("--research-only", action="store_true", help="NVDL state-aware research decision; never production authorization")
     cc.add_argument("--parquet-root", default="data/parquet")
     cc.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     cc.set_defaults(func=covered_call_status)

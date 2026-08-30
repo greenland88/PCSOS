@@ -6,3 +6,6 @@ CURRENT_OPTION_DATES_MISSING: {action: CLICKHOUSE_INCREMENTAL_SYNC, sources: [cl
 OPTION_EXACT_DUPLICATES: {action: APPLY_APPROVED_DEDUPE_POLICY}
 OPTION_CONFLICT_UNRESOLVED: {action: BLOCK, automatic_repair: false}
 PRICE_BASIS_CONFLICT: {action: BLOCK, automatic_repair: false}
+CANONICAL_FILE_ACCESS_DENIED: {action: REPAIR_CANONICAL_FILE_ACCESS, automatic_repair: true, provider_download_forbidden: true}
+CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER: {action: BLOCK, automatic_repair: false, provider_download_forbidden: true}
+EVENT_PIT_DATA_MISSING: {action: IMPORT_PIT_EVENTS, sources: [palantir_ir_earnings], automatic_repair: true}

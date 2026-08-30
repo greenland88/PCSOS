@@ -64,3 +64,12 @@ sources:
       capabilities: [VIX_HISTORY]
       authority: vix_history_primary
       priority: 1
+  events:
+    - source_id: palantir_ir_earnings
+      type: ISSUER_ARCHIVE
+      enabled: true
+      authorized: true
+      adapter: pcs.data.palantir_events.capabilities
+      capabilities: [EARNINGS_CALENDAR_PIT]
+      authority: issuer_earnings_calendar_primary
+      priority: 1

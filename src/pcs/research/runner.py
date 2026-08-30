@@ -22,6 +22,7 @@ from .research_framework import (
     ResearchMode, ResearchSpec, ResearchStatus, ResearchSpecError,
     FunnelStage, build_funnel, onboarding_report, validate_population_routing,
     load_spec, spec_hash, assert_research_output, validate_rule_set,
+    validate_parameter_experiment,
 )
 from pcs.data.access import PCSDataAccess, DataAccessError
 from .underlying_state import evaluate_as_of, UnderlyingState
@@ -92,6 +93,7 @@ class ResearchRunner:
     """Run only a validated spec and write only to an isolated research path."""
 
     def __init__(self, spec: ResearchSpec, *, output_dir: str | Path = "research_outputs"):
+        validate_parameter_experiment({"parameter_experiment": spec.rules.get("parameter_experiment")})
         self.spec = validate_rule_set(validate_population_routing(spec))
         self.output_dir = Path(output_dir) / self.spec.research_id
         assert_research_output(self.output_dir)
@@ -211,7 +213,62 @@ class ResearchRunner:
             raise ResearchSpecError("COVERED_CALL_REQUIRES_NEW_ENTRY_OR_CONTRACT_VARIANT")
         from .ticker_readiness import assert_research_ready
         access = data_access or PCSDataAccess.canonical()
-        assert_research_ready(self.spec.ticker, access=access)
+        assert_research_ready(self.spec.ticker, access=access,
+                              start_date=self.spec.date_range.get("start"),
+                              end_date=self.spec.date_range.get("end"))
+        if str(self.spec.rules.get("engine", "")).upper() in {"HUMAN_STYLE_OPPORTUNISTIC_V3", "HUMAN_STYLE_NO_EVENT_FEATURE"}:
+            from .covered_call_human_style import CALCULATION_VERSION, run_human_style_train
+            result = run_human_style_train(self.spec, data_access=access)
+            result.update({"as_of": datetime.now(timezone.utc).date().isoformat(),
+                           "data_timestamp": datetime.now(timezone.utc).isoformat(),
+                           "run_id": uuid.uuid4().hex, "request_id": uuid.uuid4().hex})
+            self.persist(result, filename="human_style_train_v3.json")
+
+            def registered_manifest(source):
+                marker = str(source.source_version).split(":", 1)
+                if len(marker) == 2 and Path(marker[1]).is_file():
+                    return Path(marker[1])
+                candidates = ([Path("data/manifests/storage_manifest_options_v3.csv"),
+                               Path("data/manifests/storage_manifest_options_v2.csv"),
+                               Path("data/manifests/storage_manifest.csv")]
+                              if str(source.dataset).startswith("options") else
+                              [Path("data/manifests/storage_manifest_v2.csv"),
+                               Path("data/manifests/storage_manifest.csv")])
+                for candidate in candidates:
+                    if candidate.is_file():
+                        return candidate
+                raise FileNotFoundError(f"CANONICAL_SOURCE_MANIFEST_MISSING:{source.dataset}")
+
+            daily_source = access.resolve_source("daily", self.spec.ticker)
+            options_source = access.resolve_source("options", self.spec.ticker)
+            daily_manifest = registered_manifest(daily_source)
+            options_manifest = registered_manifest(options_source)
+            strategy_path = Path(__file__).with_name("covered_call_human_style.py")
+            candidate_rows = [{"config_id": x["config"]["config_id"], "config_hash": x["config_hash"]}
+                              for x in result["human_style_results"]]
+            lifecycle_rows = [episode for x in result["human_style_results"] for episode in x["episodes"]]
+            identity = {
+                "strategy_definition_hash": self._sha256(strategy_path),
+                "feature_calculation_version": CALCULATION_VERSION,
+                "daily_source_version": daily_source.source_version,
+                "options_source_version": options_source.source_version,
+                "daily_manifest_path": str(daily_manifest),
+                "options_manifest_path": str(options_manifest),
+                "daily_manifest_sha": self._sha256(daily_manifest),
+                "options_manifest_sha": self._sha256(options_manifest),
+                "corporate_action_version": self._sha256(Path("config/data/corporate_actions.csv")),
+                "config_hash": spec_hash(self.spec),
+                "population_hash": hashlib.sha256(json.dumps({"type": "FULL_TICKER_DAILY_CALENDAR",
+                    "date_range": dict(self.spec.date_range)}, sort_keys=True).encode()).hexdigest(),
+                "candidates_ledger_hash": hashlib.sha256(json.dumps(candidate_rows, sort_keys=True).encode()).hexdigest(),
+                "selected_trade_ledger_hash": hashlib.sha256(json.dumps(result["qualifying_candidate_ids"], sort_keys=True).encode()).hexdigest(),
+                "lifecycle_ledger_hash": hashlib.sha256(json.dumps(lifecycle_rows, sort_keys=True, default=str).encode()).hexdigest(),
+            }
+            self.write_artifact_manifest(["human_style_train_v3.json"],
+                                         data_version=daily_source.source_version,
+                                         population_semantics="NEW_ENTRY_FULL_PIT_TICKER_CALENDAR_TRAIN_ONLY",
+                                         artifact_version="3.0", reproducibility=identity)
+            return result
         feature_path = self.spec.rules.get("pit_feature_dataset")
         market_path = self.spec.rules.get("market_feature_dataset")
         if not feature_path or not market_path:
@@ -453,6 +510,23 @@ class ResearchRunner:
         return manifest
 
     def dry_run(self, **kwargs: Any) -> dict[str, Any]:
+        if str(self.spec.rules.get("engine", "")).upper() == "HUMAN_STYLE_OPPORTUNISTIC_V3":
+            from .covered_call_human_style import HumanStyleConfig
+            raw_configs = list(self.spec.allowed_parameters.get("candidate_configs", []))
+            if not raw_configs or len(raw_configs) > 24:
+                raise ResearchSpecError("SMALL_PREDECLARED_CANDIDATE_FAMILY_REQUIRED")
+            configs = [HumanStyleConfig.from_mapping(x) for x in raw_configs]
+            return {"module": "pcs.research.runner", "version": "1.2",
+                    "research_id": self.spec.research_id, "ticker": self.spec.ticker,
+                    "research_mode": self.spec.research_mode.value, "status": ResearchStatus.COMPUTABLE.value,
+                    "execution": "DRY_RUN_ONLY", "data_source": "NOT_READ",
+                    "population_source": dict(self.spec.population_source),
+                    "candidate_family_size": len(configs), "signal_execution": "NOT_RUN",
+                    "holdout_opened": False, "validation_opened": False,
+                    "final_oos_read": False, "production_changes_allowed": False,
+                    "reason_codes": ["RESEARCH_SPEC_VALIDATED", "NEW_ENTRY_FULL_CALENDAR_DECLARED",
+                                     "SMALL_CANDIDATE_FAMILY_FROZEN", "HOLDOUT_NOT_OPENED",
+                                     "VALIDATION_NOT_RUN", "FINAL_OOS_NOT_READ"]}
         if self.spec.research_mode.value == "CURRENT_STRATEGY_REPLAY":
             result = self.rule_set_plumbing(kwargs.pop("counts", None))
             result["execution"] = "DRY_RUN_ONLY"
@@ -469,6 +543,11 @@ class ResearchRunner:
         replay lifecycle, tune thresholds, or read any candidate ledger.
         """
         access = data_access or PCSDataAccess()
+        requested_range = self.spec.date_range or {}
+        human_style = str(self.spec.rules.get("engine", "")).upper() == "HUMAN_STYLE_OPPORTUNISTIC_V3"
+        if human_style:
+            start_date = start_date if start_date is not None else requested_range.get("start")
+            end_date = end_date if end_date is not None else requested_range.get("end")
         try:
             daily = access.read_prices(self.spec.ticker, start_date, end_date)
             daily_status = "PASS" if len(daily) else "MISSING"
@@ -477,11 +556,72 @@ class ResearchRunner:
                     "research_mode": self.spec.research_mode.value, "status": ResearchStatus.DAILY_DATA_MISSING.value,
                     "data_source": "PCS_CANONICAL_DATA", "exact_reason": str(exc),
                     "final_oos_read": False, "production_changes_allowed": False}
+        # Data admission is owned by the shared data layer.  A missing route
+        # must get the opportunity to recover from an authorized source before
+        # the research runner declares a blocker.
         options_status = "PASS"
         try:
-            option_source = access.resolve_source("options", self.spec.ticker)
+            ready = access.ensure_ready("options_v2", self.spec.ticker,
+                                        start_date=start_date or requested_range.get("start"),
+                                        end_date=end_date or requested_range.get("end"),
+                                        as_of=self.spec.date_range.get("as_of"))
+            options_status = "PASS" if ready.status == "DATASET_READY" else "MISSING"
+            option_source = {"dataset": ready.canonical_dataset, "status": ready.status,
+                             "reason_codes": list(ready.reason_codes),
+                             "sources_checked": list(ready.sources_checked),
+                             "coverage": list(ready.coverage)}
         except Exception as exc:
-            options_status, option_source = "MISSING", {"exact_reason": str(exc)}
+            options_status, option_source = "MISSING", {"exact_reason": str(exc), "status": "VALIDATION_FAILED"}
+        if human_style:
+            from .covered_call_human_style import HumanStyleConfig
+            raw_configs = list(self.spec.allowed_parameters.get("candidate_configs", []))
+            if not raw_configs or len(raw_configs) > 24:
+                raise ResearchSpecError("SMALL_PREDECLARED_CANDIDATE_FAMILY_REQUIRED")
+            configs = [HumanStyleConfig.from_mapping(x) for x in raw_configs]
+            event_source = str(self.spec.rules.get("event_dataset", ""))
+            event_missing = []
+            if event_source == "PCSDataAccess:events":
+                try:
+                    access.resolve_source("events", self.spec.ticker)
+                except Exception as exc:
+                    event_missing = [f"PCSDataAccess:events:{exc}"]
+            else:
+                event_path = Path(event_source)
+                event_missing = [] if event_path.is_file() else [str(event_path)]
+            artifact_paths = [Path(str(self.spec.rules.get(key, ""))) for key in
+                              ("mechanical_matrix_artifact", "prior_freeze_artifact",
+                               "mechanical_baseline_artifact")]
+            missing = event_missing + [str(path) for path in artifact_paths if not path.is_file()]
+            status = (ResearchStatus.COMPUTABLE.value if options_status == "PASS" and not missing
+                      else ResearchStatus.OPTIONS_DATA_MISSING.value if options_status != "PASS"
+                      else ResearchStatus.SPEC_INCOMPLETE.value)
+            result = {"module": "pcs.research.runner", "version": "1.1",
+                      "research_id": self.spec.research_id, "ticker": self.spec.ticker,
+                      "research_mode": self.spec.research_mode.value, "status": status,
+                      "data_source": "PCS_CANONICAL_DATA", "daily_source": "PCSDataAccess",
+                      "daily_rows": len(daily), "daily_first_date": str(daily.date.min().date()),
+                      "daily_last_date": str(daily.date.max().date()),
+                      "options_source": option_source.to_dict() if hasattr(option_source, "to_dict") else option_source,
+                      "candidate_family_size": len(configs), "signal_execution": "NOT_RUN",
+                      "signal_contract": "FROZEN_IN_RESEARCH_SPEC", "missing_declared_artifacts": missing,
+                      "onboarding": {"DATA_DISCOVERY": "PASS", "DAILY_VALIDATION": daily_status,
+                                     "OPTIONS_VALIDATION": options_status,
+                                     "PIT_FEATURE_BUILD": "DECLARED_FOR_EXECUTION",
+                                     "STATE_TIMELINE_BUILD": "NOT_REQUIRED_BY_V3",
+                                     "CONTRACT_SELECTION_SMOKE_TEST": "NOT_RUN",
+                                     "LIFECYCLE_SMOKE_TEST": "NOT_RUN",
+                                     "RESEARCH_READY": "PREFLIGHT_PASS" if status == ResearchStatus.COMPUTABLE.value else "NOT_READY"},
+                      "final_oos_read": False, "production_changes_allowed": False,
+                      "holdout_opened": False, "validation_opened": False,
+                      "reason_codes": ["RESEARCH_SPEC_VALIDATED", "CANONICAL_TRAIN_CALENDAR_RESOLVED",
+                                       "SMALL_CANDIDATE_FAMILY_FROZEN", "SIGNAL_CONTRACT_FROZEN_NOT_EXECUTED",
+                                       "FINAL_OOS_NOT_READ", "HOLDOUT_NOT_OPENED", "VALIDATION_NOT_RUN"]}
+            if missing:
+                result["reason_codes"].append("DECLARED_RESEARCH_ARTIFACT_MISSING")
+            if options_status != "PASS":
+                result["reason_codes"].append("CANONICAL_OPTIONS_UNAVAILABLE")
+            self.persist(result)
+            return result
         # Build the existing PIT state adapter's timeline.  Do not replace it
         # with a local indicator calculation; dependency failures must remain
         # explicit rather than becoming UNKNOWN precursor results.

@@ -287,6 +287,11 @@ def replay_prepared_entry_observations(symbol: str, prepared: Iterable[Mapping[s
                 roll_close_cost = sum(float(x.get("buyback_cost", 0) or 0) for x in episode.roll_history)
                 roll_open_credit = sum(float(x.get("new_call_proceeds", 0) or 0) for x in episode.roll_history)
                 final_btc_cost = max(float(episode.cumulative_buyback_cost) - roll_close_cost, 0.0)
+                entry_credit = float(episode.cumulative_premium_received) - roll_open_credit
+                expiration_settlement = 0.0
+                assignment_settlement = 0.0
+                ledger_pnl = (entry_credit - final_btc_cost - roll_close_cost +
+                              roll_open_credit - expiration_settlement - assignment_settlement)
                 trades.append({"symbol": episode.symbol, "entry_date": episode.opened_date,
                                "exit_date": episode.close_date, "holding_days":
                                (date.fromisoformat(episode.close_date[:10]) - date.fromisoformat(episode.opened_date[:10])).days,
@@ -299,6 +304,23 @@ def replay_prepared_entry_observations(symbol: str, prepared: Iterable[Mapping[s
                                "normal_btc_cost": final_btc_cost,
                                "roll_close_cost": roll_close_cost,
                                "roll_open_credit": roll_open_credit,
+                               "call_cashflow_ledger": {
+                                   "entry_credit": entry_credit,
+                                   "btc_debit": final_btc_cost,
+                                   "roll_close_debit": roll_close_cost,
+                                   "roll_open_credit": roll_open_credit,
+                                   "expiration_settlement": expiration_settlement,
+                                   "assignment_settlement": assignment_settlement,
+                                   "realized_call_pnl": call_pnl,
+                                   "formula_pnl": ledger_pnl,
+                                   "reconciles": abs(ledger_pnl - call_pnl) <= 0.01},
+                               "entry_credit": entry_credit,
+                               "btc_debit": final_btc_cost,
+                               "roll_close_debit": roll_close_cost,
+                               "roll_open_credit": roll_open_credit,
+                               "expiration_settlement": expiration_settlement,
+                               "assignment_settlement": assignment_settlement,
+                               "realized_call_pnl": call_pnl,
                                "forced_btc_cost": final_btc_cost if episode.forced_btc else 0.0,
                                "forced_btc_loss": (final_btc_cost - float(episode.final_buyback_price or 0) * episode.shares)
                                                    if episode.forced_btc else 0.0,
@@ -900,14 +922,24 @@ def replay_selected_entries(symbol: str, entries: Iterable[Mapping[str, Any]], *
         elif prepared and hasattr(access, "read_quotes_for_windows"):
             first_day = min(pd.Timestamp(x["entry"]["date"]).normalize() for x in prepared)
             last_day = max(pd.Timestamp(x["entry"]["expiration"]).normalize() for x in prepared)
-            chain = _read_quotes_chunked(
-                access, symbol, [(first_day, last_day)],
-                ["symbol", "trade_date", "expiration_date", "strike", "call_put",
-                 "bid", "ask", "delta", "open_interest", "volume"])
-            if not chain.empty:
-                chain["trade_date"] = pd.to_datetime(chain.trade_date)
-                for day, frame in chain.groupby(chain.trade_date.dt.normalize()):
-                    quotes_by_date[str(pd.Timestamp(day).date())] = _contracts_from_frame(frame, symbol)
+            cache_key = (str(symbol).upper(), str(first_day.date()), str(last_day.date()))
+            cached = globals().setdefault("_UNIFIED_QUOTE_CACHE", {}).get(cache_key)
+            if cached is None:
+                chain = _read_quotes_chunked(
+                    access, symbol, [(first_day, last_day)],
+                    ["symbol", "trade_date", "expiration_date", "strike", "call_put",
+                     "bid", "ask", "delta", "open_interest", "volume"])
+                cached = {}
+                if not chain.empty:
+                    if not pd.api.types.is_datetime64_any_dtype(chain["trade_date"]):
+                        chain["trade_date"] = pd.to_datetime(
+                            chain["trade_date"], format="ISO8601", errors="coerce")
+                    else:
+                        chain["trade_date"] = chain["trade_date"].dt.normalize()
+                    for day, frame in chain.groupby(chain.trade_date.dt.normalize()):
+                        cached[str(pd.Timestamp(day).date())] = _contracts_from_frame(frame, symbol)
+                globals()["_UNIFIED_QUOTE_CACHE"][cache_key] = cached
+            quotes_by_date = {day: list(items) for day, items in cached.items()}
         for item in prepared:
             entry = item["entry"]
             contract = CoveredCallContract(str(symbol).upper(), str(pd.Timestamp(entry["date"]).date()),

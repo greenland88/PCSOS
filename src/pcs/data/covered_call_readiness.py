@@ -17,6 +17,10 @@ from .universe import load_market_universe
 from .readiness import canonical_route_evidence
 
 ACTIONS = ("REUSE", "REPAIR", "INGEST_GAP", "BLOCK")
+# Leveraged ETFs inherit issuer/event risk from their reference instrument;
+# this is an explicit mapping, not a ticker-agnostic fallback.
+EVENT_RISK_SYMBOL = {"NVDL": "NVDA"}
+EARNINGS_NOT_APPLICABLE = {"QQQ", "SPY"}
 
 @dataclass(frozen=True)
 class CoveredCallReadiness:
@@ -74,9 +78,15 @@ def resolve_ticker_data_readiness(symbol: str, *, access: PCSDataAccess | None =
         route = "MISSING" if "route" in str(exc).lower() or "not ingested" in str(exc).lower() else "INVALID"
         options = "MISSING" if route == "MISSING" else "INVALID"
         if blocker is None:
-            blocker = "OPTIONS_EXTERNAL_DATA_UNAVAILABLE" if "not ingested" in str(exc).lower() else "OPTIONS_CANONICAL_READ_FAILED"
+            message = str(exc).lower()
+            blocker = ("OPTIONS_CANONICAL_FILE_ACCESS_DENIED" if "permission denied" in message or
+                       "file_access_denied" in message else
+                       "OPTIONS_EXTERNAL_DATA_UNAVAILABLE" if "not ingested" in message else
+                       "OPTIONS_CANONICAL_READ_FAILED")
     ca = _metadata_status(root / "corporate_actions.csv", symbol)
-    earnings = _metadata_status(Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"), symbol, required=True)
+    event_symbol = EVENT_RISK_SYMBOL.get(symbol, symbol)
+    earnings = ("NOT_REQUIRED" if symbol in EARNINGS_NOT_APPLICABLE else
+                _metadata_status(Path("data/raw/events/official_event_dates_2010-01-01_to_2026-07-31.csv"), event_symbol, required=True))
     statuses = [daily, options, route, ca, earnings]
     invalid = any(x == "INVALID" for x in statuses)
     missing = any(x == "MISSING" for x in statuses)

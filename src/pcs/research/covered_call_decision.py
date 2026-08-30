@@ -24,6 +24,75 @@ class PositionDecision(StrEnum):
     CLOSE = "CLOSE"
 
 
+class NVDLResearchState(StrEnum):
+    RALLY_ACCELERATION = "RALLY_ACCELERATION"
+    RALLY_IV = "RALLY_IV"
+    RESISTANCE_STALL = "RESISTANCE_STALL"
+    NORMAL_UPTREND = "NORMAL_UPTREND"
+    PULLBACK = "PULLBACK"
+    UNKNOWN = "UNKNOWN"
+
+
+def classify_nvdl_state(stock: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify a PIT snapshot for NVDL research; never changes production rules."""
+    required = ("return_5d", "extension20_atr", "momentum_state", "breakout_state")
+    missing = [key for key in required if stock.get(key) is None]
+    if missing:
+        return {"state": NVDLResearchState.UNKNOWN.value,
+                "reason_codes": ["NVDL_STATE_FEATURE_MISSING", *missing]}
+    momentum = str(stock["momentum_state"]).upper()
+    breakout = str(stock["breakout_state"]).upper()
+    extension = float(stock["extension20_atr"])
+    ret5 = float(stock["return_5d"])
+    iv = str(stock.get("iv_state", "UNKNOWN")).upper()
+    near_high = bool(stock.get("near_recent_high", False))
+    if momentum == "ACCELERATING" and (breakout in {"BREAKOUT", "ACCELERATING"} or ret5 > .08):
+        state = NVDLResearchState.RALLY_ACCELERATION
+    elif ret5 > 0 and extension >= 1.0 and iv == "HIGH":
+        state = NVDLResearchState.RALLY_IV
+    elif near_high and momentum == "DECELERATING":
+        state = NVDLResearchState.RESISTANCE_STALL
+    elif ret5 >= 0 and extension >= 0:
+        state = NVDLResearchState.NORMAL_UPTREND
+    else:
+        state = NVDLResearchState.PULLBACK
+    return {"state": state.value, "reason_codes": ["NVDL_PIT_STATE_CLASSIFIED"]}
+
+
+def evaluate_nvdl_research(*, as_of_date: str | date, stock: Mapping[str, Any],
+                           quotes: Iterable[CoveredCallContract], shares_owned: int,
+                           active_calls: int = 0) -> dict[str, Any]:
+    """Research-only daily NVDL call decision; never upgrades production profile."""
+    state = classify_nvdl_state(stock)
+    result = {"module": "pcs.research.covered_call_decision", "version": "1.1",
+              "symbol": "NVDL", "as_of": str(as_of_date)[:10], "state": state["state"],
+              "action": "WAIT", "selected_contract": None,
+              "reason_codes": list(state["reason_codes"]), "production_changes_allowed": False}
+    if state["state"] in {"RALLY_ACCELERATION", "PULLBACK", "UNKNOWN"}:
+        result["reason_codes"].append("NVDL_STATE_WAIT_FIRST")
+        return result
+    if int(shares_owned) < 100 or int(active_calls) >= int(shares_owned) // 100:
+        result["reason_codes"].append("NVDL_COVERAGE_CAPACITY_REACHED")
+        return result
+    bands = {"RALLY_IV": (.18, 2.5), "RESISTANCE_STALL": (.22, 2.0), "NORMAL_UPTREND": (.15, 3.0)}
+    max_delta, atr_floor = bands[state["state"]]
+    spot, atr = float(stock["close"]), float(stock["atr"])
+    eligible = [c for c in quotes if c.symbol.upper() == "NVDL" and c.dte is not None and
+                21 <= c.dte <= 45 and c.strike >= spot + atr_floor * atr and
+                c.delta is not None and c.delta <= max_delta and c.bid > 0 and
+                c.ask >= c.bid and c.open_interest is not None and c.open_interest >= 100 and
+                c.volume is not None and c.volume >= 1 and c.spread_pct <= .20]
+    if not eligible:
+        result["reason_codes"].append("NVDL_NO_SAFE_LIQUID_CALL")
+        return result
+    chosen = max(eligible, key=lambda c: (c.bid, -c.spread_pct))
+    result.update({"action": "SELL", "contracts": min(int(shares_owned)//100-int(active_calls), 1),
+                   "selected_contract": {"expiration": chosen.expiration, "strike": chosen.strike,
+                                         "dte": chosen.dte, "delta": chosen.delta, "bid": chosen.bid},
+                   "reason_codes": result["reason_codes"] + ["NVDL_STATE_SIGNAL", "UPSIDE_BUFFER_OK", "LIQUIDITY_PASS"]})
+    return result
+
+
 @dataclass(frozen=True)
 class CoveredCallDecision:
     symbol: str
@@ -100,7 +169,7 @@ def build_pit_entry_features(daily: Any, *, as_of_date: str | date) -> dict[str,
         if iv_column in frame.columns and pd.notna(frame[iv_column].iloc[-1]):
             iv_state = classify_iv(frame[iv_column].iloc[-1])
             break
-    return {"status": "PIT_SAFE", "date": str(frame.date.iloc[-1].date()),
+    result = {"status": "PIT_SAFE", "date": str(frame.date.iloc[-1].date()),
             "close": float(close.iloc[-1]), "atr": float(atr),
             "sma20": float(sma20), "extension20_atr": float((close.iloc[-1] - sma20) / atr),
             "return_3d": float(ret3.iloc[-1]), "return_5d": float(ret5.iloc[-1]),
@@ -110,6 +179,8 @@ def build_pit_entry_features(daily: Any, *, as_of_date: str | date) -> dict[str,
             "breakout_state": "BREAKOUT" if breakout else "NONE",
             "iv_state": iv_state,
             "reason_codes": ["PIT_DATE_FILTER_APPLIED", "NO_FUTURE_ROWS_USED"]}
+    result.update(classify_nvdl_state(result))
+    return result
 
 
 def classify_iv(iv_value: Any, *, low: float = .33, high: float = .66) -> str:
@@ -176,7 +247,8 @@ def evaluate_active_call(episode: CoveredCallEpisode, *, as_of_date: str | date,
                          underlying_price: float, current_quote: CoveredCallContract,
                          roll_quotes: Iterable[CoveredCallContract] = (),
                          mandatory_roll_days: int = 5,
-                         profit_capture: float = .60) -> dict[str, Any]:
+                         profit_capture: float = .60,
+                         state: str | None = None) -> dict[str, Any]:
     """Return a deterministic HOLD/ROLL/CLOSE management decision."""
     if episode.closed or episode.conflicted:
         raise ValueError("EPISODE_NOT_ACTIVE")
@@ -184,6 +256,10 @@ def evaluate_active_call(episode: CoveredCallEpisode, *, as_of_date: str | date,
     pnl = episode.episode_pnl_if_closed_today(underlying_price, current_quote.ask)
     captured = (episode.cumulative_premium_received - episode.cumulative_buyback_cost -
                 current_quote.ask * episode.shares)
+    if str(state or "").upper() == NVDLResearchState.RALLY_ACCELERATION.value:
+        return {"action": PositionDecision.CLOSE.value, "episode_id": episode.episode_id,
+                "episode_pnl_if_closed_today": pnl,
+                "reason_codes": ["NVDL_UPSIDE_ACCELERATION", "CLOSE_CALL_TO_PROTECT_UPSIDE"]}
     if pnl > 0 and captured >= episode.cumulative_premium_received * float(profit_capture):
         return {"action": PositionDecision.CLOSE.value, "episode_id": episode.episode_id,
                 "episode_pnl_if_closed_today": pnl, "reason_codes": ["EPISODE_PROFIT_POSITIVE",
@@ -227,6 +303,7 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
                           active_episode: CoveredCallEpisode | None = None,
                           current_quote: CoveredCallContract | None = None,
                           roll_quotes: Iterable[CoveredCallContract] = (),
+                          position_state: str | None = None,
                           preferred_moneyness: float = 0.20,
                           minimum_atr_distance: float = 3.0,
                           preferred_dte: int = 43) -> dict[str, Any]:
@@ -279,7 +356,8 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
         management = evaluate_active_call(active_episode, as_of_date=day,
                                           underlying_price=underlying,
                                           current_quote=current_quote,
-                                          roll_quotes=roll_quotes)
+                                          roll_quotes=roll_quotes,
+                                          state=position_state)
         management.update({"symbol": symbol, "as_of_date": day,
                            "decision": management["action"],
                            "event_risk": "UNKNOWN", "profile_status": profile.status.value,

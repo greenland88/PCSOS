@@ -79,20 +79,23 @@ def _pit_checks(r, daily):
     if empty: _block(r,"PIT","PIT_FEATURE_UNAVAILABLE",json.dumps({f:missing[f] for f in empty},sort_keys=True),"rebuild canonical PIT features after source repair")
     if not state_available: _block(r,"PIT","PIT_STATE_TIMELINE_UNAVAILABLE","state adapter produced no usable legal fixture row")
 
-def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) -> TickerReadiness:
+def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None,
+                     start_date=None, end_date=None) -> TickerReadiness:
     s=symbol.upper(); r=TickerReadiness(symbol=s,as_of=datetime.now(timezone.utc).isoformat(),run_id=run_id or uuid.uuid4().hex,request_id=request_id or uuid.uuid4().hex); access=access or PCSDataAccess()
     try:
-        executable_start = resolve_executable_start_date(
+        resolved_start = pd.Timestamp(resolve_executable_start_date(
             s, getattr(access, "source_routes", {})
-        ).isoformat()
-        daily=access.read_prices(s, executable_start)
+        )).normalize()
+        executable_start = (max(resolved_start, pd.Timestamp(start_date).normalize()).date().isoformat()
+                            if start_date is not None else resolved_start.date().isoformat())
+        daily=access.read_prices(s, executable_start, end_date)
         try: expected=set(pd.to_datetime(access.read_prices("SPY").date).dt.date)
         except Exception as exc: expected=("SESSION_CALENDAR_UNAVAILABLE", str(exc))
         _daily_checks(r,daily,expected,executable_start); _pit_checks(r,daily)
     except Exception as e: _block(r,"DAILY","DAILY_SOURCE_UNAVAILABLE",e)
     r.DATA_READY="YES" if not any(b["stage"]=="DAILY" for b in r.blockers) else "NO"; r.PIT_READY="YES" if not any(b["stage"]=="PIT" for b in r.blockers) else "NO"
     try:
-        ev=canonical_route_evidence(access,s,start_date=executable_start); spec=ev["spec"]; manifest_path=Path(ev.get("resolved_manifest") or ""); provenance=manifest_path.with_name("data_provenance_manifest.csv") if manifest_path else Path()
+        ev=canonical_route_evidence(access,s,start_date=executable_start,end_date=end_date); spec=ev["spec"]; manifest_path=Path(ev.get("resolved_manifest") or ""); provenance=manifest_path.with_name("data_provenance_manifest.csv") if manifest_path else Path()
         manifest_ok=manifest_path.exists() and bool(spec.get("source_version")); route_matches=False
         if manifest_ok:
             mf=pd.read_csv(manifest_path)
@@ -110,7 +113,7 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
         # executable boundary to their admission severity.
         physical_findings = access.audit_manifest_physical_integrity(
             s, dataset=ev["resolved_dataset"], start_date=executable_start,
-            end_date=spec.get("last_date"),
+            end_date=end_date or spec.get("last_date"),
         )
         historical_findings = access.audit_manifest_physical_integrity(
             s, dataset=ev["resolved_dataset"],
@@ -125,7 +128,7 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
                 _block(r, "OPTIONS", "MANIFEST_PHYSICAL_MISMATCH",
                        f"{finding['partition']} manifest SUCCESS but parquet is missing",
                        "repair canonical partition and refresh manifest")
-        qa=access.audit_options_quality(s, start_date=executable_start, end_date=None); dup=int(qa["duplicate_option_rows"]); conflicts=int(qa["ambiguous_conflicting_option_keys"]); usable=int(qa["usable_30_45_dte_rows"]); valid_quotes=int(qa["valid_30_45_dte_quote_rows"]); valid_exp_rows=int(qa["valid_30_45_dte_expiration_rows"]); valid_strike_rows=int(qa["valid_30_45_dte_strike_rows"]); null_identity=int(qa.get("null_identity_rows", 0)); executable_invalid=int(qa.get("executable_invalid_rows", 0)); valid_bid=valid_quotes == usable; valid_exp=valid_exp_rows == usable; valid_strike=valid_strike_rows == usable; r.checks["options"]={"route":ev,"options_identity":{"dataset":ev["resolved_dataset"],"manifest":ev["resolved_manifest"],"source_version":ev["source_version"],"schema_version":ev["spec"].get("schema_version")},"executable_start_date":executable_start,"raw_rows":int(qa.get("raw_rows",0)),"canonical_rows":int(qa.get("canonical_rows",0)),"quarantined_rows":int(qa.get("quarantined_rows",0)),"executable_rows":int(qa.get("executable_rows",0)),"executable_invalid_rows":executable_invalid,"quarantine_reason_breakdown":qa.get("reason_breakdown",{}),"affected_dates":qa.get("affected_dates",[]),"affected_partitions":qa.get("affected_partitions",[]),"affected_percentage":qa.get("affected_percentage",0.0),"duplicate_option_rows":dup,"duplicate_option_keys":int(qa["duplicate_option_keys"]),"identical_duplicate_keys":int(qa["identical_duplicate_keys"]),"ambiguous_conflicting_option_keys":conflicts,"null_identity_rows":null_identity,"valid_bid_ask":valid_bid,"valid_expirations":valid_exp,"valid_strikes":valid_strike,"usable_30_45_dte_rows":usable,"valid_30_45_dte_quote_rows":valid_quotes,"invalid_30_45_dte_quote_rows":usable-valid_quotes}
+        qa=access.audit_options_quality(s, start_date=executable_start, end_date=end_date); dup=int(qa["duplicate_option_rows"]); conflicts=int(qa["ambiguous_conflicting_option_keys"]); usable=int(qa["usable_30_45_dte_rows"]); valid_quotes=int(qa["valid_30_45_dte_quote_rows"]); valid_exp_rows=int(qa["valid_30_45_dte_expiration_rows"]); valid_strike_rows=int(qa["valid_30_45_dte_strike_rows"]); null_identity=int(qa.get("null_identity_rows", 0)); executable_invalid=int(qa.get("executable_invalid_rows", 0)); valid_bid=valid_quotes == usable; valid_exp=valid_exp_rows == usable; valid_strike=valid_strike_rows == usable; r.checks["options"]={"route":ev,"options_identity":{"dataset":ev["resolved_dataset"],"manifest":ev["resolved_manifest"],"source_version":ev["source_version"],"schema_version":ev["spec"].get("schema_version")},"executable_start_date":executable_start,"requested_end_date":str(end_date) if end_date is not None else None,"raw_rows":int(qa.get("raw_rows",0)),"canonical_rows":int(qa.get("canonical_rows",0)),"quarantined_rows":int(qa.get("quarantined_rows",0)),"executable_rows":int(qa.get("executable_rows",0)),"executable_invalid_rows":executable_invalid,"quarantine_reason_breakdown":qa.get("reason_breakdown",{}),"affected_dates":qa.get("affected_dates",[]),"affected_partitions":qa.get("affected_partitions",[]),"affected_percentage":qa.get("affected_percentage",0.0),"duplicate_option_rows":dup,"duplicate_option_keys":int(qa["duplicate_option_keys"]),"identical_duplicate_keys":int(qa["identical_duplicate_keys"]),"ambiguous_conflicting_option_keys":conflicts,"null_identity_rows":null_identity,"valid_bid_ask":valid_bid,"valid_expirations":valid_exp,"valid_strikes":valid_strike,"usable_30_45_dte_rows":usable,"valid_30_45_dte_quote_rows":valid_quotes,"invalid_30_45_dte_quote_rows":usable-valid_quotes}
         if conflicts: _block(r,"OPTIONS","OPTIONS_AMBIGUOUS_CONFLICTING_KEYS",f"{conflicts} conflicting option keys")
         if null_identity: _block(r,"OPTIONS","OPTIONS_CANONICAL_IDENTITY_INVALID",f"{null_identity} rows have null option identity fields")
         if dup: _block(r,"OPTIONS","OPTIONS_DUPLICATE_KEYS",f"{dup} duplicate key rows")
@@ -148,7 +151,7 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None) 
         # available year plus one year; the quality audit above covers all
         # canonical history through DuckDB aggregation.
         first = max(pd.Timestamp(ev["spec"].get("first_date")), pd.Timestamp(executable_start))
-        last = min(pd.Timestamp(ev["spec"].get("last_date")), first + pd.Timedelta(days=366))
+        last = min(pd.Timestamp(end_date) if end_date is not None else pd.Timestamp(ev["spec"].get("last_date")), first + pd.Timedelta(days=366))
         case,discovery=discover_lifecycle_smoke_case(access,s,start_date=first,end_date=last); r.checks["contract_selection"]={"status":discovery.get("status"),"reason":discovery.get("reason"),"case":case.to_dict() if case else None}
         if not case: _block(r,"CONTRACT_SELECTION","CONTRACT_SELECTION_SMOKE_FAILED",discovery.get("reason"))
         else:
@@ -167,7 +170,7 @@ def run_batch(tickers=TICKERS, output_dir="research_outputs/pcs_data_readiness")
 def persist_ticker_readiness(result: TickerReadiness, output_dir="research_outputs/pcs_data_readiness") -> Path:
     out=Path(output_dir); out.mkdir(parents=True, exist_ok=True); path=out/f"{result.symbol.lower()}.json"; path.write_text(json.dumps(asdict(result),indent=2,default=str),encoding="utf-8"); return path
 
-def assert_research_ready(symbol: str, *, access=None):
-    result=preflight_ticker(symbol,access=access)
+def assert_research_ready(symbol: str, *, access=None, start_date=None, end_date=None):
+    result=preflight_ticker(symbol,access=access,start_date=start_date,end_date=end_date)
     if result.PCS_RESEARCH_READY!="YES": raise RuntimeError(f"PCS_RESEARCH_NOT_READY:{symbol.upper()}:{json.dumps(result.blockers,sort_keys=True)}")
     return result

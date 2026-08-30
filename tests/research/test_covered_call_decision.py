@@ -1,5 +1,5 @@
 from pcs.research.covered_call import CoveredCallContract
-from pcs.research.covered_call_decision import evaluate_covered_call, build_pit_entry_features, diagnose_unified_rows
+from pcs.research.covered_call_decision import evaluate_covered_call, build_pit_entry_features, diagnose_unified_rows, classify_nvdl_state, evaluate_nvdl_research
 
 
 def test_unified_diagnostics_expose_required_region_metrics_without_imputation():
@@ -28,9 +28,14 @@ def stock(**extra):
             "momentum_state": "DECELERATING", "near_recent_high": True, **extra}
 
 
+def request_context(**extra):
+    return {"shares_owned": 100, "market": {"market_state": "NORMAL"},
+            "event_context": {"earnings_status": "NO_EVENT"}, **extra}
+
+
 def test_sell_returns_concrete_canonical_recommendation():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(),
-                                quotes=[quote()])
+                                quotes=[quote()], **request_context())
     assert out["decision"] == "SELL"
     assert out["recommended_expiration"] == "2026-10-23"
     assert out["recommended_strike"] == 140
@@ -42,33 +47,65 @@ def test_sell_returns_concrete_canonical_recommendation():
 
 
 def test_unvalidated_ticker_fails_closed_without_inheriting_nvda_profile():
-    out = evaluate_covered_call("HOOD", "2026-08-26", stock=stock(), quotes=[quote()])
+    out = evaluate_covered_call("HOOD", "2026-08-26", stock=stock(), quotes=[quote()], **request_context())
     assert out["decision"] == "WAIT"
     assert out["profile_status"] == "NOT_VALIDATED"
     assert out["no_sell_reasons"] == ["PROFILE_NOT_VALIDATED"]
 
 
+def test_nvdl_fails_closed_without_validated_profile_or_nvda_inheritance():
+    out = evaluate_covered_call("NVDL", "2026-08-26", shares_owned=100,
+                                stock=stock(), market={"market_state": "NORMAL"},
+                                event_context={"earnings_status": "NO_EVENT"},
+                                quotes=[quote()])
+    assert out["decision"] == "WAIT"
+    assert out["profile_status"] == "NOT_VALIDATED"
+    assert "NVDL_INDEPENDENT_VALIDATION_REQUIRED" in out["reason_codes"] or \
+        out["no_sell_reasons"] == ["PROFILE_NOT_VALIDATED"]
+
+
+def test_nvdl_state_classifier_waits_on_acceleration_and_separates_stall_from_iv():
+    base = {"return_5d": .10, "extension20_atr": 1.4, "momentum_state": "ACCELERATING",
+            "breakout_state": "BREAKOUT", "iv_state": "HIGH", "near_recent_high": True}
+    assert classify_nvdl_state(base)["state"] == "RALLY_ACCELERATION"
+    stall = {**base, "momentum_state": "DECELERATING", "return_5d": .03}
+    assert classify_nvdl_state(stall)["state"] == "RALLY_IV"
+    assert classify_nvdl_state({**stall, "iv_state": "NORMAL"})["state"] == "RESISTANCE_STALL"
+
+
+def test_nvdl_research_api_selects_only_safe_call():
+    c = CoveredCallContract("NVDL", "2026-08-26", "2026-09-25", 120, 2, 2.2,
+                            delta=.18, open_interest=500, volume=20, dte=30)
+    out = evaluate_nvdl_research(as_of_date="2026-08-26",
+        stock={"close": 100, "atr": 5, "return_5d": .04, "extension20_atr": 1.2,
+               "momentum_state": "DECELERATING", "breakout_state": "NONE",
+               "iv_state": "HIGH", "near_recent_high": True},
+        quotes=[c], shares_owned=100)
+    assert out["action"] == "SELL"
+    assert out["selected_contract"]["strike"] == 120
+
+
 def test_accelerating_breakout_is_no_sell_and_capacity_is_hard_stop():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(
-        momentum_state="ACCELERATING", breakout_state="BREAKOUT"), quotes=[quote()])
+        momentum_state="ACCELERATING", breakout_state="BREAKOUT"), quotes=[quote()], **request_context())
     assert out["decision"] == "NO_SELL"
     assert "BREAKOUT_ACCELERATION" in out["no_sell_reasons"]
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(),
-                                quotes=[quote()], active_calls=3)
+                                quotes=[quote()], active_calls=3, **request_context())
     assert out["decision"] == "NO_SELL"
     assert out["no_sell_reasons"] == ["MAX_CALL_CAPACITY_REACHED"]
 
 
 def test_earnings_event_is_hard_stop_and_crossing_expiration_is_rejected():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(),
-                                quotes=[quote()],
-                                event_context={"earnings_date": "2026-08-28"})
+                                quotes=[quote()], **request_context(
+                                    event_context={"earnings_status": "KNOWN", "earnings_date": "2026-08-28"}))
     assert out["decision"] == "NO_SELL"
     assert out["event_risk"] == "HIGH"
     assert out["no_sell_reasons"] == ["EARNINGS_SOON"]
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(),
-                                quotes=[quote(expiration="2026-09-25")],
-                                event_context={"earnings_date": "2026-09-10"})
+                                quotes=[quote(expiration="2026-09-25")], **request_context(
+                                    event_context={"earnings_status": "KNOWN", "earnings_date": "2026-09-10"}))
     assert out["decision"] == "NO_SELL"
     assert "EXPIRATION_CROSSES_EARNINGS" in out["no_sell_reasons"]
 
@@ -76,14 +113,14 @@ def test_earnings_event_is_hard_stop_and_crossing_expiration_is_rejected():
 def test_missing_features_wait_and_empty_chain_no_sell():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock={"close": 120}, quotes=[])
     assert out["decision"] == "WAIT"
-    out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(), quotes=[])
+    out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(), quotes=[], **request_context())
     assert out["decision"] == "NO_SELL"
     assert out["no_sell_reasons"] == ["NO_SAFE_CANONICAL_OPTION"]
 
 
 def test_contracts_below_researched_safety_floor_are_rejected():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(),
-                                quotes=[quote(strike=125)])
+                                quotes=[quote(strike=125)], **request_context())
     assert out["decision"] == "NO_SELL"
     assert out["no_sell_reasons"] == ["NO_SAFE_CANONICAL_OPTION"]
 
@@ -111,7 +148,7 @@ def test_stale_canonical_data_returns_wait_instead_of_no_sell():
         def read_option_chain(self, symbol, day):
             raise AssertionError("stale data must short-circuit before chain access")
 
-    out = evaluate_covered_call("NVDA", "2026-02-10", data_access=Access())
+    out = evaluate_covered_call("NVDA", "2026-02-10", data_access=Access(), **request_context())
     assert out["decision"] == "WAIT"
     assert out["no_sell_reasons"] == ["CANONICAL_DATA_NOT_CURRENT"]
     assert out["data_timestamp"] == "2026-01-25"
