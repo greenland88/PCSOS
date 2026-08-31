@@ -215,7 +215,13 @@ class ResearchRunner:
         if self.spec.ticker != "SOXL":
             raise ResearchSpecError("CASH_SECURED_PUT_PROFILE_NOT_VALIDATED")
         from .cash_secured_put_runner import CashSecuredPutLifecycleRunner
-        return CashSecuredPutLifecycleRunner(self.spec, data_access=data_access).run()
+        access = data_access or PCSDataAccess.canonical()
+        # The CSP adapter owns the explicit signal boundary.  With no signal
+        # packets it persists an auditable zero-signal artifact in the same
+        # isolated root used by this ResearchRunner.
+        return CashSecuredPutLifecycleRunner(self.spec, data_access=access).run(
+            output_dir=self.output_dir.parent
+        )
 
     def execute_covered_call_research(self, *, data_access: PCSDataAccess | None = None) -> dict[str, Any]:
         """Execute the covered-call adapter after the normal readiness gates.

@@ -79,4 +79,4 @@ def test_missing_roll_quote_fails_closed():
         daily_observations={"e1": [{"date": "2025-01-04", "roll": "missing", "old_buyback_ask": 1.0}]},
     )
     assert result.lifecycle_results[0]["state"] == "HOLD"
-    assert result.lifecycle_results[0]["actions"][1]["reason_code"] == "MISSING_EXACT_ROLL_QUOTE"
+    assert result.lifecycle_results[0]["actions"][1]["reason_codes"] == ["MISSING_EXACT_ROLL_QUOTE"]

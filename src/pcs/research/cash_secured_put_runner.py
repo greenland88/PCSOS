@@ -105,21 +105,46 @@ class CashSecuredPutLifecycleRunner:
         lifecycle: list[dict[str, Any]] = []
         assignments: list[dict[str, Any]] = []
         for index, entry in enumerate(entries):
-            position = CashSecuredPutPosition(_contract(entry["contract"]), float(entry["entry_credit"]))
+            original = _contract(entry["contract"])
+            original_credit = float(entry["entry_credit"])
+            original_collateral = original.strike * 100 - original_credit * 100
+            position = CashSecuredPutPosition(original, original_credit)
             identity = str(entry.get("episode_id", f"{self.spec.ticker}:{index}"))
-            actions = [{"episode_id": identity, "action": "OPEN", "date": position.contract.quote_date}]
+            actions = [{"episode_id": identity, "symbol": self.spec.ticker, "action": "OPEN",
+                        "state_before": None, "state_after": position.state.value,
+                        "date": original.quote_date, "quote_date": original.quote_date,
+                        "expiration": original.expiration, "strike": original.strike,
+                        "bid": original.bid, "ask": original.ask, "pit_status": original.pit_status,
+                        "underlying_mark": original.underlying_price, "collateral": original_collateral,
+                        "cumulative_premium": original_credit * 100, "cumulative_buyback_cost": 0.0,
+                        "realized_pnl": None, "reason_codes": ["OPEN_AT_BID"]}]
             observations = list(daily_observations.get(identity, entry.get("observations", ())))
             for observation in observations:
+                state_before = position.state.value
                 action = self._manage(position, observation, exact_quotes.get(identity, {}))
-                actions.append({"episode_id": identity, **action})
+                actions.append({"episode_id": identity, "symbol": self.spec.ticker,
+                                "state_before": state_before,
+                                "state_after": position.state.value,
+                                "expiration": position.contract.expiration, "strike": position.contract.strike,
+                                "quote_date": position.contract.quote_date,
+                                "bid": position.contract.bid, "ask": position.contract.ask,
+                                "pit_status": position.contract.pit_status,
+                                "collateral": position.collateral(),
+                                "cumulative_premium": position.entry_credit * 100,
+                                "cumulative_buyback_cost": action.get("buyback_cost", 0.0),
+                                "realized_pnl": action.get("pnl"),
+                                "reason_codes": [action.pop("reason_code")] if action.get("reason_code") else [],
+                                **action, "episode_id": identity})
                 if position.state in {PutLifecycleState.PROFIT_CLOSE, PutLifecycleState.RISK_CLOSE,
                                       PutLifecycleState.EXPIRE_WORTHLESS, PutLifecycleState.ASSIGNMENT}:
                     break
             lifecycle.append({"episode_id": identity, "state": position.state.value,
                               "roll_count": position.roll_count, "cumulative_credit": position.entry_credit,
-                              "entry_date": position.contract.quote_date,
-                              "gross_premium": float(entry["entry_credit"]) * 100,
-                              "collateral_required": position.collateral(),
+                              "entry_date": original.quote_date, "original_entry_date": original.quote_date,
+                              "original_strike": original.strike, "original_expiration": original.expiration,
+                              "original_entry_credit": original_credit, "original_collateral": original_collateral,
+                              "gross_premium": position.entry_credit * 100,
+                              "collateral_required": original_collateral,
                               "holding_calendar_days": len(observations),
                               "collateral_calendar_days": position.collateral() * len(observations),
                               "actions": actions})
@@ -137,7 +162,7 @@ class CashSecuredPutLifecycleRunner:
                 position.hold()
                 return {"action": "HOLD", "date": date, "reason_code": "PREMATURE_EXPIRY_REJECTED"}
             value = position.expire(float(observation["underlying_mark"]), int(observation.get("holding_days", 0)))
-            return {"action": position.state.value, "date": date, "pnl": value}
+            return {"action": position.state.value, "date": date, "pnl": value, "buyback_cost": 0.0}
         if observation.get("roll"):
             new_contract = quotes.get(str(observation["roll"]))
             if new_contract is None or observation.get("old_buyback_ask") is None:
@@ -149,10 +174,10 @@ class CashSecuredPutLifecycleRunner:
                 position.hold()
                 return {"action": "HOLD", "date": date, "reason_code": "ROLL_QUOTE_IDENTITY_INVALID"}
             credit = position.roll_down_out(_contract(new_contract), float(observation["old_buyback_ask"]))
-            return {"action": "ROLL", "date": date, "net_credit": credit}
+            return {"action": "ROLL", "date": date, "net_credit": credit, "buyback_cost": float(observation["old_buyback_ask"]) * 100}
         if observation.get("buyback_ask") is not None:
             pnl = position.close(float(observation["buyback_ask"]))
-            return {"action": position.state.value, "date": date, "pnl": pnl}
+            return {"action": position.state.value, "date": date, "pnl": pnl, "buyback_cost": float(observation["buyback_ask"]) * 100}
         position.hold()
         return {"action": "HOLD", "date": date}
 
