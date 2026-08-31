@@ -31,6 +31,28 @@ REQUIRED_ARTIFACTS = (
 CALCULATION_VERSION = "cash_secured_put_lifecycle_v1"
 
 
+def read_csp_artifacts(path: str | Path, spec: ResearchSpec) -> dict[str, Any]:
+    """Read only a complete, current, hash-valid CSP artifact set."""
+    root = Path(path)
+    manifest_path = root / "artifact_manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError("STALE_ARTIFACT")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (manifest.get("current") is not True or manifest.get("status") != "CURRENT"
+            or manifest.get("strategy_type") != "CASH_SECURED_PUT"
+            or manifest.get("symbol") != spec.ticker
+            or manifest.get("spec_hash") != spec_hash(spec)
+            or manifest.get("final_oos_read") is not False):
+        raise RuntimeError("STALE_ARTIFACT")
+    for record in manifest.get("files", ()):
+        file_path = root / record["path"]
+        if not file_path.is_file() or hashlib.sha256(file_path.read_bytes()).hexdigest() != record.get("sha256"):
+            raise RuntimeError("STALE_ARTIFACT")
+    if set(REQUIRED_ARTIFACTS) - {x["path"] for x in manifest.get("files", ())} - {"artifact_manifest.json"}:
+        raise RuntimeError("STALE_ARTIFACT")
+    return manifest
+
+
 @dataclass(frozen=True)
 class CashSecuredPutRunResult:
     status: str

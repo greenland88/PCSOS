@@ -1,5 +1,6 @@
 import json
-from pcs.research.cash_secured_put_runner import CashSecuredPutLifecycleRunner, REQUIRED_ARTIFACTS
+import pytest
+from pcs.research.cash_secured_put_runner import CashSecuredPutLifecycleRunner, REQUIRED_ARTIFACTS, read_csp_artifacts
 from pcs.research.research_framework import load_spec
 from pcs.strategies.cash_secured_put import ShortPutContract
 
@@ -35,6 +36,10 @@ def test_open_hold_profit_close_and_artifacts_are_atomic(tmp_path):
     assert manifest["current"] is True
     assert manifest["strategy_type"] == "CASH_SECURED_PUT"
     assert manifest["final_oos_read"] is False
+    assert read_csp_artifacts(artifact_dir, runner().spec)["current"] is True
+    (artifact_dir / "yearly_metrics.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="STALE_ARTIFACT"):
+        read_csp_artifacts(artifact_dir, runner().spec)
 
 
 def test_roll_then_hold_second_roll_then_close():
