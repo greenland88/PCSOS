@@ -142,12 +142,20 @@ class CashSecuredPutLifecycleRunner:
             sessions = tuple(sorted(str(x)[:10] for x in trading_sessions_by_episode.get(identity, ())))
             if observations and not sessions:
                 raise ValueError("SESSION_CALENDAR_UNAVAILABLE")
+            if len(set(sessions)) != len(sessions):
+                raise ValueError("SESSION_CALENDAR_INVALID")
+            session_set = set(sessions)
+            for obs, date in zip(observations, dates):
+                if "is_trading_session" in obs and bool(obs["is_trading_session"]) != (date in session_set):
+                    raise ValueError("SESSION_MARKER_CALENDAR_CONFLICT")
+            processed_observations = []
             gross_received = original_credit * 100.0
             buyback_cost = 0.0
             terminal_date = original.quote_date[:10]
             for observation in observations:
                 state_before = position.state.value
                 action = self._manage(position, observation, exact_quotes.get(identity, {}))
+                processed_observations.append(observation)
                 terminal_date = str(observation.get("date", terminal_date))[:10]
                 actions.append({"episode_id": identity, "symbol": self.spec.ticker,
                                 "state_before": state_before,
@@ -223,7 +231,7 @@ class CashSecuredPutLifecycleRunner:
                               "collateral_trading_days": sum(x["collateral_trading_days"] for x in segments),
                               "session_calendar_source": "EXPLICIT_INPUT",
                               "session_calendar_status": "VALIDATED",
-                              "session_calendar_count": len(sessions),
+                              "session_count_used": sum(1 for x in sessions if original.quote_date[:10] <= x <= terminal_date),
                               "actions": actions})
             all_segments.extend(segments)
             if position.assignment:
@@ -255,8 +263,13 @@ class CashSecuredPutLifecycleRunner:
                 return {"action": "HOLD", "date": date, "reason_code": "ROLL_QUOTE_IDENTITY_INVALID"}
             credit = position.roll_down_out(_contract(new_contract), float(observation["old_buyback_ask"]))
             return {"action": "ROLL", "date": date, "net_credit": credit,
+                    "net_credit_per_share": credit, "net_credit_dollars": credit * 100,
                     "premium_received": float(new_contract["bid"]) * 100,
+                    "premium_received_per_share": float(new_contract["bid"]),
+                    "premium_received_dollars": float(new_contract["bid"]) * 100,
                     "buyback_cost": float(observation["old_buyback_ask"]) * 100,
+                    "buyback_cost_per_share": float(observation["old_buyback_ask"]),
+                    "buyback_cost_dollars": float(observation["old_buyback_ask"]) * 100,
                     "old_expiration": old_contract.expiration, "old_strike": old_contract.strike,
                     "old_quote_date": old_contract.quote_date, "old_close_ask": float(observation["old_buyback_ask"]),
                     "new_expiration": new_contract["expiration"], "new_strike": new_contract["strike"],
@@ -264,7 +277,10 @@ class CashSecuredPutLifecycleRunner:
         if observation.get("buyback_ask") is not None:
             pnl = position.close(float(observation["buyback_ask"]))
             return {"action": position.state.value, "date": date, "pnl": pnl,
-                    "premium_received": 0.0, "buyback_cost": float(observation["buyback_ask"]) * 100}
+                    "premium_received": 0.0, "premium_received_per_share": 0.0, "premium_received_dollars": 0.0,
+                    "buyback_cost": float(observation["buyback_ask"]) * 100,
+                    "buyback_cost_per_share": float(observation["buyback_ask"]),
+                    "buyback_cost_dollars": float(observation["buyback_ask"]) * 100}
         position.hold()
         return {"action": "HOLD", "date": date}
 
