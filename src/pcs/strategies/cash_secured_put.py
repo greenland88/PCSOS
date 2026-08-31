@@ -12,8 +12,7 @@ from math import isfinite
 from typing import Any, Iterable, Mapping
 
 
-class StrategyType(StrEnum):
-    CASH_SECURED_PUT = "CASH_SECURED_PUT"
+from pcs.research.research_framework import StrategyType
 
 
 class PutLifecycleState(StrEnum):
@@ -136,6 +135,7 @@ class ShortPutContractSelector:
 @dataclass(frozen=True)
 class AssignmentLedger:
     assignment_price: float
+    stock_mark: float
     shares_acquired: int
     option_credit: float
     adjusted_stock_cost_basis: float
@@ -202,7 +202,7 @@ class CashSecuredPutPosition:
     def assign(self, stock_mark: float, days_held: int) -> AssignmentLedger:
         self.state = PutLifecycleState.ASSIGNMENT
         basis = self.contract.strike - self.entry_credit
-        self.assignment = AssignmentLedger(self.contract.strike, 100, self.entry_credit * 100,
+        self.assignment = AssignmentLedger(self.contract.strike, float(stock_mark), 100, self.entry_credit * 100,
                                             basis, (float(stock_mark) - basis) * 100,
                                             (float(stock_mark) - basis) * 100,
                                             int(days_held))

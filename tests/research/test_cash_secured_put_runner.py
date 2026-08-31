@@ -61,6 +61,12 @@ def test_roll_then_hold_second_roll_then_close():
     assert row["state"] == "PROFIT_CLOSE"
     assert row["roll_count"] == 2
     assert [x["action"] for x in row["actions"]] == ["OPEN", "ROLL", "HOLD", "ROLL", "PROFIT_CLOSE"]
+    assert row["original_entry_date"] == "2025-01-02"
+    assert row["original_strike"] == 20
+    assert row["actions"][1]["old_strike"] == 20
+    assert row["actions"][1]["new_strike"] == 19
+    assert row["actions"][3]["old_strike"] == 19
+    assert row["actions"][3]["new_strike"] == 18
 
 
 def test_assignment_uses_stock_mtm_without_double_counting():
@@ -71,6 +77,26 @@ def test_assignment_uses_stock_mtm_without_double_counting():
     assert result.lifecycle_results[0]["state"] == "ASSIGNMENT"
     assert result.assignment_ledger[0]["stock_mtm"] == -100
     assert result.assignment_ledger[0]["total_economic_pnl"] == -100
+    row = result.lifecycle_results[0]
+    assert row["gross_premium_received"] == 100
+    assert row["net_option_pnl"] == 100
+    assert row["assignment_stock_component"] == -200
+    assert row["total_economic_pnl"] == -100
+
+
+def test_time_metrics_use_dates_and_explicit_pit_sessions():
+    result = runner().run(
+        entries=[{"episode_id": "e1", "contract": c(), "entry_credit": 1.0}],
+        daily_observations={"e1": [
+            {"date": "2025-01-03", "is_trading_session": True},
+            {"date": "2025-01-06", "is_trading_session": True},
+        ]},
+    )
+    row = result.lifecycle_results[0]
+    assert row["holding_calendar_days"] == 4
+    assert row["holding_trading_days"] == 2
+    assert row["collateral_calendar_days"] == row["collateral_required"] * 4
+    assert row["collateral_trading_days"] == row["collateral_required"] * 2
 
 
 def test_missing_roll_quote_fails_closed():

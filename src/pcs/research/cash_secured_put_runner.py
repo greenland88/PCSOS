@@ -151,12 +151,15 @@ class CashSecuredPutLifecycleRunner:
                               "gross_premium_received": gross_received,
                               "cumulative_buyback_cost": buyback_cost,
                               "net_option_pnl": gross_received - buyback_cost,
-                              "assignment_stock_component": float(position.assignment.stock_mtm) if position.assignment else 0.0,
-                              "total_economic_pnl": (gross_received - buyback_cost + float(position.assignment.stock_mtm)) if position.assignment else gross_received - buyback_cost,
+                              "assignment_stock_component": ((float(position.assignment.stock_mark) - float(position.assignment.assignment_price)) * 100.0) if position.assignment else 0.0,
+                              "total_economic_pnl": (gross_received - buyback_cost + (float(position.assignment.stock_mark) - float(position.assignment.assignment_price)) * 100.0) if position.assignment else gross_received - buyback_cost,
                               "realized": position.state.value in {"PROFIT_CLOSE", "RISK_CLOSE", "EXPIRE_WORTHLESS", "ASSIGNMENT"},
                               "collateral_required": original_collateral,
-                              "holding_calendar_days": len(observations),
-                              "collateral_calendar_days": position.collateral() * len(observations),
+                              "terminal_date": (str(observations[-1].get("date"))[:10] if observations else original.quote_date[:10]),
+                              "holding_calendar_days": (max(0, (datetime.fromisoformat(str(observations[-1].get("date"))[:10]) - datetime.fromisoformat(original.quote_date[:10])).days) if observations else 0),
+                              "holding_trading_days": sum(1 for x in observations if x.get("is_trading_session") is True),
+                              "collateral_calendar_days": position.collateral() * (max(0, (datetime.fromisoformat(str(observations[-1].get("date"))[:10]) - datetime.fromisoformat(original.quote_date[:10])).days) if observations else 0),
+                              "collateral_trading_days": position.collateral() * sum(1 for x in observations if x.get("is_trading_session") is True),
                               "actions": actions})
             if position.assignment:
                 assignments.append({"episode_id": identity, **position.assignment.__dict__})
@@ -174,6 +177,7 @@ class CashSecuredPutLifecycleRunner:
             value = position.expire(float(observation["underlying_mark"]), int(observation.get("holding_days", 0)))
             return {"action": position.state.value, "date": date, "pnl": value, "premium_received": 0.0, "buyback_cost": 0.0}
         if observation.get("roll"):
+            old_contract = position.contract
             new_contract = quotes.get(str(observation["roll"]))
             if new_contract is None or observation.get("old_buyback_ask") is None:
                 position.hold()
@@ -186,7 +190,11 @@ class CashSecuredPutLifecycleRunner:
             credit = position.roll_down_out(_contract(new_contract), float(observation["old_buyback_ask"]))
             return {"action": "ROLL", "date": date, "net_credit": credit,
                     "premium_received": float(new_contract["bid"]) * 100,
-                    "buyback_cost": float(observation["old_buyback_ask"]) * 100}
+                    "buyback_cost": float(observation["old_buyback_ask"]) * 100,
+                    "old_expiration": old_contract.expiration, "old_strike": old_contract.strike,
+                    "old_quote_date": old_contract.quote_date, "old_close_ask": float(observation["old_buyback_ask"]),
+                    "new_expiration": new_contract["expiration"], "new_strike": new_contract["strike"],
+                    "new_quote_date": new_contract["quote_date"], "new_open_bid": float(new_contract["bid"])}
         if observation.get("buyback_ask") is not None:
             pnl = position.close(float(observation["buyback_ask"]))
             return {"action": position.state.value, "date": date, "pnl": pnl,

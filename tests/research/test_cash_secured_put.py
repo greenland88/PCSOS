@@ -1,6 +1,7 @@
 from pytest import approx
 from pcs.strategies.cash_secured_put import (AssignmentLedger, CashSecuredPutPosition,
-    PutLifecycleState, ShortPutContract, ShortPutContractSelector, StrategyType)
+    PutLifecycleState, ShortPutContract, ShortPutContractSelector)
+from pcs.research.research_framework import StrategyType
 
 
 def contract(**kw):
