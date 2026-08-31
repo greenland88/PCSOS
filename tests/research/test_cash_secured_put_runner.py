@@ -13,8 +13,8 @@ def c(**kw):
     return ShortPutContract(**data)
 
 
-def runner():
-    return CashSecuredPutLifecycleRunner(load_spec("config/research/soxl_csp_v1.yaml"))
+def runner(data_access=None):
+    return CashSecuredPutLifecycleRunner(load_spec("config/research/soxl_csp_v1.yaml"), data_access=data_access)
 
 
 def test_no_signal_stops_without_fabricating_dates():
@@ -24,7 +24,7 @@ def test_no_signal_stops_without_fabricating_dates():
 
 
 def test_open_hold_profit_close_and_artifacts_are_atomic(tmp_path):
-    result = runner().run(
+    result = runner(data_access=object()).run(
         entries=[{"episode_id": "e1", "contract": c(), "entry_credit": 1.0}],
         daily_observations={"e1": [{"date": "2025-01-03"}, {"date": "2025-01-04", "buyback_ask": .4}]},
         output_dir=tmp_path,
@@ -36,16 +36,17 @@ def test_open_hold_profit_close_and_artifacts_are_atomic(tmp_path):
     assert manifest["current"] is True
     assert manifest["strategy_type"] == "CASH_SECURED_PUT"
     assert manifest["final_oos_read"] is False
-    assert read_csp_artifacts(artifact_dir, runner().spec)["current"] is True
+    with pytest.raises(RuntimeError, match="STALE_ARTIFACT"):
+        read_csp_artifacts(artifact_dir, runner(data_access=object()).spec)
     (artifact_dir / "yearly_metrics.json").write_text("{}")
     with pytest.raises(RuntimeError, match="STALE_ARTIFACT"):
-        read_csp_artifacts(artifact_dir, runner().spec)
+        read_csp_artifacts(artifact_dir, runner(data_access=object()).spec)
 
 
 def test_roll_then_hold_second_roll_then_close():
     first = c()
-    second = c(expiration="2025-02-06", strike=19, bid=1.2, ask=1.3)
-    third = c(expiration="2025-02-20", strike=18, bid=1.2, ask=1.3)
+    second = c(quote_date="2025-01-04", expiration="2025-02-06", strike=19, bid=1.2, ask=1.3)
+    third = c(quote_date="2025-01-10", expiration="2025-02-20", strike=18, bid=1.2, ask=1.3)
     result = runner().run(
         entries=[{"episode_id": "e1", "contract": first, "entry_credit": 1.0}],
         daily_observations={"e1": [

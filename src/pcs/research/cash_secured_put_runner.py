@@ -16,6 +16,7 @@ import tempfile
 from typing import Any, Iterable, Mapping
 
 import pandas as pd
+from pcs.data.access import PCSDataAccess
 
 from pcs.strategies.cash_secured_put import (
     CashSecuredPutPosition, PutLifecycleState, ShortPutContract,
@@ -40,6 +41,7 @@ def read_csp_artifacts(path: str | Path, spec: ResearchSpec) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (manifest.get("current") is not True or manifest.get("status") != "CURRENT"
             or manifest.get("strategy_type") != "CASH_SECURED_PUT"
+            or manifest.get("data_source") != "PCS_CANONICAL_DATA"
             or manifest.get("symbol") != spec.ticker
             or manifest.get("spec_hash") != spec_hash(spec)
             or manifest.get("final_oos_read") is not False):
@@ -86,22 +88,28 @@ class CashSecuredPutLifecycleRunner:
     def run(self, *, entries: Iterable[Mapping[str, Any]] | None = None,
             daily_observations: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
             exact_quotes: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+            candidates: Iterable[Mapping[str, Any]] | None = None,
             output_dir: str | Path | None = None) -> CashSecuredPutRunResult:
         entries = list(entries or [])
         if not entries:
-            return CashSecuredPutRunResult(
+            result = CashSecuredPutRunResult(
                 ResearchStatus.NO_SIGNAL_DATES.value,
                 ("CSP_SIGNAL_ENGINE_NOT_CONFIGURED",),
             )
+            if output_dir is not None:
+                result = self.persist_result(result, output_dir=output_dir, candidates=list(candidates or []))
+            return result
         daily_observations = daily_observations or {}
         exact_quotes = exact_quotes or {}
+        candidates = list(candidates or [])
         lifecycle: list[dict[str, Any]] = []
         assignments: list[dict[str, Any]] = []
         for index, entry in enumerate(entries):
             position = CashSecuredPutPosition(_contract(entry["contract"]), float(entry["entry_credit"]))
             identity = str(entry.get("episode_id", f"{self.spec.ticker}:{index}"))
             actions = [{"episode_id": identity, "action": "OPEN", "date": position.contract.quote_date}]
-            for observation in daily_observations.get(identity, entry.get("observations", ())):
+            observations = list(daily_observations.get(identity, entry.get("observations", ())))
+            for observation in observations:
                 action = self._manage(position, observation, exact_quotes.get(identity, {}))
                 actions.append({"episode_id": identity, **action})
                 if position.state in {PutLifecycleState.PROFIT_CLOSE, PutLifecycleState.RISK_CLOSE,
@@ -109,18 +117,25 @@ class CashSecuredPutLifecycleRunner:
                     break
             lifecycle.append({"episode_id": identity, "state": position.state.value,
                               "roll_count": position.roll_count, "cumulative_credit": position.entry_credit,
-                              "actions": actions, "collateral_days": sum(
-                                  float(x.get("collateral", position.collateral())) for x in (entry.get("observations", ())))})
+                              "entry_date": position.contract.quote_date,
+                              "gross_premium": float(entry["entry_credit"]) * 100,
+                              "collateral_required": position.collateral(),
+                              "holding_calendar_days": len(observations),
+                              "collateral_calendar_days": position.collateral() * len(observations),
+                              "actions": actions})
             if position.assignment:
                 assignments.append({"episode_id": identity, **position.assignment.__dict__})
         result = CashSecuredPutRunResult("COMPLETED", ("CSP_LIFECYCLE_COMPLETED",), tuple(lifecycle), tuple(assignments))
         if output_dir is not None:
-            result = self.persist_result(result, output_dir=output_dir)
+            result = self.persist_result(result, output_dir=output_dir, candidates=candidates)
         return result
 
     def _manage(self, position: CashSecuredPutPosition, observation: Mapping[str, Any], quotes: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
         date = str(observation.get("date", observation.get("quote_date", "")))
         if observation.get("expire"):
+            if date[:10] < position.contract.expiration[:10]:
+                position.hold()
+                return {"action": "HOLD", "date": date, "reason_code": "PREMATURE_EXPIRY_REJECTED"}
             value = position.expire(float(observation["underlying_mark"]), int(observation.get("holding_days", 0)))
             return {"action": position.state.value, "date": date, "pnl": value}
         if observation.get("roll"):
@@ -128,6 +143,11 @@ class CashSecuredPutLifecycleRunner:
             if new_contract is None or observation.get("old_buyback_ask") is None:
                 position.hold()
                 return {"action": "HOLD", "date": date, "reason_code": "MISSING_EXACT_ROLL_QUOTE"}
+            if (str(new_contract.get("symbol", "")).upper() != position.contract.symbol.upper()
+                    or str(new_contract.get("quote_date", ""))[:10] != date[:10]
+                    or str(new_contract.get("pit_status", "")) != "PIT_SAFE"):
+                position.hold()
+                return {"action": "HOLD", "date": date, "reason_code": "ROLL_QUOTE_IDENTITY_INVALID"}
             credit = position.roll_down_out(_contract(new_contract), float(observation["old_buyback_ask"]))
             return {"action": "ROLL", "date": date, "net_credit": credit}
         if observation.get("buyback_ask") is not None:
@@ -136,31 +156,67 @@ class CashSecuredPutLifecycleRunner:
         position.hold()
         return {"action": "HOLD", "date": date}
 
-    def persist_result(self, result: CashSecuredPutRunResult, *, output_dir: str | Path) -> CashSecuredPutRunResult:
+    def persist_result(self, result: CashSecuredPutRunResult, *, output_dir: str | Path,
+                       candidates: list[Mapping[str, Any]] | None = None) -> CashSecuredPutRunResult:
         target = Path(output_dir) / self.spec.research_id
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=f".{self.spec.research_id}.", dir=target.parent) as tmp:
             work = Path(tmp)
+            injected = not isinstance(self.data_access, PCSDataAccess)
+            if injected and "research_outputs" in str(output_dir).replace("\\", "/"):
+                raise PermissionError("SYNTHETIC_TEST_FIXTURE_CANNOT_WRITE_RESEARCH_OUTPUTS")
             envelope = {"module": "pcs.research.cash_secured_put_runner", "strategy_type": self.spec.strategy_type.value,
                         "symbol": self.spec.ticker, "spec_hash": spec_hash(self.spec), "code_version": CALCULATION_VERSION,
-                        "data_identity": "INJECTED_PIT_INPUTS", "run_id": os.urandom(8).hex(),
+                        "data_identity": "INJECTED_PIT_INPUTS" if injected else "PCS_DATA_ACCESS_VALIDATED",
+                        "data_source": "INJECTED_PIT_INPUTS" if injected else "PCS_CANONICAL_DATA",
+                        "run_id": os.urandom(8).hex(),
                         "request_id": os.urandom(8).hex(), "final_oos_read": False}
             (work / "readiness_report.json").write_text(json.dumps({**envelope, "status": result.status}, default=_json_default), encoding="utf-8")
-            pd.DataFrame([]).to_parquet(work / "daily_decision_packets.parquet", index=False)
-            pd.DataFrame([]).to_parquet(work / "candidate_contracts.parquet", index=False)
-            pd.DataFrame([x for x in result.lifecycle_results]).to_parquet(work / "selected_trades.parquet", index=False)
-            pd.DataFrame([x for x in result.lifecycle_results]).to_parquet(work / "lifecycle_results.parquet", index=False)
+            action_rows = [a for row in result.lifecycle_results for a in row.get("actions", [])]
+            pd.DataFrame(action_rows).to_parquet(work / "daily_decision_packets.parquet", index=False)
+            pd.DataFrame(candidates or [{"status": "NOT_PROVIDED", "reason_codes": ["CANDIDATES_NOT_PROVIDED"]}]).to_parquet(work / "candidate_contracts.parquet", index=False)
+            selected = [{k: row.get(k) for k in ("episode_id", "entry_date", "gross_premium", "collateral_required")} for row in result.lifecycle_results]
+            pd.DataFrame(selected).to_parquet(work / "selected_trades.parquet", index=False)
+            lifecycle_rows = [{k: v for k, v in row.items() if k != "actions"} for row in result.lifecycle_results]
+            pd.DataFrame(lifecycle_rows).to_parquet(work / "lifecycle_results.parquet", index=False)
             pd.DataFrame(list(result.assignment_ledger)).to_parquet(work / "assignment_ledger.parquet", index=False)
-            metrics = {**envelope, "opened_puts": len(result.lifecycle_results), "assignment_count": len(result.assignment_ledger)}
+            gross = sum(float(x.get("gross_premium", 0)) for x in lifecycle_rows)
+            assignment_mtm = sum(float(x.get("stock_mtm", 0)) for x in result.assignment_ledger)
+            metrics = {**envelope, "opened_puts": len(lifecycle_rows), "completed_positions": len(lifecycle_rows),
+                       "gross_premium": gross, "buyback_cost": None, "net_option_pnl": None,
+                       "assignment_stock_mtm": assignment_mtm, "total_economic_pnl": assignment_mtm,
+                       "pnl_per_put": None, "profit_factor": None, "max_drawdown": None,
+                       "max_single_loss": None, "profit_close_count": sum(x.get("state") == "PROFIT_CLOSE" for x in lifecycle_rows),
+                       "risk_close_count": sum(x.get("state") == "RISK_CLOSE" for x in lifecycle_rows),
+                       "roll_count": sum(int(x.get("roll_count", 0)) for x in lifecycle_rows),
+                       "expiry_worthless_count": sum(x.get("state") == "EXPIRE_WORTHLESS" for x in lifecycle_rows),
+                       "assignment_count": len(result.assignment_ledger),
+                       "average_holding_days": (sum(x.get("holding_calendar_days", 0) for x in lifecycle_rows) / len(lifecycle_rows) if lifecycle_rows else None),
+                       "average_collateral": (sum(x.get("collateral_required", 0) for x in lifecycle_rows) / len(lifecycle_rows) if lifecycle_rows else None),
+                       "peak_collateral": max((x.get("collateral_required", 0) for x in lifecycle_rows), default=None),
+                       "collateral_days": sum(x.get("collateral_calendar_days", 0) for x in lifecycle_rows),
+                       "yearly_pnl": {}, "reason_codes": ["METRICS_PARTIAL_UNREALIZED_FIELDS_NULL"]}
             for name in ("yearly_metrics.json", "strategy_comparison.json"):
                 (work / name).write_text(json.dumps(metrics, default=_json_default), encoding="utf-8")
             files = [x for x in REQUIRED_ARTIFACTS if x != "artifact_manifest.json"]
             records = [{"path": x, "sha256": hashlib.sha256((work / x).read_bytes()).hexdigest()} for x in files]
             manifest = {**envelope, "research_id": self.spec.research_id, "current": True, "status": "CURRENT",
-                        "data_source": "PCS_CANONICAL_DATA", "files": records,
+                        "data_source": envelope["data_source"], "files": records,
                         "created_at": datetime.now(timezone.utc).isoformat()}
             (work / "artifact_manifest.json").write_text(json.dumps(manifest, indent=2, default=_json_default), encoding="utf-8")
-            if target.exists():
-                shutil.rmtree(target)
-            os.replace(work, target)
+            backup = target.with_name(target.name + ".replacement-backup")
+            try:
+                if backup.exists():
+                    shutil.rmtree(backup)
+                if target.exists():
+                    os.replace(target, backup)
+                os.replace(work, target)
+            except Exception:
+                if target.exists():
+                    shutil.rmtree(target)
+                if backup.exists():
+                    os.replace(backup, target)
+                raise
+            if backup.exists():
+                shutil.rmtree(backup)
         return CashSecuredPutRunResult(result.status, result.reason_codes, result.lifecycle_results, result.assignment_ledger, str(target))
