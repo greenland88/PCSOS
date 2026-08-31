@@ -27,6 +27,7 @@ REQUIRED_ARTIFACTS = (
     "readiness_report.json", "daily_decision_packets.parquet",
     "candidate_contracts.parquet", "selected_trades.parquet",
     "lifecycle_results.parquet", "assignment_ledger.parquet",
+    "collateral_segments.parquet",
     "yearly_metrics.json", "strategy_comparison.json", "artifact_manifest.json",
 )
 CALCULATION_VERSION = "cash_secured_put_lifecycle_v1"
@@ -61,6 +62,7 @@ class CashSecuredPutRunResult:
     reason_codes: tuple[str, ...]
     lifecycle_results: tuple[dict[str, Any], ...] = ()
     assignment_ledger: tuple[dict[str, Any], ...] = ()
+    collateral_segments: tuple[dict[str, Any], ...] = ()
     artifact_dir: str | None = None
 
 
@@ -89,6 +91,7 @@ class CashSecuredPutLifecycleRunner:
             daily_observations: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
             exact_quotes: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
             candidates: Iterable[Mapping[str, Any]] | None = None,
+            trading_sessions_by_episode: Mapping[str, Iterable[str]] | None = None,
             output_dir: str | Path | None = None) -> CashSecuredPutRunResult:
         entries = list(entries or [])
         if not entries:
@@ -102,8 +105,10 @@ class CashSecuredPutLifecycleRunner:
         daily_observations = daily_observations or {}
         exact_quotes = exact_quotes or {}
         candidates = list(candidates or [])
+        trading_sessions_by_episode = trading_sessions_by_episode or {}
         lifecycle: list[dict[str, Any]] = []
         assignments: list[dict[str, Any]] = []
+        all_segments: list[dict[str, Any]] = []
         for index, entry in enumerate(entries):
             original = _contract(entry["contract"])
             original_credit = float(entry["entry_credit"])
@@ -119,6 +124,24 @@ class CashSecuredPutLifecycleRunner:
                         "cumulative_premium": original_credit * 100, "cumulative_buyback_cost": 0.0,
                         "realized_pnl": None, "reason_codes": ["OPEN_AT_BID"]}]
             observations = list(daily_observations.get(identity, entry.get("observations", ())))
+            dates = []
+            for obs in observations:
+                if "date" in obs and "quote_date" in obs and str(obs["date"])[:10] != str(obs["quote_date"])[:10]:
+                    raise ValueError("OBSERVATION_DATE_CONFLICT")
+                raw_date = obs.get("date", obs.get("quote_date"))
+                if not raw_date:
+                    raise ValueError("OBSERVATION_DATE_MISSING")
+                try:
+                    parsed = datetime.fromisoformat(str(raw_date)[:10])
+                except ValueError as exc:
+                    raise ValueError("OBSERVATION_DATE_INVALID") from exc
+                date = parsed.date().isoformat()
+                if date < original.quote_date[:10]: raise ValueError("OBSERVATION_BEFORE_ENTRY")
+                if dates and date <= dates[-1]: raise ValueError("DUPLICATE_DAILY_OBSERVATION" if date == dates[-1] else "OBSERVATIONS_NOT_MONOTONIC")
+                dates.append(date)
+            sessions = tuple(sorted(str(x)[:10] for x in trading_sessions_by_episode.get(identity, ())))
+            if observations and not sessions:
+                raise ValueError("SESSION_CALENDAR_UNAVAILABLE")
             gross_received = original_credit * 100.0
             buyback_cost = 0.0
             terminal_date = original.quote_date[:10]
@@ -145,6 +168,42 @@ class CashSecuredPutLifecycleRunner:
                 if position.state in {PutLifecycleState.PROFIT_CLOSE, PutLifecycleState.RISK_CLOSE,
                                       PutLifecycleState.EXPIRE_WORTHLESS, PutLifecycleState.ASSIGNMENT}:
                     break
+            terminal = terminal_date
+            segments = []
+            leg_start = original.quote_date[:10]
+            leg = 1
+            leg_contract = original
+            for a in actions[1:]:
+                if a.get("action") == "ROLL":
+                    end = str(a["date"])[:10]
+                    days = max(0, (datetime.fromisoformat(end) - datetime.fromisoformat(leg_start)).days)
+                    ts = sum(1 for s in sessions if leg_start <= s < end)
+                    credit = (float(a.get("cumulative_premium", 0.0)) - float(a.get("premium_received", 0.0))
+                              - (float(a.get("cumulative_buyback_cost", 0.0)) - float(a.get("single_buyback_cost", 0.0))))
+                    segments.append({"episode_id": identity, "segment_id": f"{identity}:seg{leg}", "leg_number": leg,
+                                     "start_date": leg_start, "end_date": end, "start_action": "OPEN", "end_action": "ROLL",
+                                     "strike": leg_contract.strike, "expiration": leg_contract.expiration,
+                                     "cumulative_net_credit_per_share": credit / 100, "collateral_required_dollars": leg_contract.strike * 100 - credit,
+                                     "premium_received_dollars": credit + float(a.get("single_buyback_cost", 0.0)),
+                                     "buyback_cost_dollars": float(a.get("cumulative_buyback_cost", 0.0)) - float(a.get("single_buyback_cost", 0.0)),
+                                     "calendar_days": days, "trading_days": ts,
+                                     "collateral_calendar_days": (leg_contract.strike * 100 - credit) * days,
+                                     "collateral_trading_days": (leg_contract.strike * 100 - credit) * ts})
+                    leg_start = end; leg += 1
+                    leg_contract = _contract({"symbol": self.spec.ticker, "quote_date": a.get("new_quote_date", end), "expiration": a["new_expiration"],
+                                              "strike": a["new_strike"], "bid": a["new_open_bid"], "ask": a["new_open_bid"], "delta": 0, "iv": 0,
+                                              "open_interest": 0, "volume": 0, "underlying_price": 0, "atr": 1, "support": 999})
+            days = max(0, (datetime.fromisoformat(terminal) - datetime.fromisoformat(leg_start)).days)
+            ts = sum(1 for s in sessions if leg_start <= s <= terminal)
+            cumulative_credit = gross_received - buyback_cost
+            collateral = leg_contract.strike * 100 - cumulative_credit
+            segments.append({"episode_id": identity, "segment_id": f"{identity}:seg{leg}", "leg_number": leg,
+                             "start_date": leg_start, "end_date": terminal, "start_action": "ROLL" if leg > 1 else "OPEN",
+                             "end_action": position.state.value, "strike": leg_contract.strike, "expiration": leg_contract.expiration,
+                             "cumulative_net_credit_per_share": cumulative_credit / 100, "collateral_required_dollars": collateral,
+                             "premium_received_dollars": gross_received, "buyback_cost_dollars": buyback_cost,
+                             "calendar_days": days, "trading_days": ts, "collateral_calendar_days": collateral * days,
+                             "collateral_trading_days": collateral * ts})
             lifecycle.append({"episode_id": identity, "state": position.state.value,
                               "roll_count": position.roll_count, "cumulative_credit": position.entry_credit,
                               "entry_date": original.quote_date, "original_entry_date": original.quote_date,
@@ -159,13 +218,17 @@ class CashSecuredPutLifecycleRunner:
                               "collateral_required": original_collateral,
                               "terminal_date": terminal_date,
                               "holding_calendar_days": max(0, (datetime.fromisoformat(terminal_date) - datetime.fromisoformat(original.quote_date[:10])).days),
-                              "holding_trading_days": sum(1 for x in observations if x.get("is_trading_session") is True),
-                              "collateral_calendar_days": position.collateral() * max(0, (datetime.fromisoformat(terminal_date) - datetime.fromisoformat(original.quote_date[:10])).days),
-                              "collateral_trading_days": position.collateral() * sum(1 for x in observations if x.get("is_trading_session") is True),
+                              "holding_trading_days": sum(1 for x in sessions if original.quote_date[:10] <= x <= terminal_date),
+                              "collateral_calendar_days": sum(x["collateral_calendar_days"] for x in segments),
+                              "collateral_trading_days": sum(x["collateral_trading_days"] for x in segments),
+                              "session_calendar_source": "EXPLICIT_INPUT",
+                              "session_calendar_status": "VALIDATED",
+                              "session_calendar_count": len(sessions),
                               "actions": actions})
+            all_segments.extend(segments)
             if position.assignment:
                 assignments.append({"episode_id": identity, **position.assignment.__dict__})
-        result = CashSecuredPutRunResult("COMPLETED", ("CSP_LIFECYCLE_COMPLETED",), tuple(lifecycle), tuple(assignments))
+        result = CashSecuredPutRunResult("COMPLETED", ("CSP_LIFECYCLE_COMPLETED",), tuple(lifecycle), tuple(assignments), tuple(all_segments))
         if output_dir is not None:
             result = self.persist_result(result, output_dir=output_dir, candidates=candidates)
         return result
@@ -229,6 +292,11 @@ class CashSecuredPutLifecycleRunner:
             lifecycle_rows = [{k: v for k, v in row.items() if k != "actions"} for row in result.lifecycle_results]
             pd.DataFrame(lifecycle_rows).to_parquet(work / "lifecycle_results.parquet", index=False)
             pd.DataFrame(list(result.assignment_ledger)).to_parquet(work / "assignment_ledger.parquet", index=False)
+            segment_columns = ["episode_id", "segment_id", "leg_number", "start_date", "end_date", "start_action", "end_action",
+                               "strike", "expiration", "cumulative_net_credit_per_share", "collateral_required_dollars",
+                               "calendar_days", "trading_days", "collateral_calendar_days", "collateral_trading_days",
+                               "premium_received_dollars", "buyback_cost_dollars"]
+            pd.DataFrame(list(result.collateral_segments), columns=segment_columns).to_parquet(work / "collateral_segments.parquet", index=False)
             gross = sum(float(x.get("gross_premium_received", 0)) for x in lifecycle_rows)
             assignment_mtm = sum(float(x.get("assignment_stock_component", 0)) for x in lifecycle_rows)
             metrics = {**envelope, "opened_puts": len(lifecycle_rows), "completed_positions": len(lifecycle_rows),
@@ -269,4 +337,4 @@ class CashSecuredPutLifecycleRunner:
                 raise
             if backup.exists():
                 shutil.rmtree(backup)
-        return CashSecuredPutRunResult(result.status, result.reason_codes, result.lifecycle_results, result.assignment_ledger, str(target))
+        return CashSecuredPutRunResult(result.status, result.reason_codes, result.lifecycle_results, result.assignment_ledger, result.collateral_segments, str(target))

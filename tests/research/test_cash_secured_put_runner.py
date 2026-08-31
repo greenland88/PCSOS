@@ -27,6 +27,7 @@ def test_open_hold_profit_close_and_artifacts_are_atomic(tmp_path):
     result = runner(data_access=object()).run(
         entries=[{"episode_id": "e1", "contract": c(), "entry_credit": 1.0}],
         daily_observations={"e1": [{"date": "2025-01-03"}, {"date": "2025-01-04", "buyback_ask": .4}]},
+        trading_sessions_by_episode={"e1": ["2025-01-03", "2025-01-04"]},
         output_dir=tmp_path,
     )
     assert result.lifecycle_results[0]["state"] == "PROFIT_CLOSE"
@@ -56,6 +57,7 @@ def test_roll_then_hold_second_roll_then_close():
             {"date": "2025-01-11", "buyback_ask": .5},
         ]},
         exact_quotes={"e1": {"second": second.__dict__, "third": third.__dict__}},
+        trading_sessions_by_episode={"e1": ["2025-01-04", "2025-01-05", "2025-01-10", "2025-01-11"]},
     )
     row = result.lifecycle_results[0]
     assert row["state"] == "PROFIT_CLOSE"
@@ -73,6 +75,7 @@ def test_assignment_uses_stock_mtm_without_double_counting():
     result = runner().run(
         entries=[{"episode_id": "e1", "contract": c(), "entry_credit": 1.0}],
         daily_observations={"e1": [{"date": "2025-01-23", "expire": True, "underlying_mark": 18, "holding_days": 10}]},
+        trading_sessions_by_episode={"e1": ["2025-01-23"]},
     )
     assert result.lifecycle_results[0]["state"] == "ASSIGNMENT"
     assert result.assignment_ledger[0]["stock_mtm"] == -100
@@ -91,6 +94,7 @@ def test_time_metrics_use_dates_and_explicit_pit_sessions():
             {"date": "2025-01-03", "is_trading_session": True},
             {"date": "2025-01-06", "is_trading_session": True},
         ]},
+        trading_sessions_by_episode={"e1": ["2025-01-03", "2025-01-06"]},
     )
     row = result.lifecycle_results[0]
     assert row["holding_calendar_days"] == 4
@@ -103,6 +107,7 @@ def test_missing_roll_quote_fails_closed():
     result = runner().run(
         entries=[{"episode_id": "e1", "contract": c(), "entry_credit": 1.0}],
         daily_observations={"e1": [{"date": "2025-01-04", "roll": "missing", "old_buyback_ask": 1.0}]},
+        trading_sessions_by_episode={"e1": ["2025-01-04"]},
     )
     assert result.lifecycle_results[0]["state"] == "HOLD"
     assert result.lifecycle_results[0]["actions"][1]["reason_codes"] == ["MISSING_EXACT_ROLL_QUOTE"]
