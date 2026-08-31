@@ -119,6 +119,8 @@ class CashSecuredPutLifecycleRunner:
                         "cumulative_premium": original_credit * 100, "cumulative_buyback_cost": 0.0,
                         "realized_pnl": None, "reason_codes": ["OPEN_AT_BID"]}]
             observations = list(daily_observations.get(identity, entry.get("observations", ())))
+            gross_received = original_credit * 100.0
+            buyback_cost = 0.0
             for observation in observations:
                 state_before = position.state.value
                 action = self._manage(position, observation, exact_quotes.get(identity, {}))
@@ -130,11 +132,14 @@ class CashSecuredPutLifecycleRunner:
                                 "bid": position.contract.bid, "ask": position.contract.ask,
                                 "pit_status": position.contract.pit_status,
                                 "collateral": position.collateral(),
-                                "cumulative_premium": position.entry_credit * 100,
-                                "cumulative_buyback_cost": action.get("buyback_cost", 0.0),
+                                "cumulative_premium": gross_received + float(action.get("premium_received", 0.0)),
+                                "single_buyback_cost": float(action.get("buyback_cost", 0.0)),
+                                "cumulative_buyback_cost": buyback_cost + float(action.get("buyback_cost", 0.0)),
                                 "realized_pnl": action.get("pnl"),
                                 "reason_codes": [action.pop("reason_code")] if action.get("reason_code") else [],
                                 **action, "episode_id": identity})
+                gross_received += float(action.get("premium_received", 0.0))
+                buyback_cost += float(action.get("buyback_cost", 0.0))
                 if position.state in {PutLifecycleState.PROFIT_CLOSE, PutLifecycleState.RISK_CLOSE,
                                       PutLifecycleState.EXPIRE_WORTHLESS, PutLifecycleState.ASSIGNMENT}:
                     break
@@ -143,7 +148,12 @@ class CashSecuredPutLifecycleRunner:
                               "entry_date": original.quote_date, "original_entry_date": original.quote_date,
                               "original_strike": original.strike, "original_expiration": original.expiration,
                               "original_entry_credit": original_credit, "original_collateral": original_collateral,
-                              "gross_premium": position.entry_credit * 100,
+                              "gross_premium_received": gross_received,
+                              "cumulative_buyback_cost": buyback_cost,
+                              "net_option_pnl": gross_received - buyback_cost,
+                              "assignment_stock_component": float(position.assignment.stock_mtm) if position.assignment else 0.0,
+                              "total_economic_pnl": (gross_received - buyback_cost + float(position.assignment.stock_mtm)) if position.assignment else gross_received - buyback_cost,
+                              "realized": position.state.value in {"PROFIT_CLOSE", "RISK_CLOSE", "EXPIRE_WORTHLESS", "ASSIGNMENT"},
                               "collateral_required": original_collateral,
                               "holding_calendar_days": len(observations),
                               "collateral_calendar_days": position.collateral() * len(observations),
@@ -162,7 +172,7 @@ class CashSecuredPutLifecycleRunner:
                 position.hold()
                 return {"action": "HOLD", "date": date, "reason_code": "PREMATURE_EXPIRY_REJECTED"}
             value = position.expire(float(observation["underlying_mark"]), int(observation.get("holding_days", 0)))
-            return {"action": position.state.value, "date": date, "pnl": value, "buyback_cost": 0.0}
+            return {"action": position.state.value, "date": date, "pnl": value, "premium_received": 0.0, "buyback_cost": 0.0}
         if observation.get("roll"):
             new_contract = quotes.get(str(observation["roll"]))
             if new_contract is None or observation.get("old_buyback_ask") is None:
@@ -174,10 +184,13 @@ class CashSecuredPutLifecycleRunner:
                 position.hold()
                 return {"action": "HOLD", "date": date, "reason_code": "ROLL_QUOTE_IDENTITY_INVALID"}
             credit = position.roll_down_out(_contract(new_contract), float(observation["old_buyback_ask"]))
-            return {"action": "ROLL", "date": date, "net_credit": credit, "buyback_cost": float(observation["old_buyback_ask"]) * 100}
+            return {"action": "ROLL", "date": date, "net_credit": credit,
+                    "premium_received": float(new_contract["bid"]) * 100,
+                    "buyback_cost": float(observation["old_buyback_ask"]) * 100}
         if observation.get("buyback_ask") is not None:
             pnl = position.close(float(observation["buyback_ask"]))
-            return {"action": position.state.value, "date": date, "pnl": pnl, "buyback_cost": float(observation["buyback_ask"]) * 100}
+            return {"action": position.state.value, "date": date, "pnl": pnl,
+                    "premium_received": 0.0, "buyback_cost": float(observation["buyback_ask"]) * 100}
         position.hold()
         return {"action": "HOLD", "date": date}
 
@@ -200,16 +213,17 @@ class CashSecuredPutLifecycleRunner:
             action_rows = [a for row in result.lifecycle_results for a in row.get("actions", [])]
             pd.DataFrame(action_rows).to_parquet(work / "daily_decision_packets.parquet", index=False)
             pd.DataFrame(candidates or [{"status": "NOT_PROVIDED", "reason_codes": ["CANDIDATES_NOT_PROVIDED"]}]).to_parquet(work / "candidate_contracts.parquet", index=False)
-            selected = [{k: row.get(k) for k in ("episode_id", "entry_date", "gross_premium", "collateral_required")} for row in result.lifecycle_results]
+            selected = [{k: row.get(k) for k in ("episode_id", "entry_date", "original_entry_credit", "original_strike", "original_expiration", "original_collateral")} for row in result.lifecycle_results]
             pd.DataFrame(selected).to_parquet(work / "selected_trades.parquet", index=False)
             lifecycle_rows = [{k: v for k, v in row.items() if k != "actions"} for row in result.lifecycle_results]
             pd.DataFrame(lifecycle_rows).to_parquet(work / "lifecycle_results.parquet", index=False)
             pd.DataFrame(list(result.assignment_ledger)).to_parquet(work / "assignment_ledger.parquet", index=False)
-            gross = sum(float(x.get("gross_premium", 0)) for x in lifecycle_rows)
+            gross = sum(float(x.get("gross_premium_received", 0)) for x in lifecycle_rows)
             assignment_mtm = sum(float(x.get("stock_mtm", 0)) for x in result.assignment_ledger)
             metrics = {**envelope, "opened_puts": len(lifecycle_rows), "completed_positions": len(lifecycle_rows),
-                       "gross_premium": gross, "buyback_cost": None, "net_option_pnl": None,
-                       "assignment_stock_mtm": assignment_mtm, "total_economic_pnl": assignment_mtm,
+                       "gross_premium_received": gross, "total_buyback_cost": sum(float(x.get("cumulative_buyback_cost", 0)) for x in lifecycle_rows),
+                       "net_option_pnl": sum(float(x.get("net_option_pnl", 0)) for x in lifecycle_rows),
+                       "assignment_stock_component": assignment_mtm, "total_economic_pnl": sum(float(x.get("total_economic_pnl", 0)) for x in lifecycle_rows),
                        "pnl_per_put": None, "profit_factor": None, "max_drawdown": None,
                        "max_single_loss": None, "profit_close_count": sum(x.get("state") == "PROFIT_CLOSE" for x in lifecycle_rows),
                        "risk_close_count": sum(x.get("state") == "RISK_CLOSE" for x in lifecycle_rows),
