@@ -121,9 +121,11 @@ class CashSecuredPutLifecycleRunner:
             observations = list(daily_observations.get(identity, entry.get("observations", ())))
             gross_received = original_credit * 100.0
             buyback_cost = 0.0
+            terminal_date = original.quote_date[:10]
             for observation in observations:
                 state_before = position.state.value
                 action = self._manage(position, observation, exact_quotes.get(identity, {}))
+                terminal_date = str(observation.get("date", terminal_date))[:10]
                 actions.append({"episode_id": identity, "symbol": self.spec.ticker,
                                 "state_before": state_before,
                                 "state_after": position.state.value,
@@ -155,10 +157,10 @@ class CashSecuredPutLifecycleRunner:
                               "total_economic_pnl": (gross_received - buyback_cost + (float(position.assignment.stock_mark) - float(position.assignment.assignment_price)) * 100.0) if position.assignment else gross_received - buyback_cost,
                               "realized": position.state.value in {"PROFIT_CLOSE", "RISK_CLOSE", "EXPIRE_WORTHLESS", "ASSIGNMENT"},
                               "collateral_required": original_collateral,
-                              "terminal_date": (str(observations[-1].get("date"))[:10] if observations else original.quote_date[:10]),
-                              "holding_calendar_days": (max(0, (datetime.fromisoformat(str(observations[-1].get("date"))[:10]) - datetime.fromisoformat(original.quote_date[:10])).days) if observations else 0),
+                              "terminal_date": terminal_date,
+                              "holding_calendar_days": max(0, (datetime.fromisoformat(terminal_date) - datetime.fromisoformat(original.quote_date[:10])).days),
                               "holding_trading_days": sum(1 for x in observations if x.get("is_trading_session") is True),
-                              "collateral_calendar_days": position.collateral() * (max(0, (datetime.fromisoformat(str(observations[-1].get("date"))[:10]) - datetime.fromisoformat(original.quote_date[:10])).days) if observations else 0),
+                              "collateral_calendar_days": position.collateral() * max(0, (datetime.fromisoformat(terminal_date) - datetime.fromisoformat(original.quote_date[:10])).days),
                               "collateral_trading_days": position.collateral() * sum(1 for x in observations if x.get("is_trading_session") is True),
                               "actions": actions})
             if position.assignment:
@@ -175,7 +177,8 @@ class CashSecuredPutLifecycleRunner:
                 position.hold()
                 return {"action": "HOLD", "date": date, "reason_code": "PREMATURE_EXPIRY_REJECTED"}
             value = position.expire(float(observation["underlying_mark"]), int(observation.get("holding_days", 0)))
-            return {"action": position.state.value, "date": date, "pnl": value, "premium_received": 0.0, "buyback_cost": 0.0}
+            numeric = float(value.total_economic_pnl if hasattr(value, "total_economic_pnl") else value)
+            return {"action": position.state.value, "date": date, "pnl": numeric, "premium_received": 0.0, "buyback_cost": 0.0}
         if observation.get("roll"):
             old_contract = position.contract
             new_contract = quotes.get(str(observation["roll"]))
@@ -227,7 +230,7 @@ class CashSecuredPutLifecycleRunner:
             pd.DataFrame(lifecycle_rows).to_parquet(work / "lifecycle_results.parquet", index=False)
             pd.DataFrame(list(result.assignment_ledger)).to_parquet(work / "assignment_ledger.parquet", index=False)
             gross = sum(float(x.get("gross_premium_received", 0)) for x in lifecycle_rows)
-            assignment_mtm = sum(float(x.get("stock_mtm", 0)) for x in result.assignment_ledger)
+            assignment_mtm = sum(float(x.get("assignment_stock_component", 0)) for x in lifecycle_rows)
             metrics = {**envelope, "opened_puts": len(lifecycle_rows), "completed_positions": len(lifecycle_rows),
                        "gross_premium_received": gross, "total_buyback_cost": sum(float(x.get("cumulative_buyback_cost", 0)) for x in lifecycle_rows),
                        "net_option_pnl": sum(float(x.get("net_option_pnl", 0)) for x in lifecycle_rows),
