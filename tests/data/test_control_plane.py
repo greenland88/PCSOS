@@ -130,6 +130,40 @@ def test_require_blocks_partial_data(tmp_path):
         raise AssertionError("partial canonical data must not pass the consumer gate")
 
 
+def test_current_decision_stale_options_are_not_reused():
+    class Access:
+        def resolve_source(self, dataset, symbol, start=None, end=None):
+            from pcs.data.access import SourceSpec
+            return SourceSpec(dataset, symbol, "parquet", "x", "2026-01-01", "2026-08-18", 1, "test")
+    class Resolver:
+        def resolve(self, dataset):
+            return [{"source_id": "clickhouse_options", "enabled": True, "authorized": True}]
+    req = MarketDataRequirements("SOXL", required_start="2026-01-01", required_end="2026-09-01",
+                                 datasets=("options",), decision_as_of="2026-09-01")
+    plan = MarketDataControlPlane(Access(), Resolver()).plan(req)
+    assert plan.actions[0]["action"] == PlanAction.SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE
+    assert "CANONICAL_OPTIONS_STALE" in plan.existing["options"]["reason_codes"]
+
+
+def test_ensure_ready_propagates_decision_as_of(monkeypatch):
+    seen = {}
+    class Control:
+        def __init__(self, access): pass
+        def ensure_market_data(self, req):
+            seen.update(req)
+            return type("R", (), {"status": "PARTIAL", "reason_codes": ("CURRENT_OPTION_CHAIN_GAP",),
+                                   "provider_coverage": (), "source_inventory": (), "stages": {},
+                                   "run_id": "r", "request_id": "q"})()
+    import pcs.data.control_plane as cp
+    monkeypatch.setattr(cp, "MarketDataControlPlane", Control)
+    import pcs.data.access as module
+    result = module.PCSDataAccess.isolated(manifest_path="x", parquet_root="y").ensure_ready(
+        "options", "SOXL", "2026-01-01", "2026-09-01", "2026-09-01")
+    assert seen["as_of"] == "2026-09-01"
+    assert seen["decision_as_of"] == "2026-09-01"
+    assert result.status != "DATASET_READY"
+
+
 def test_requirement_mapping_and_request_reuse(tmp_path):
     req = MarketDataRequirements.from_mapping("PLTR", {"start": "2018-01-01", "end": "2026-08-26", "datasets": {"daily": {"required": True}, "options": {"required": False}}})
     assert req.datasets == ("daily",)

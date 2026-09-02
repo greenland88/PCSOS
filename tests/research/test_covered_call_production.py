@@ -1,7 +1,15 @@
-from pcs.covered_call_production import decide_nvda_call_today, RequestDataMode
+from pcs.covered_call_production import decide_call_today, decide_nvda_call_today, RequestDataMode
+
+
+def test_missing_as_of_is_data_blocked_and_not_evaluated():
+    result = decide_call_today("ANY", object(), as_of="")
+    assert result["action"] == "DATA_BLOCKED"
+    assert result["decision_status"] == "NOT_EVALUATED"
+    assert "DECISION_AS_OF_REQUIRED" in result["reason_codes"]
 
 
 class Provider:
+    freshness = lambda self, day: True
     def get_share_position(self, symbol, as_of):
         return [{"symbol": "NVDA", "shares": 250}]
     def get_open_option_positions(self, symbol, as_of): return []
@@ -27,23 +35,24 @@ def test_nvda_production_decision_fails_closed_without_gate():
     class NoEvent(Provider):
         get_event_risk = lambda self, symbol, as_of: None
     result = decide_nvda_call_today(NoEvent(), as_of="2026-07-01")
-    assert result["action"] == "WAIT"
+    assert result["action"] == "DATA_BLOCKED"
     assert "EVENT_DATA_UNAVAILABLE" in result["reason_codes"]
 
 
 def test_today_requires_production_live_mode():
     result = decide_nvda_call_today(Provider(), as_of="2026-07-01", mode=RequestDataMode.RESEARCH_PIT)
-    assert result["action"] == "WAIT"
+    assert result["action"] == "DATA_BLOCKED"
     assert result["decision_status"] == "NOT_EVALUATED"
     assert "PRODUCTION_LIVE_MODE_REQUIRED" in result["reason_codes"]
 
 
 def test_today_without_live_snapshot_is_not_evaluated():
     class NoSnapshot:
+        freshness = lambda self, day: True
         def get_share_position(self, symbol, as_of): raise RuntimeError("missing")
         def get_open_option_positions(self, symbol, as_of): raise RuntimeError("missing")
     result = decide_nvda_call_today(NoSnapshot(), as_of="2026-07-01")
-    assert result["action"] == "WAIT"
+    assert result["action"] == "DATA_BLOCKED"
     assert result["decision_status"] == "NOT_EVALUATED"
     assert result["reason_codes"] == ["LIVE_DATA_UNAVAILABLE"]
 
@@ -52,16 +61,25 @@ def test_stale_live_snapshot_is_not_evaluated():
     class Stale(Provider):
         freshness = lambda self, day: False
     result = decide_nvda_call_today(Stale(), as_of="2026-07-01")
-    assert result["action"] == "WAIT"
+    assert result["action"] == "DATA_BLOCKED"
     assert result["decision_status"] == "NOT_EVALUATED"
     assert result["reason_codes"] == ["LIVE_DATA_STALE"]
+
+
+def test_live_provider_without_freshness_is_not_evaluated():
+    class NoFreshness(Provider):
+        freshness = None
+    result = decide_nvda_call_today(NoFreshness(), as_of="2026-07-01")
+    assert result["action"] == "DATA_BLOCKED"
+    assert result["decision_status"] == "NOT_EVALUATED"
+    assert result["reason_codes"] == ["LIVE_FRESHNESS_UNAVAILABLE"]
 
 
 def test_historical_provider_cannot_be_used_for_today():
     class HistoricalOnly(Provider):
         data_mode = RequestDataMode.RESEARCH_PIT
     result = decide_nvda_call_today(HistoricalOnly(), as_of="2026-07-01")
-    assert result["action"] == "WAIT"
+    assert result["action"] == "DATA_BLOCKED"
     assert result["decision_status"] == "NOT_EVALUATED"
     assert "PRODUCTION_LIVE_PROVIDER_REQUIRED" in result["reason_codes"]
 

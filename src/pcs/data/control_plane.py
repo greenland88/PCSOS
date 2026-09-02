@@ -40,6 +40,11 @@ class MarketDataRequirements:
     datasets: tuple[str, ...] = ("daily", "options")
     exact_contract_quote_keys: tuple[dict[str, Any], ...] = ()
     required_fields: tuple[str, ...] = ()
+    decision_as_of: str | None = None
+    option_type: str | None = None
+    min_dte: int | None = None
+    max_dte: int | None = None
+    required_history_rows: int | None = None
     def __post_init__(self):
         object.__setattr__(self, "symbol", self.symbol.strip().upper())
         if not self.symbol: raise ValueError("symbol must be non-empty")
@@ -56,7 +61,17 @@ class MarketDataRequirements:
         keys = value.get("exact_contract_quote_keys", ()) or ()
         if isinstance(keys, dict): keys = (keys,)
         fields = value.get("required_fields", ()) or ()
-        return cls(symbol or value.get("symbol", ""), start, end, datasets, tuple(dict(x) for x in keys), tuple(str(x) for x in fields))
+        return cls(symbol or value.get("symbol", ""), start, end, datasets, tuple(dict(x) for x in keys), tuple(str(x) for x in fields),
+                   value.get("decision_as_of", value.get("as_of")), value.get("option_type"), value.get("min_dte"), value.get("max_dte"), value.get("required_history_rows"))
+
+@dataclass(frozen=True)
+class OptionChainRequirement:
+    symbol: str
+    as_of: str
+    option_type: str = "put"
+    min_dte: int = 7
+    max_dte: int = 45
+    required_fields: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class CoveragePlan:
@@ -242,12 +257,40 @@ class ImportEngine:
         for target in metadata_files:
             snapshots[target] = target.read_bytes() if target.exists() else None
         try:
-            written = self.access.write_partition(frame, staged["dataset"], staged["symbol"], staged["partition"], source_version=source_version)
+            written = self.access.promote_generation(frame, staged["dataset"], staged["symbol"], staged["partition"], source_version=source_version)
             self.access.record_provenance({"dataset": staged["dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(frame), "status": "PROMOTED"})
             self.catalog.rebuild(self.access)
             self.ledger.record(request_id=staged["request_id"], source_id=staged["source_id"], symbol=staged["symbol"], dataset=staged["dataset"], shard=staged["partition"], physical_row_count=len(frame), status="API_COMPLETE", completed_at=datetime.now(timezone.utc).isoformat())
-            return {"status": "IMPORTED", "path": str(written), "request_id": staged["request_id"]}
+            receipt = written
+            receipt_payload = receipt.__dict__.copy() if hasattr(receipt, "__dict__") else None
+            if receipt_payload is not None:
+                active = self.access.active_generation_record(staged["dataset"], staged["symbol"], staged["partition"])
+                receipt_payload["manifest_active_generation_id"] = str(active.get("active_generation") or "")
+                receipt_payload["manifest_content_hash"] = str(active.get("content_hash") or "")
+                receipt_payload["manifest_row_count"] = int(active.get("row_count") or 0)
+            return {"status": "IMPORTED", "path": str(receipt), "request_id": staged["request_id"],
+                    "promotion_receipt": receipt_payload,
+                    "promoted_generation_id": getattr(receipt, "generation_id", None),
+                    "read_back_generation_id": getattr(receipt, "read_back_generation_id", None),
+                    "checksum": getattr(receipt, "checksum", None),
+                    "row_count": getattr(receipt, "row_count", None)}
         except Exception as exc:
+            # A prior interrupted/legacy import may have left the exact
+            # canonical payload in place without its metadata. Reconcile it
+            # only when semantic content is byte-independent and identical;
+            # never overwrite an existing trusted partition.
+            if isinstance(exc, FileExistsError):
+                target = self.access.parquet_root / staged["dataset"] / f"symbol={staged['symbol']}" / staged["partition"] / f"{staged['symbol']}_{staged['partition'].replace('=', '_').replace('/', '_')}.parquet"
+                try:
+                    existing = pd.read_parquet(target)
+                    if self.access.semantic_content_hash(existing) == self.access.semantic_content_hash(frame):
+                        self.access.update_manifest(staged["dataset"], staged["symbol"], existing, target, source_version, staged["partition"], replace_existing=True)
+                        self.access.record_provenance({"dataset": staged["dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(existing), "status": "PROMOTED"})
+                        self.catalog.rebuild(self.access)
+                        self.ledger.record(request_id=staged["request_id"], source_id=staged["source_id"], symbol=staged["symbol"], dataset=staged["dataset"], shard=staged["partition"], physical_row_count=len(existing), status="API_COMPLETE", completed_at=datetime.now(timezone.utc).isoformat())
+                        return {"status": "IMPORTED", "path": str(target), "request_id": staged["request_id"], "reason_codes": ["EXACT_CANONICAL_PARTITION_METADATA_RECONCILED"]}
+                except Exception:
+                    pass
             # write_partition refuses overwrite by default; removing only the
             # path created in this transaction preserves any prior canonical
             # partition when metadata finalization fails.
@@ -462,6 +505,12 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
     def daily(plan):
         req = plan.requirements if hasattr(plan, "requirements") else plan
         gateway = kwargs.get("massive_client")
+        if gateway is None:
+            try:
+                from .massive_client import GatewayConfig, MassiveCompatibleClient
+                gateway = MassiveCompatibleClient(GatewayConfig.from_environment())
+            except Exception:
+                gateway = None
         if gateway is not None and req.required_start and req.required_end:
             from .incremental_update import update_ticker
             frame = gateway.fetch_daily_range(req.symbol, req.required_start, req.required_end)
@@ -469,8 +518,23 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                 parquet_root=kwargs.get("parquet_root", "data/parquet"),
                 manifest_path=kwargs.get("manifest_path", "data/manifests/storage_manifest.csv"),
                 source_version=f"massive_daily:{req.required_start}:{req.required_end}")
+        if req.required_end and daily_snapshot_path is None:
+            from .import_daily_snapshot import find_latest_daily_snapshot
+            try:
+                latest = find_latest_daily_snapshot()
+                if pd.Timestamp(latest.stem.split("daily_", 1)[-1]) < pd.Timestamp(req.required_end):
+                    return {"status": "BLOCKED", "reason_codes": ["DAILY_SOURCE_COVERAGE_UNAVAILABLE"],
+                            "source_path": str(latest), "required_end": req.required_end}
+            except Exception:
+                return {"status": "BLOCKED", "reason_codes": ["DAILY_SOURCE_COVERAGE_UNAVAILABLE"],
+                        "required_end": req.required_end}
         return import_daily_snapshot(source_path=daily_snapshot_path,
                                      historical_root=historical_root,
+                                     # Invalid source rows are quarantined with
+                                     # machine-readable evidence; they must not
+                                     # block valid symbols in an all-market
+                                     # snapshot.
+                                     skip_invalid_rows=True,
                                      sync_parquet=True,
                                      run_id=kwargs.get("run_id"), request_id=kwargs.get("request_id")).__dict__
 
@@ -506,7 +570,10 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                 if len(existing):
                     latest = pd.Timestamp(existing["trade_date"].max()).date()
                     start = max(pd.Timestamp(start).date(), latest + pd.Timedelta(days=1).to_pytimedelta()).isoformat()
-            except Exception:
+            except (DataAccessError, CanonicalFileAccessError, FileNotFoundError, ValueError):
+                # A normal canonical absence is recoverable and should allow
+                # the registered provider probe below.  Unexpected failures
+                # must not be silently converted into a fetch attempt.
                 pass
             if str(start) > str(req.required_end):
                 return {"status": "REUSED", "reason_codes": ["CURRENT_OPTIONS_ALREADY_COVERED"], "requested_start": start}
@@ -547,11 +614,21 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
         if "palantir_ir_earnings" not in approved:
             return {"status": "BLOCKED", "reason_codes": ["SOURCE_NOT_AUTHORIZED"],
                     "selected_source": "palantir_ir_earnings"}
-        if req.symbol != "PLTR":
+        # Event import is provider-neutral.  A registered event adapter must
+        # accept (symbol, start, end) and return PIT event rows.  The former
+        # symbol-specific Palantir branch made recovery silently a no-op for
+        # every other ticker and violated the control-plane contract.
+        event_fetcher = kwargs.get("event_fetcher")
+        if not callable(event_fetcher):
             return {"status": "BLOCKED", "reason_codes": ["EVENT_PIT_SOURCE_UNAVAILABLE"],
                     "selected_source": "palantir_ir_earnings"}
-        from .palantir_events import fetch_pltr_earnings_events
-        frame = fetch_pltr_earnings_events(fetcher=kwargs.get("event_fetcher"))
+        frame = event_fetcher(req.symbol, req.required_start, req.required_end)
+        if frame is None:
+            return {"status": "BLOCKED", "reason_codes": ["EVENT_PIT_SOURCE_NO_ROWS"],
+                    "selected_source": "palantir_ir_earnings"}
+        frame = frame.copy()
+        frame["symbol"] = frame["symbol"].astype(str).str.upper()
+        frame = frame[frame["symbol"] == req.symbol]
         frame = frame[(frame["event_date"] >= pd.Timestamp(req.required_start or frame.event_date.min())) &
                       (frame["event_date"] <= pd.Timestamp(req.required_end or frame.event_date.max()))]
         if frame.empty:
@@ -713,6 +790,14 @@ class MarketDataControlPlane:
                                 "selected_sources": [],
                                 "reason": "registered canonical files exist but are unreadable"})
                 continue
+            current_stale = bool(req.decision_as_of and existing[dataset].get("last_date") and
+                                 pd.Timestamp(existing[dataset]["last_date"]) < pd.Timestamp(req.decision_as_of))
+            if current_stale:
+                existing[dataset].setdefault("reason_codes", []).append("CANONICAL_OPTIONS_STALE" if dataset == "options" else "CANONICAL_DAILY_STALE")
+                existing[dataset]["coverage_gap"] = "CURRENT_DECISION_FRESHNESS_GAP"
+            if dataset == "daily" and req.required_history_rows and int(existing[dataset].get("row_count", 0)) < int(req.required_history_rows):
+                existing[dataset].setdefault("reason_codes", []).append("DAILY_HISTORY_WARMUP_INSUFFICIENT")
+                existing[dataset]["coverage_gap"] = "FEATURE_WARMUP_GAP"
             if existing[dataset]["present"] and "coverage_gap" not in existing[dataset]:
                 actions.append({"dataset": dataset, "action": PlanAction.REUSE_CANONICAL.value, "reason": "validated canonical source exists"})
             else:
@@ -799,7 +884,24 @@ class MarketDataControlPlane:
             repair = self.repair_exact_option_quotes(req.symbol, selected, source_version="clickhouse_exact_key_auto_repair", expected_keys=list(wanted))
             return {"status": ImportStatus.READY.value, "source_status": "CANONICAL_INGESTION_GAP_AUTO_REPAIRABLE", "repair": repair, "repaired_keys": sorted(actual)}
         result = self.get_market_data_status(req)
-        if result.status == ImportStatus.PARTIAL:
+        # A canonical validation gap is recoverable even when the status
+        # envelope is BLOCKED.  Previously only PARTIAL entered the
+        # coordinator, so a missing daily session (or equivalent repairable
+        # validation issue) stopped before provider fetch/promotion.  Keep
+        # source/permission blockers fail-closed; only validation gaps with
+        # an authorized repair action may proceed.
+        validation_gap_codes = {
+            "DAILY_SESSION_MISSING", "DATASET_GAP", "CANONICAL_GAP",
+            "OPTIONS_SESSION_MISSING", "OPTION_CHAIN_REFRESH_REQUIRED",
+        }
+        result_reasons = tuple(getattr(result, "reason_codes", ()) or ())
+        has_repairable_validation_gap = any(
+            any(code == candidate or code.endswith(f":{candidate}")
+                for candidate in validation_gap_codes)
+            for code in result_reasons
+        ) and not any(str(code).endswith("BLOCKED_NO_AUTHORIZED_SOURCE") or
+                      "PERMISSION" in str(code) for code in result_reasons)
+        if result.status == ImportStatus.PARTIAL or has_repairable_validation_gap:
             if importer:
                 importer(self.plan(req))
             else:

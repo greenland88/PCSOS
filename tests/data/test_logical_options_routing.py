@@ -41,3 +41,15 @@ def test_manifest_only_v2_options_route_without_by_symbol_entry(tmp_path):
     resolved_dataset, resolved_manifest, _ = access._resolve_route("options", "META")
     assert resolved_dataset == "options_v2"
     assert resolved_manifest.name == "storage_manifest_options_v2.csv"
+
+
+def test_logical_options_allows_schema_evolution_within_one_dataset(tmp_path):
+    fixture = pd.DataFrame([
+        {"dataset":"options", "symbol":"ABC", "status":"SUCCESS", "schema_version":"1"},
+        {"dataset":"options", "symbol":"ABC", "status":"SUCCESS", "schema_version":"2"},
+    ])
+    access = PCSDataAccess(source_routes={"options":{"by_symbol":{}}})
+    access._read_manifest = lambda path: fixture if path.name == "storage_manifest.csv" else pd.DataFrame()
+    dataset, manifest, _ = access._resolve_route("options", "ABC")
+    assert dataset == "options"
+    assert manifest.name == "storage_manifest.csv"

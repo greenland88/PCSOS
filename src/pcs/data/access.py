@@ -18,10 +18,54 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+
+@dataclass(frozen=True)
+class PromotionReceipt:
+    dataset: str; ticker: str; generation_id: str; promoted_partitions: tuple[str, ...]
+    checksum: str; row_count: int; manifest_version: str; promotion_timestamp: str
+    path: str
+    read_back_generation_id: str = ""
+    read_back_checksum: str = ""
+    read_back_row_count: int = 0
+    staging_generation_id: str = ""
+    manifest_active_generation_id: str = ""
+    source_lineage: tuple[dict[str, Any], ...] = ()
+    created_at: str = ""
+    partition_ids: tuple[str, ...] = ()
+    @property
+    def promoted_generation_id(self) -> str:
+        return self.generation_id
+    @property
+    def dataset_type(self) -> str:
+        return self.dataset
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dataset_type": self.dataset,
+            "ticker": self.ticker,
+            "staging_generation_id": self.staging_generation_id or self.generation_id,
+            "promoted_generation_id": self.generation_id,
+            "manifest_active_generation_id": self.manifest_active_generation_id or self.generation_id,
+            "read_back_generation_id": self.read_back_generation_id,
+            "promoted_partitions": list(self.promoted_partitions),
+            "partition_ids": list(self.partition_ids or self.promoted_partitions),
+            "checksum": self.checksum,
+            "read_back_checksum": self.read_back_checksum,
+            "row_count": self.row_count,
+            "read_back_row_count": self.read_back_row_count,
+            "manifest_version": self.manifest_version,
+            "source_lineage": list(self.source_lineage),
+            "created_at": self.created_at,
+            "promotion_timestamp": self.promotion_timestamp,
+            "path": self.path,
+        }
+    def __fspath__(self): return self.path
+    def __str__(self): return self.path
+    def __getattr__(self, name): return getattr(Path(self.path), name)
 import yaml
 
 from .storage_schema import OPTION_FIELDS, DAILY_FIELDS, OPTIONS_REQUIRED_FIELDS, audit_option_frame
 from .executable_boundary import resolve_executable_start_date
+from .correctness_gate import validate_price_input
 
 
 class DataAccessError(RuntimeError):
@@ -99,6 +143,8 @@ class PCSDataAccess:
         if not metadata_path.exists() and self.manifest_path.parent == Path("data/manifests"):
             metadata_path = Path("data/manifests/price_basis_metadata.csv")
         self._price_basis_metadata = pd.read_csv(metadata_path) if metadata_path.exists() else pd.DataFrame()
+        from .generation_cache import GenerationCache
+        self.generation_cache = GenerationCache()
 
     @classmethod
     def canonical(cls, **kwargs):
@@ -106,16 +152,34 @@ class PCSDataAccess:
         return cls(**kwargs)
 
     def ensure_ready(self, dataset: str, symbol: str, start_date=None,
-                     end_date=None, as_of=None) -> DatasetReadinessResult:
+                     end_date=None, as_of=None, required_warmup_sessions: int = 0) -> DatasetReadinessResult:
         """Ensure a dataset through the shared control plane, then re-read it.
 
         ``options_v2`` is a logical request; routing and source selection remain
         generic and are owned by ``MarketDataControlPlane``.
+
+        The historical positional form is ``(dataset, symbol, start, end,
+        as_of)``.  The public decision form is also accepted as
+        ``(symbol, dataset, as_of, required_warmup_sessions)``; the latter is
+        normalized here so every caller still uses the same control plane.
         """
         from .control_plane import MarketDataControlPlane, ImportStatus
+        # Normalize the user-facing decision entry point without breaking
+        # existing data/control-plane callers. Dataset names are controlled
+        # vocabulary, so this is not ticker-specific logic.
+        known_datasets = {"daily", "events", "options", "options_v2", "fundamentals"}
+        if str(dataset).lower() not in known_datasets and str(symbol).lower() in known_datasets:
+            public_symbol, public_dataset = dataset, symbol
+            public_as_of = start_date
+            public_warmup = end_date if end_date is not None else required_warmup_sessions
+            dataset, symbol = public_dataset, public_symbol
+            start_date, end_date, as_of = None, None, public_as_of
+            required_warmup_sessions = int(public_warmup or 0)
         logical = "options" if str(dataset) == "options_v2" else str(dataset)
         req = {"datasets": (logical,), "start": start_date, "end": end_date,
-               "symbol": str(symbol).upper()}
+               "as_of": as_of, "decision_as_of": as_of,
+               "symbol": str(symbol).upper(),
+               "required_warmup_sessions": required_warmup_sessions}
         result = MarketDataControlPlane(access=self).ensure_market_data(req)
         status = str(result.status)
         if status in {ImportStatus.READY.value, ImportStatus.ALREADY_COMPLETE.value}:
@@ -201,17 +265,23 @@ class PCSDataAccess:
                     manifest = self._read_manifest(candidate_manifest)
                     if manifest.empty or "dataset" not in manifest.columns:
                         continue
+                    allowed_datasets = ({"options", "options_v2", "options_v3"}
+                                        if dataset == "options" else {dataset})
                     found = manifest[
-                        manifest.dataset.astype(str).isin({"options_v2", "options_v3"} if dataset == "options" else {dataset})
+                        manifest.dataset.astype(str).isin(allowed_datasets)
                         & manifest.symbol.astype(str).str.upper().eq(self._symbol(symbol))
                         & manifest.status.astype(str).str.upper().eq("SUCCESS")
                     ]
                     if not found.empty:
                         for _, row in found.iterrows():
-                            identity = (str(row.dataset), str(candidate_manifest), str(row.get("source_version", "")), str(row.get("schema_version", "")))
+                            # Schema/source versions are partition metadata,
+                            # not logical-route identities. A canonical
+                            # dataset may legitimately evolve from v1 to v2
+                            # across quarters without becoming two routes.
+                            identity = (str(row.dataset), str(candidate_manifest))
                             identities.add(identity)
                             matches.append((str(row.dataset), candidate_manifest))
-                physical_versions = {name for name, _ in matches if name in {"options_v2", "options_v3"}}
+                physical_versions = {name for name, _ in matches if name in {"options", "options_v2", "options_v3"}}
                 if len(physical_versions) > 1 or len(identities) > 1:
                     raise DataAccessError(
                         f"AMBIGUOUS_CANONICAL_OPTIONS_ROUTE: symbol={self._symbol(symbol)} "
@@ -277,7 +347,7 @@ class PCSDataAccess:
 
     @classmethod
     def _semantic_record(cls, record: dict[str, Any]) -> dict[str, Any]:
-        volatile = {"created_at", "import_timestamp", "run_id", "request_id", "timestamp", "updated_at"}
+        volatile = {"created_at", "promoted_at", "import_timestamp", "run_id", "request_id", "timestamp", "updated_at"}
         out = {}
         for k, v in record.items():
             if str(k) in volatile or str(k) == "provenance_key":
@@ -312,7 +382,10 @@ class PCSDataAccess:
     def resolve_source(self, dataset: str, symbol: str, start_date=None, end_date=None) -> SourceSpec:
         symbol = self._symbol(symbol)
         resolved_dataset, manifest_path, parquet_root = self._resolve_route(dataset, symbol)
-        manifest = self._manifest if manifest_path == self.manifest_path else self._read_manifest(manifest_path)
+        # The canonical manifest is atomically replaced by control-plane
+        # promotions and may be updated by another worker. Never admit a
+        # route from a process-local snapshot after a repair/re-check cycle.
+        manifest = self._read_manifest(manifest_path)
         if manifest.empty:
             if dataset.startswith("options_v2"):
                 raise DataAccessError(
@@ -333,6 +406,12 @@ class PCSDataAccess:
             & (manifest.symbol.astype(str).str.upper() == symbol)
             & (manifest.status == "SUCCESS")
         ]
+        if resolved_dataset == "daily" and not rows.empty and "active_generation" in rows:
+            # A promoted partition supersedes its legacy physical files.
+            # Leaving both in the glob creates false duplicate-date failures.
+            active_rows = rows[rows.active_generation.astype(str).str.len().gt(0)]
+            if not active_rows.empty:
+                rows = pd.concat([rows[~rows.year.isin(active_rows.year)], active_rows], ignore_index=True)
         if resolved_dataset.startswith("options_v2"):
             integrity = self.audit_manifest_physical_integrity(
                 symbol, dataset=resolved_dataset, start_date=start_date, end_date=end_date
@@ -374,14 +453,35 @@ class PCSDataAccess:
         if end_date is not None and pd.Timestamp(end_date) < lo:
             raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if start_date is not None and pd.Timestamp(start_date) < lo:
-            if self.routing_mode == "canonical":
+            migration_available = False
+            if resolved_dataset == "daily" and self.manifest_path == Path("data/manifests/storage_manifest.csv"):
+                migration_path = self.manifest_path.with_name("daily_universe_migration.csv")
+                migration = self._read_manifest(migration_path)
+                migration_available = bool(not migration.empty and migration.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(symbol).any())
+            if self.routing_mode == "canonical" and not migration_available:
                 start_date = lo
-            else:
+            elif not migration_available:
                 raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if end_date is not None and pd.Timestamp(end_date) > hi:
             raise ValueError(f"requested {symbol} {dataset} range is outside {lo.date()}..{hi.date()}")
         if resolved_dataset == "options":
-            path = parquet_root / "options" / f"symbol={symbol}" / "year=*" / "quarter=*" / "*.parquet"
+            listed = []
+            path_rows = rows
+            if start_date is not None and {"year", "quarter"} <= set(rows.columns):
+                effective_end = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp(start_date)
+                requested = {(period.year, period.quarter) for period in
+                             pd.period_range(pd.Timestamp(start_date), effective_end, freq="Q")}
+                years = pd.to_numeric(rows.year, errors="coerce")
+                quarters = pd.to_numeric(rows.quarter, errors="coerce")
+                path_rows = rows[[((int(y), int(q)) in requested) if pd.notna(y) and pd.notna(q) else False
+                                  for y, q in zip(years, quarters)]]
+            for raw_path in path_rows.get("parquet_path", pd.Series(dtype=str)).dropna().astype(str):
+                candidate = Path(raw_path)
+                if not candidate.is_absolute(): candidate = Path.cwd() / candidate
+                if candidate.exists(): listed.append(candidate)
+            if start_date is not None and not listed:
+                raise FileNotFoundError(f"no active option partitions for {symbol} in requested window")
+            path = Path(";".join(str(x) for x in sorted(set(listed)))) if listed else parquet_root / "options" / f"symbol={symbol}" / "year=*" / "quarter=*" / "*.parquet"
         elif resolved_dataset.startswith("options_v2"):
             # v2 is partitioned exactly one level below symbol=... .  Do not
             # use ** here: recursive discovery can make DuckDB scan the same
@@ -396,8 +496,12 @@ class PCSDataAccess:
             # Only SUCCESS rows in the selected manifest define readable
             # partitions. Files merely present on disk are unregistered.
             if requested_periods is not None:
-                active_files = [p for p in active_files if p.parent.parent.name.startswith("year=") and
-                                pd.Period(f"{p.parent.parent.name.split('=', 1)[1]}Q{p.parent.name.split('=', 1)[1]}") in requested_periods]
+                def _period(p):
+                    parts = [x.name for x in p.parents]
+                    year = next((x.split('=', 1)[1] for x in parts if x.startswith('year=')), None)
+                    quarter = next((x.split('=', 1)[1] for x in parts if x.startswith('quarter=')), None)
+                    return pd.Period(f"{year}Q{quarter}") if year and quarter else None
+                active_files = [p for p in active_files if _period(p) in requested_periods]
                 # A manifest row cannot make an ambiguous physical partition
                 # safe. Reject multiple direct files before any manifest
                 # preference is applied; recursive descendants are excluded.
@@ -416,11 +520,18 @@ class PCSDataAccess:
                     if candidate.exists() and candidate.suffix == ".parquet":
                         manifest_files.append(candidate)
                 if manifest_files and requested_periods is not None:
-                    manifest_periods = {pd.Period(f"{p.parent.parent.name.split('=', 1)[1]}Q{p.parent.name.split('=', 1)[1]}") for p in manifest_files}
+                    manifest_periods = {_period(p) for p in manifest_files}
                     if requested_periods.issubset(manifest_periods):
-                        active_files = [p for p in manifest_files if pd.Period(f"{p.parent.parent.name.split('=', 1)[1]}Q{p.parent.name.split('=', 1)[1]}") in requested_periods]
+                        active_files = [p for p in manifest_files if _period(p) in requested_periods]
             if not active_files:
                 raise FileNotFoundError(f"no active option partitions for {symbol}")
+            for manifest_row in rows.to_dict("records"):
+                generation = str(manifest_row.get("active_generation") or "")
+                expected_hash = str(manifest_row.get("content_hash") or "")
+                if generation and not expected_hash:
+                    raise DataQualityError("CANONICAL_MANIFEST_INVALID")
+                if generation and expected_hash and generation != expected_hash[:len(generation)]:
+                    raise DataQualityError("CANONICAL_CONTENT_HASH_MISMATCH")
             unreadable = []
             for candidate in active_files:
                 try:
@@ -434,7 +545,69 @@ class PCSDataAccess:
             # discovery result and cannot be re-expanded recursively.
             path = Path(";".join(str(x) for x in sorted(active_files)))
         elif resolved_dataset == "daily":
-            path = parquet_root / "daily" / f"symbol={symbol}" / "**" / "*.parquet"
+            # Use manifest-selected files.  Recursive globbing would re-read
+            # legacy files shadowed by an active generation.
+            daily_files = []
+            seen_daily_files: set[str] = set()
+            for raw_path in rows.parquet_path.tolist():
+                if str(raw_path) in {"", "nan", "None"}:
+                    continue
+                candidate = Path(str(raw_path))
+                if not candidate.is_absolute():
+                    candidate = Path.cwd() / candidate
+                key = str(candidate.resolve()).casefold()
+                if key not in seen_daily_files:
+                    seen_daily_files.add(key)
+                    daily_files.append(candidate)
+            if not daily_files:
+                raise FileNotFoundError(f"no daily partitions for {symbol}")
+            # The daily-universe migration catalog is canonical provenance,
+            # not an ad-hoc legacy fallback.  Its yearly physical partitions
+            # provide the warmup history required by MA200/structure gates;
+            # a recent incremental manifest row alone must not truncate the
+            # feature window to the current year.
+            if self.manifest_path == Path("data/manifests/storage_manifest.csv"):
+                migration_path = self.manifest_path.with_name("daily_universe_migration.csv")
+                migration = self._read_manifest(migration_path)
+                migrated = migration[
+                    migration.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(symbol)
+                    & migration.get("status", pd.Series(dtype=str)).astype(str).eq("SUCCESS")
+                ] if not migration.empty else pd.DataFrame()
+                if not migrated.empty:
+                    root = parquet_root / "daily" / f"symbol={symbol}"
+                    migrated_files = sorted(p for p in root.glob("year=*/*.parquet")
+                                            if "generations" not in p.parts)
+                    known = {str(p.resolve()).casefold() for p in daily_files}
+                    active_ids = rows.get("active_generation", pd.Series(dtype=str)).astype(str).str.strip()
+                    active_rows = rows[~active_ids.str.lower().isin({"", "nan", "none", "null"})]
+                    active_years = set(pd.to_numeric(active_rows.get("year", pd.Series(dtype=float)), errors="coerce").dropna().astype(int).tolist())
+                    active_ranges = [(pd.Timestamp(r.min_date), pd.Timestamp(r.max_date)) for _, r in active_rows.iterrows() if str(r.get("min_date", "")) not in {"", "nan"} and str(r.get("max_date", "")) not in {"", "nan"}]
+                    for candidate in migrated_files:
+                        candidate_year = int([part for part in candidate.parts if str(part).startswith("year=")][-1].split("=", 1)[1])
+                        candidate_frame = None
+                        if candidate_year in active_years or any(pd.Timestamp(str(candidate_year)+"-01-01") <= hi and pd.Timestamp(str(candidate_year)+"-12-31") >= lo for lo, hi in active_ranges):
+                            continue
+                        if str(candidate.resolve()).casefold() not in known:
+                            daily_files.append(candidate)
+                    if migrated_files:
+                        # ``read()`` uses SourceSpec.first_date when callers
+                        # omit start_date. Expand that bound along with the
+                        # physical warmup file set.
+                        migrated_start = min(
+                            (pd.Timestamp(year=int(p.parent.name.split("=", 1)[1]), month=1, day=1)
+                             for p in migrated_files),
+                            default=lo,
+                        )
+                        lo = min(lo, migrated_start)
+            if start_date is not None or end_date is not None:
+                lower_year = pd.Timestamp(start_date or lo).year
+                upper_year = pd.Timestamp(end_date or hi).year
+                def _daily_year(p):
+                    year_parts = [part for part in p.parts if str(part).startswith("year=")]
+                    return int(year_parts[-1].split("=", 1)[1]) if year_parts else None
+                daily_files = [p for p in daily_files
+                               if _daily_year(p) is not None and lower_year <= _daily_year(p) <= upper_year]
+            path = Path(";".join(str(p) for p in sorted(daily_files)))
         else:
             path = parquet_root / resolved_dataset / f"symbol={symbol}" / "**" / "*.parquet"
         schema = rows.schema_version.iloc[0] if "schema_version" in rows else "1"
@@ -450,7 +623,7 @@ class PCSDataAccess:
         """
         symbol = self._symbol(symbol)
         resolved_dataset, manifest_path, _ = self._resolve_route(dataset, symbol)
-        manifest = self._manifest if manifest_path == self.manifest_path else self._read_manifest(manifest_path)
+        manifest = self._read_manifest(manifest_path)
         if manifest.empty or "parquet_path" not in manifest.columns:
             return []
         rows = manifest[
@@ -567,13 +740,28 @@ class PCSDataAccess:
                 # UNION them explicitly; this preserves the validator's
                 # strict duplicate/conflict semantics and avoids false rows.
                 relations = " UNION ALL ".join(["SELECT * FROM read_parquet(?)"] * len(parquet_input))
-                params = list(parquet_input) + [spec.symbol, pd.Timestamp(start_date or spec.first_date).date(), pd.Timestamp(end_date or spec.last_date).date()]
-                out = con.execute(f"SELECT * FROM ({relations}) AS canonical_rows WHERE symbol=? AND {column} BETWEEN ? AND ?", params).fetchdf()
+                date_params = [pd.Timestamp(start_date or spec.first_date).date(), pd.Timestamp(end_date or spec.last_date).date()]
+                # Forward-adjusted daily partitions are canonical files whose
+                # symbol is encoded by the manifest/path rather than stored
+                # as a column. Do not filter them out as if they were mixed
+                # symbol option files.
+                if spec.dataset == "daily":
+                    out = con.execute(f"SELECT * FROM read_parquet(?) WHERE {column} BETWEEN ? AND ?",
+                                      [parquet_input, *date_params]).fetchdf()
+                    out["symbol"] = spec.symbol
+                else:
+                    params = list(parquet_input) + [spec.symbol, *date_params]
+                    out = con.execute(f"SELECT * FROM ({relations}) AS canonical_rows WHERE symbol=? AND {column} BETWEEN ? AND ?", params).fetchdf()
             else:
                 out = con.execute(f"SELECT * FROM read_parquet(?, hive_partitioning=true) WHERE symbol=? AND {column} BETWEEN ? AND ?", [parquet_input, spec.symbol, pd.Timestamp(start_date or spec.first_date).date(), pd.Timestamp(end_date or spec.last_date).date()]).fetchdf()
         finally:
             con.close()
         self.validate_coverage(out, spec.symbol, start_date, end_date, column)
+        if spec.dataset == "daily":
+            if "symbol" not in out.columns: out["symbol"] = spec.symbol
+            out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.normalize()
+            if out[["symbol", "date"]].duplicated().any(): raise DataQualityError("DUPLICATE_CANONICAL_PRICE_KEY")
+            if not out.date.is_monotonic_increasing: raise DataQualityError("CANONICAL_PRICE_ORDER_INVALID")
         if spec.dataset == "options" or spec.dataset.startswith("options"):
             out = self.validate_schema(out, spec.dataset)
             # The executable boundary is fail-closed even for legacy files
@@ -712,8 +900,21 @@ class PCSDataAccess:
         out = pd.read_parquet(path)
         return self.validate_schema(out, dataset)
 
-    def read_prices(self, symbol: str, start_date=None, end_date=None) -> pd.DataFrame:
-        return self.read("daily", symbol, start_date, end_date)
+    def read_prices(self, symbol: str, start_date=None, end_date=None, *, verified_handle=None) -> pd.DataFrame:
+        if verified_handle is None:
+            return self.read("daily", symbol, start_date, end_date)
+        if str(getattr(verified_handle, "dataset", "")) != "daily" or str(getattr(verified_handle, "ticker", "")).upper() != self._symbol(symbol):
+            raise DataAccessError("VERIFIED_HANDLE_MISMATCH")
+        if str(getattr(verified_handle, "verification_status", "")) != "VERIFIED" or not str(getattr(verified_handle, "generation_id", "")).strip() or not str(getattr(verified_handle, "dataset_fingerprint", "")).strip():
+            raise DataAccessError("PINNED_GENERATION_IDENTITY_MISSING")
+        frame=self.read_pinned_generation("daily", symbol, str(verified_handle.partitions[0]), str(verified_handle.generation_id))
+        frame["date"]=pd.to_datetime(frame["date"],errors="coerce").dt.normalize()
+        if start_date is not None: frame=frame[frame.date>=pd.Timestamp(start_date)]
+        if end_date is not None: frame=frame[frame.date<=pd.Timestamp(end_date)]
+        if start_date is not None and frame.date.min() > pd.Timestamp(start_date) or end_date is not None and frame.date.max() < pd.Timestamp(end_date): raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT")
+        if frame[["symbol","date"]].duplicated().any(): raise DataQualityError("DUPLICATE_CANONICAL_PRICE_KEY")
+        validate_price_input(frame, verified_handle, symbol, start_date, end_date)
+        return frame.sort_values(["symbol","date"]).reset_index(drop=True)
 
     def read_daily(self, symbol: str, start_date=None, end_date=None) -> pd.DataFrame:
         """Backward-compatible alias for the canonical daily read API.
@@ -794,14 +995,123 @@ class PCSDataAccess:
     def write_partition(self, frame, dataset, symbol, partition, *, source_version, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False):
         return self.write(frame, dataset, symbol, partition, source_version=source_version, allow_overwrite=allow_overwrite, update_manifest=update_manifest, filename=filename, replace_manifest=replace_manifest)
 
-    def update_manifest(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False):
+    def promote_generation(self, frame, dataset, symbol, partition, *, source_version):
+        """Publish an immutable generation for a mutable logical partition.
+
+        Existing active data is merged by the canonical option identity. The
+        old parquet object is never changed; the manifest pointer is switched
+        only after the new object and its hash have been verified.
+        """
+        symbol = self._symbol(symbol)
+        current = self._read_manifest(self.manifest_path)
+        partition_parts = dict(x.split("=", 1) for x in str(partition).split("/"))
+        target_year = int(partition_parts["year"])
+        target_quarter = int(partition_parts.get("quarter", 0))
+        rows = current[(current.get("dataset", pd.Series(dtype=str)).astype(str) == str(dataset)) &
+                       (current.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == symbol) &
+                       (pd.to_numeric(current.get("year", pd.Series(dtype=float)), errors="coerce") == target_year) &
+                       (pd.to_numeric(current.get("quarter", pd.Series(dtype=float)), errors="coerce").fillna(0) == target_quarter)]
+        merged = frame.copy()
+        is_options = dataset == "options" or str(dataset).startswith("options")
+        if len(rows) and is_options:
+            old = pd.read_parquet(str(rows.iloc[-1].parquet_path))
+            merged = pd.concat([old, merged], ignore_index=True)
+        key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+        if is_options and all(c in merged.columns for c in key):
+            merged = merged.drop_duplicates(key, keep="last").reset_index(drop=True)
+        if not is_options and "date" in merged.columns:
+            merged = merged.drop_duplicates("date", keep="last").reset_index(drop=True)
+        digest = self.semantic_content_hash(merged)
+        generation = digest[:24]
+        generation_partition = f"{partition}/generations"
+        path = self.parquet_root / dataset / f"symbol={symbol}" / generation_partition / f"{generation}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if len(rows) and str(rows.iloc[-1].get("content_hash", "")) == digest:
+            # No new promotion occurred; callers must not treat this as a
+            # fresh PromotionReceipt.
+            return Path(str(rows.iloc[-1].parquet_path))
+        previous_generation = str(rows.iloc[-1].get("active_generation", "")) if len(rows) else ""
+        previous_path = str(rows.iloc[-1].get("parquet_path", "")) if len(rows) else ""
+        created_at=datetime.now(timezone.utc).isoformat()
+        if not path.exists():
+            tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            merged.to_parquet(tmp, index=False)
+            if self.semantic_content_hash(pd.read_parquet(tmp)) != digest:
+                tmp.unlink(missing_ok=True); raise DataQualityError("GENERATION_HASH_VERIFICATION_FAILED")
+            os.replace(tmp, path)
+        manifest_before = self.manifest_path.read_bytes() if self.manifest_path.exists() else None
+        try:
+            self.update_manifest(dataset, symbol, merged, path, source_version, partition, replace_existing=True,
+                             staging_generation_id=generation, promoted_generation_id=generation,
+                             manifest_active_generation_id=generation, read_back_generation_id=generation,
+                             active_generation=generation, previous_generation=previous_generation,
+                             content_hash=digest, previous_path=previous_path,
+                             partition_ids=str(partition), source_lineage=json.dumps({"source":source_version,"partition":str(partition)}, sort_keys=True),
+                             created_at=created_at)
+            read_back = pd.read_parquet(path)
+            read_back_checksum = self.semantic_content_hash(read_back)
+            if read_back_checksum != digest or len(read_back) != len(merged):
+                raise DataQualityError("READ_BACK_CHECKSUM_OR_ROW_COUNT_MISMATCH")
+        except Exception:
+            if manifest_before is None: self.manifest_path.unlink(missing_ok=True)
+            else: self.manifest_path.write_bytes(manifest_before)
+            raise
+        read_back_generation = generation
+        self.generation_cache.invalidate_partition(dataset, symbol, partition, except_generation=generation)
+        promoted_at=datetime.now(timezone.utc).isoformat()
+        return PromotionReceipt(dataset=str(dataset), ticker=symbol, generation_id=generation,
+            promoted_partitions=(str(partition),), checksum=digest, row_count=len(merged),
+            manifest_version="storage_manifest_v1", promotion_timestamp=promoted_at, path=str(path),
+            read_back_generation_id=read_back_generation, read_back_checksum=read_back_checksum,
+            read_back_row_count=len(read_back), staging_generation_id=generation,
+            manifest_active_generation_id=generation,
+            source_lineage=({"source": source_version, "partition": str(partition)},),
+            created_at=created_at, partition_ids=(str(partition),))
+
+    def read_pinned_generation(self, dataset: str, symbol: str, partition: str,
+                               generation_id: str) -> pd.DataFrame:
+        """Read only the manifest-active immutable generation."""
+        if not generation_id: raise DataAccessError("GENERATION_REQUIRED")
+        manifest=self._read_manifest(self.manifest_path)
+        parts=dict(x.split("=",1) for x in str(partition).split("/") if "=" in x)
+        mask=(manifest.get("dataset",pd.Series(dtype=str)).astype(str).eq(str(dataset)) &
+              manifest.get("symbol",pd.Series(dtype=str)).astype(str).str.upper().eq(self._symbol(symbol)) &
+              pd.to_numeric(manifest.get("year",pd.Series(dtype=str)), errors="coerce").eq(pd.to_numeric(parts.get("year", ""), errors="coerce")))
+        if "quarter" in parts:
+            mask &= pd.to_numeric(manifest.get("quarter",pd.Series(dtype=str)), errors="coerce").eq(pd.to_numeric(parts["quarter"], errors="coerce"))
+        if not mask.any(): raise DataAccessError("MANIFEST_GENERATION_MISSING")
+        row=manifest.loc[mask].iloc[-1]
+        if str(row.get("active_generation", "")) != str(generation_id): raise DataAccessError("GENERATION_MISMATCH")
+        path=Path(str(row.parquet_path))
+        if not path.exists(): raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
+        frame=pd.read_parquet(path)
+        if len(frame) != int(row.row_count) or self.semantic_content_hash(frame) != str(row.content_hash): raise DataAccessError("READ_BACK_CHECKSUM_MISMATCH")
+        return frame
+
+    def active_generation_record(self, dataset: str, symbol: str, partition: str) -> dict[str, Any]:
+        """Return the physically persisted active manifest record."""
+        manifest=self._read_manifest(self.manifest_path)
+        parts=dict(x.split("=",1) for x in str(partition).split("/") if "=" in x)
+        mask=(manifest.get("dataset",pd.Series(dtype=str)).astype(str).eq(str(dataset)) &
+              manifest.get("symbol",pd.Series(dtype=str)).astype(str).str.upper().eq(self._symbol(symbol)) &
+              manifest.get("year",pd.Series(dtype=str)).astype(str).eq(str(parts.get("year", ""))))
+        if "quarter" in parts:
+            mask &= manifest.get("quarter",pd.Series(dtype=str)).astype(str).eq(str(parts["quarter"]))
+        if not mask.any(): raise DataAccessError("ACTIVE_MANIFEST_RECORD_MISSING")
+        return manifest.loc[mask].iloc[-1].to_dict()
+
+    def update_manifest(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, **generation):
         """Atomically perform the complete manifest read/merge/replace transaction."""
         with self._file_lock(self.manifest_path):
-            return self._update_manifest_locked(dataset, symbol, frame, path, source_version, partition, replace_existing)
+            return self._update_manifest_locked(dataset, symbol, frame, path, source_version, partition, replace_existing, generation)
 
-    def _update_manifest_locked(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False):
-        fields = ["dataset","symbol","source_file","source_size","source_modified_time","row_count","min_date","max_date","year","quarter","parquet_path","schema_version","import_timestamp","status"]
-        row = {k: None for k in fields}; row.update(dataset=dataset, symbol=self._symbol(symbol), source_file=source_version, row_count=len(frame), parquet_path=str(path), schema_version="1", import_timestamp=datetime.now(timezone.utc).isoformat(), status="SUCCESS")
+    def _update_manifest_locked(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, generation=None):
+        generation = generation or {}
+        fields = ["dataset","symbol","source_file","source_size","source_modified_time","row_count","min_date","max_date","year","quarter","parquet_path","schema_version","import_timestamp","status","active_generation","previous_generation","staging_generation_id","promoted_generation_id","manifest_active_generation_id","read_back_generation_id","content_hash","file_hash","created_at","promoted_at","source","source_lineage","partition_ids","provenance_id","previous_path"]
+        now = datetime.now(timezone.utc).isoformat()
+        file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).exists() else None
+        row = {k: None for k in fields}; row.update(dataset=dataset, symbol=self._symbol(symbol), source_file=source_version, row_count=len(frame), parquet_path=str(path), schema_version="2" if generation else "1", import_timestamp=now, created_at=now, promoted_at=now, source=source_version, status="SUCCESS", file_hash=file_hash)
+        row.update({k: v for k, v in generation.items() if k in fields})
         if partition:
             for part in str(partition).split('/'):
                 if '=' in part:
@@ -814,10 +1124,14 @@ class PCSDataAccess:
             if field not in current:
                 current[field] = None
         if replace_existing:
+            row_year = pd.to_numeric(pd.Series([row["year"]]), errors="coerce").iloc[0]
+            row_quarter = pd.to_numeric(pd.Series([row["quarter"]]), errors="coerce").iloc[0]
+            current_year = pd.to_numeric(current.year, errors="coerce")
+            current_quarter = pd.to_numeric(current.quarter, errors="coerce")
             current = current[~((current.dataset == dataset)
                                 & (current.symbol.astype(str).str.upper() == self._symbol(symbol))
-                                & (current.year.astype(str) == str(row["year"]))
-                                & (current.quarter.astype(str) == str(row["quarter"])))]
+                                & current_year.eq(row_year)
+                                & ((current_quarter.eq(row_quarter)) | (current_quarter.isna() & pd.isna(row_quarter))))]
         updated = pd.concat([current[fields], pd.DataFrame([row], columns=fields)], ignore_index=True)
         key = lambda r: (str(r.get("dataset", "")), self._symbol(r.get("symbol", "")), str(r.get("year", "")), str(r.get("quarter", "")))
         matches = updated.apply(lambda r: key(r) == key(row), axis=1)
@@ -836,6 +1150,23 @@ class PCSDataAccess:
         finally:
             tmp.unlink(missing_ok=True)
             self._manifest = updated
+
+    def rollback_generation(self, dataset: str, symbol: str, partition: str) -> dict[str, Any]:
+        """Atomically switch a logical partition back to its previous generation."""
+        with self._file_lock(self.manifest_path):
+            current = self._read_manifest(self.manifest_path)
+            parts = dict(x.split("=", 1) for x in str(partition).split("/"))
+            mask = (current.dataset.astype(str) == str(dataset)) & current.symbol.astype(str).str.upper().eq(self._symbol(symbol)) & current.year.astype(str).eq(str(parts.get("year"))) & current.quarter.astype(str).eq(str(parts.get("quarter")))
+            if not mask.any(): raise DataAccessError("CANONICAL_ROLLBACK_MANIFEST_MISSING")
+            idx = current.index[mask][-1]; row = current.loc[idx]
+            previous = str(row.get("previous_path", ""))
+            previous_generation = str(row.get("previous_generation", ""))
+            if not previous or not previous_generation or not Path(previous).exists(): raise DataAccessError("CANONICAL_ROLLBACK_PREVIOUS_GENERATION_UNAVAILABLE")
+            old_generation, old_path = str(row.active_generation), str(row.parquet_path)
+            current.loc[idx, "active_generation"] = previous_generation; current.loc[idx, "previous_generation"] = old_generation
+            current.loc[idx, "parquet_path"] = previous; current.loc[idx, "previous_path"] = old_path; current.loc[idx, "content_hash"] = self.semantic_content_hash(pd.read_parquet(previous)); current.loc[idx, "promoted_at"] = datetime.now(timezone.utc).isoformat()
+            tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.tmp"); current.to_csv(tmp, index=False); os.replace(tmp, self.manifest_path); self._manifest = current
+            return {"status": "ROLLED_BACK", "from_generation": old_generation, "to_generation": previous_generation}
 
     def record_provenance(self, record: dict[str, Any], path: str | Path | None = None) -> Path:
         """Atomically append one machine-readable source/provenance record."""
@@ -862,7 +1193,7 @@ class PCSDataAccess:
 
     def get_provenance(self, dataset: str, symbol: str) -> list[dict[str, Any]]:
         resolved_dataset, manifest_path, _ = self._resolve_route(dataset, symbol)
-        manifest = self._manifest if manifest_path == self.manifest_path else self._read_manifest(manifest_path)
+        manifest = self._read_manifest(manifest_path)
         if manifest.empty: return []
         rows = manifest[(manifest.dataset == resolved_dataset) & (manifest.symbol.astype(str).str.upper() == self._symbol(symbol))]
         return rows.to_dict("records")
@@ -937,4 +1268,20 @@ class PCSDataAccess:
         return out.reset_index(drop=True)
 
 
-__all__ = ["PCSDataAccess", "SourceSpec", "DatasetReadinessResult", "DataAccessError", "DataQualityError"]
+def ensure_ready(symbol: str, dataset: str = "daily", as_of=None,
+                 required_warmup_sessions: int = 0, *, access: PCSDataAccess | None = None,
+                 start_date=None, end_date=None) -> DatasetReadinessResult:
+    """Normal user-facing readiness entry point.
+
+    Lifecycle decisions remain owned by the canonical control plane: an
+    existing active generation is reused, a bounded gap may be incrementally
+    promoted, and unavailable sources fail closed while preserving the active
+    generation.  Callers do not provide paths, generation IDs, or fingerprints.
+    """
+    reader = access or PCSDataAccess.canonical()
+    return reader.ensure_ready(dataset, symbol, start_date=start_date,
+                               end_date=end_date, as_of=as_of,
+                               required_warmup_sessions=required_warmup_sessions)
+
+
+__all__ = ["PCSDataAccess", "SourceSpec", "DatasetReadinessResult", "DataAccessError", "DataQualityError", "ensure_ready"]

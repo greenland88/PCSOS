@@ -60,16 +60,22 @@ def classify_nvdl_state(stock: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def evaluate_nvdl_research(*, as_of_date: str | date, stock: Mapping[str, Any],
-                           quotes: Iterable[CoveredCallContract], shares_owned: int,
+                           quotes: Iterable[CoveredCallContract], shares_owned: int | None,
                            active_calls: int = 0) -> dict[str, Any]:
     """Research-only daily NVDL call decision; never upgrades production profile."""
     state = classify_nvdl_state(stock)
     result = {"module": "pcs.research.covered_call_decision", "version": "1.1",
               "symbol": "NVDL", "as_of": str(as_of_date)[:10], "state": state["state"],
-              "action": "WAIT", "selected_contract": None,
+              "action": "WAIT",
+              "candidate_status": "NO_CANDIDATE", "selected_contract": None,
+              "underlying_price": stock.get("close"), "atr": stock.get("atr"),
               "reason_codes": list(state["reason_codes"]), "production_changes_allowed": False}
     if state["state"] in {"RALLY_ACCELERATION", "PULLBACK", "UNKNOWN"}:
         result["reason_codes"].append("NVDL_STATE_WAIT_FIRST")
+        return result
+    if shares_owned is None:
+        result["reason_codes"].append("POSITION_CONTEXT_MISSING")
+        result["limitations"] = {"shares_owned": "NOT_AVAILABLE"}
         return result
     if int(shares_owned) < 100 or int(active_calls) >= int(shares_owned) // 100:
         result["reason_codes"].append("NVDL_COVERAGE_CAPACITY_REACHED")
@@ -86,7 +92,7 @@ def evaluate_nvdl_research(*, as_of_date: str | date, stock: Mapping[str, Any],
         result["reason_codes"].append("NVDL_NO_SAFE_LIQUID_CALL")
         return result
     chosen = max(eligible, key=lambda c: (c.bid, -c.spread_pct))
-    result.update({"action": "SELL", "contracts": min(int(shares_owned)//100-int(active_calls), 1),
+    result.update({"action": "SELL", "candidate_status": "RESEARCH_ONLY_CANDIDATE", "contracts": min(int(shares_owned)//100-int(active_calls), 1),
                    "selected_contract": {"expiration": chosen.expiration, "strike": chosen.strike,
                                          "dte": chosen.dte, "delta": chosen.delta, "bid": chosen.bid},
                    "reason_codes": result["reason_codes"] + ["NVDL_STATE_SIGNAL", "UPSIDE_BUFFER_OK", "LIQUIDITY_PASS"]})
@@ -97,7 +103,7 @@ def evaluate_nvdl_research(*, as_of_date: str | date, stock: Mapping[str, Any],
 class CoveredCallDecision:
     symbol: str
     as_of_date: str
-    decision: CallDecision
+    decision: str | CallDecision
     decision_reason: str
     entry_quality: int
     roll_safety: str
@@ -135,7 +141,10 @@ class CoveredCallDecision:
                     "request_id": f"{self.symbol}:{self.as_of_date}",
                     "run_id": f"covered-call:{self.symbol}:{self.as_of_date}",
                     "data_timestamp": self.data_timestamp or self.as_of_date})
-        out["decision"] = self.decision.value
+        out["decision"] = self.decision.value if isinstance(self.decision, CallDecision) else str(self.decision)
+        if out["decision"] == "NOT_RUN":
+            out["system_status"] = "BLOCKED"
+            out["strategy_decision"] = "NOT_RUN"
         out["no_sell_reasons"] = list(self.no_sell_reasons)
         out["reason_codes"] = list(self.reason_codes)
         return out
@@ -306,7 +315,9 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
                           position_state: str | None = None,
                           preferred_moneyness: float = 0.20,
                           minimum_atr_distance: float = 3.0,
-                          preferred_dte: int = 43) -> dict[str, Any]:
+                          preferred_dte: int = 43,
+                          allow_unvalidated: bool = False,
+                          allow_missing_position: bool = False) -> dict[str, Any]:
     """Evaluate one post-close, PIT-safe call-sale decision.
 
     All inputs are decision-date snapshots. No future quote, outcome, or P&L is
@@ -325,22 +336,22 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
             reason_codes=("SINGLE_SYMBOL_PROFILE_GATE", "FAIL_CLOSED"),
             profile_status=canonical_profile.status.value).to_dict()
     profile = canonical_profile
-    if shares_owned is None or event_context is None or (market_context is None and market is None):
-        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+    if (shares_owned is None and not (allow_unvalidated or allow_missing_position)) or event_context is None or (market_context is None and market is None):
+        return CoveredCallDecision(symbol, day, "NOT_RUN",
             "required single-symbol request fields are missing", 0, "UNKNOWN", "UNKNOWN",
             active_calls, max_active_calls, no_sell_reasons=("REQUIRED_REQUEST_FIELDS_MISSING",),
             reason_codes=("SINGLE_SYMBOL_REQUEST_REQUIRED", "FAIL_CLOSED"),
             profile_status=profile.status.value).to_dict()
-    if int(shares_owned) < 0 or int(active_calls) < 0:
-        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+    if (shares_owned is not None and int(shares_owned) < 0) or int(active_calls) < 0:
+        return CoveredCallDecision(symbol, day, "NOT_RUN",
             "shares_owned and active_calls must be non-negative", 0, "UNKNOWN", "UNKNOWN",
             active_calls, max_active_calls, no_sell_reasons=("INVALID_POSITION_COUNTS",),
             reason_codes=("REQUEST_VALIDATION_FAILED", "FAIL_CLOSED"),
             profile_status=profile.status.value).to_dict()
-    max_contracts = max(0, min(int(shares_owned) // 100 - int(active_calls), int(profile.max_calls)))
+    max_contracts = max(0, min((int(shares_owned) // 100 if shares_owned is not None else 0) - int(active_calls), int(profile.max_calls)))
     market = market_context if market_context is not None else market
-    if profile.status is not ProfileStatus.VALIDATED:
-        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+    if profile.status is not ProfileStatus.VALIDATED and not allow_unvalidated:
+        return CoveredCallDecision(symbol, day, "NOT_RUN",
             "ticker covered-call profile is not validated", 0, "UNKNOWN", "UNKNOWN",
             active_calls, max_active_calls,
             no_sell_reasons=("PROFILE_NOT_VALIDATED",),
@@ -434,7 +445,7 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
                                            int(r.volume) if getattr(r, "volume", None) is not None else None,
                                            dte=(_date(r.expiration_date) - _date(day)).days)
                        for r in frame[frame.call_put.astype(str).str.lower().isin({"c", "call"})].itertuples()]
-    if max_contracts <= 0:
+    if max_contracts <= 0 and not allow_unvalidated:
         return CoveredCallDecision(symbol, day, CallDecision.NO_SELL,
             "all short-call capacity is occupied", 0, "LOW", "UNKNOWN", active_calls,
             max_active_calls, no_sell_reasons=("MAX_CALL_CAPACITY_REACHED",),
@@ -447,7 +458,7 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
     required = ("close", "atr", "extension20_atr", "momentum_state")
     missing = tuple(k for k in required if stock.get(k) is None)
     if missing:
-        return CoveredCallDecision(symbol, day, CallDecision.WAIT,
+        return CoveredCallDecision(symbol, day, "NOT_RUN",
             "PIT-safe entry features are incomplete", 0, "UNKNOWN", "UNKNOWN",
             active_calls, max_active_calls, no_sell_reasons=missing,
             reason_codes=("MISSING_PIT_FEATURE",)).to_dict()
@@ -535,3 +546,57 @@ def evaluate_covered_call(symbol: str, as_of_date: str | date, *,
         reason_codes=tuple(reason_codes + ["SAFE_REGION_FILTER", "LIQUIDITY_PASS"]),
         data_timestamp=str(stock.get("date", day)), spot=spot, sma20=stock.get("sma20"),
         atr=atr, extension20_atr=extension, momentum_state=momentum).to_dict()
+
+
+def evaluate_covered_call_research_only(symbol: str, as_of_date: str | date, *,
+                                        data_access: Any, market: Mapping[str, Any],
+                                        event_context: Mapping[str, Any],
+                                        shares_owned: int | None = None,
+                                        active_calls: int = 0,
+                                        quotes: Iterable[CoveredCallContract] | None = None) -> dict[str, Any]:
+    """Run existing CC selection gates as an isolated research candidate."""
+    symbol = str(symbol).strip().upper(); day = str(as_of_date)[:10]
+    prices = data_access.read_prices(symbol, end_date=day)
+    stock = build_pit_entry_features(prices, as_of_date=day)
+    historical_days = len(prices)
+    unavailable = []
+    if historical_days < 200:
+        unavailable.extend(["sma50", "sma200", "long_history_validation"])
+    if stock.get("status") == "DATA_INSUFFICIENT":
+        return {"symbol": symbol, "mode": "RESEARCH_ONLY", "profile_status": "NOT_VALIDATED",
+                "candidate_status": "BLOCKED", "system_status": "BLOCKED", "strategy_decision": "NOT_RUN",
+                "reason_codes": ["SHORT_HISTORY_FEATURES_UNAVAILABLE"],
+                "limitations": {"historical_days": historical_days,
+                                 "unavailable_features": unavailable + ["pit_entry_features"],
+                                 "profile_not_validated": True}}
+    from .covered_call_research import read_pit_call_chain
+    quotes = list(quotes) if quotes is not None else read_pit_call_chain(symbol, day, data_access=data_access)
+    base = evaluate_covered_call(symbol, day, shares_owned=shares_owned, active_calls=active_calls,
+        stock=stock, market=market, event_context=event_context, quotes=quotes,
+        allow_unvalidated=True)
+    chosen = None
+    if base.get("recommended_expiration") is not None:
+        chosen = next((q for q in quotes if q.expiration == base["recommended_expiration"] and
+                       q.strike == base["recommended_strike"]), None)
+    candidate = chosen is not None and base.get("decision") == "SELL"
+    short = {"strike": chosen.strike if chosen else None, "delta": chosen.delta if chosen else None,
+             "bid": chosen.bid if chosen else None, "ask": chosen.ask if chosen else None,
+             "mid": ((chosen.bid + chosen.ask) / 2) if chosen else None,
+             "volume": chosen.volume if chosen else None, "open_interest": chosen.open_interest if chosen else None}
+    codes = list(base.get("reason_codes", []))
+    if shares_owned is None:
+        codes.append("POSITION_CONTEXT_NOT_PROVIDED")
+    return {"symbol": symbol, "mode": "RESEARCH_ONLY", "profile_status": "NOT_VALIDATED",
+            "candidate_status": "RESEARCH_ONLY_CANDIDATE" if candidate else "NO_CANDIDATE",
+            "underlying_price": stock.get("close"), "expiration": chosen.expiration if chosen else None,
+            "dte": chosen.dte if chosen else None, "short_call": short,
+            "premium": chosen.bid * 100 if chosen else None,
+            "premium_yield": chosen.bid / stock["close"] if chosen and stock.get("close") else None,
+            "upside_to_strike": chosen.strike / stock["close"] - 1 if chosen and stock.get("close") else None,
+            "effective_sale_price": chosen.strike + chosen.bid if chosen else None,
+            "liquidity_status": "PASS" if candidate else "NO_CANDIDATE",
+            "event_status": event_context.get("earnings_status"), "market_context_available": bool(market),
+            "shares_owned": shares_owned, "max_covered_calls": shares_owned // 100 if shares_owned is not None else None,
+            "suggested_contracts": 1 if candidate and shares_owned is not None and shares_owned >= 100 else None,
+            "reason_codes": codes, "limitations": {"historical_days": historical_days,
+                "unavailable_features": sorted(set(unavailable)), "profile_not_validated": True}}

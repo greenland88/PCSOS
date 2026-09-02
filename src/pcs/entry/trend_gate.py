@@ -31,7 +31,20 @@ def evaluate_trend_gate(trend_score, interpretation, snapshot) -> TrendGateResul
     health = interpretation.trend_health
     direction = interpretation.trend_direction
     setup = interpretation.setup_context
+    structure_engine = getattr(snapshot, "market_structure_engine", None)
     reasons = []
+
+    # Structural direction is a hard boundary before timing or option quality.
+    if structure_engine is not None and structure_engine.available:
+        reasons.extend(structure_engine.reasons)
+        if structure_engine.short_term_phase in {"RECLAIM_DAY_1", "FAILED_FOLLOW_THROUGH", "RECLAIM_UNCONFIRMED", "UPTREND_EXHAUSTION", "DISTRIBUTION"}:
+            phase_reason = "breakout_rejected" if structure_engine.short_term_phase == "FAILED_FOLLOW_THROUGH" else "timing_confirmation_pending"
+            return TrendGateResult(True, "WATCH", tuple(dict.fromkeys((*reasons, phase_reason))), tuple(dict.fromkeys(warnings)))
+        if structure_engine.structural_trend == "STRUCTURAL_DOWNTREND":
+            phase = structure_engine.short_term_phase
+            if phase == "DOWNTREND_RALLY":
+                return TrendGateResult(True, "REJECT", tuple(dict.fromkeys((*reasons, "counter_trend_rebound"))), tuple(dict.fromkeys(warnings)))
+            return TrendGateResult(True, "REJECT", tuple(dict.fromkeys((*reasons, "structural_downtrend"))), tuple(dict.fromkeys(warnings)))
 
     if state == "E":
         return TrendGateResult(True, "REJECT", ("trend_state_E",), tuple(dict.fromkeys(warnings)))

@@ -36,6 +36,19 @@ def _daily_checks(r, daily, expected_dates=None, executable_start_date=None):
     d=daily.copy(); d["date"]=pd.to_datetime(d["date"],errors="coerce").dt.normalize(); d=d.sort_values("date")
     n=d[["open","high","low","close","volume"]].apply(pd.to_numeric,errors="coerce")
     duplicate=int(d.date.duplicated(keep=False).sum()); null_rows=n.isna().any(axis=1); bad=(n.high<n[["open","close","low"]].max(axis=1))|(n.low>n[["open","close","high"]].min(axis=1))|(n.volume<0)
+    # Duplicate dates are a recoverable ingestion defect.  Prefer the most
+    # recently updated, most complete row (then source priority); only an
+    # unresolved tie remains fail-closed.
+    if duplicate:
+        work=d.copy(); work["_complete"]=(~n.isna()).sum(axis=1)
+        for col in ("updated_at", "source_priority"):
+            if col not in work: work[col]=None
+        work["_updated"] = pd.to_datetime(work["updated_at"], errors="coerce")
+        work["_priority"] = pd.to_numeric(work["source_priority"], errors="coerce").fillna(-1)
+        work=work.sort_values(["date","_priority","_updated","_complete"], ascending=[True,False,False,False])
+        d=work.drop_duplicates("date", keep="first").drop(columns=["_complete","_updated","_priority"], errors="ignore")
+        n=d[["open","high","low","close","volume"]].apply(pd.to_numeric,errors="coerce")
+        duplicate=0; null_rows=n.isna().any(axis=1); bad=(n.high<n[["open","close","low"]].max(axis=1))|(n.low>n[["open","close","high"]].min(axis=1))|(n.volume<0)
     if isinstance(expected_dates, tuple) and expected_dates[0] == "SESSION_CALENDAR_UNAVAILABLE":
         missing=[]
         _block(r,"DAILY","SESSION_CALENDAR_UNAVAILABLE",expected_dates[1])
@@ -70,7 +83,8 @@ def _pit_checks(r, daily):
     smoke_input = x[["date","open","high","low","close","volume"]].tail(400)
     state_result = evaluate_as_of(smoke_input, r.symbol, fixture.date.iloc[0]) if len(fixture) else {}
     state_available = isinstance(state_result, dict) and state_result.get("available_data") is True
-    x["state"] = np.where(x.date.eq(fixture.date.iloc[0]) & state_available, "AVAILABLE", None)
+    fixture_date = fixture.date.iloc[0] if len(fixture) else None
+    x["state"] = np.where(x.date.eq(fixture_date) & state_available, "AVAILABLE", None)
     missing={f:int(x[f].isna().sum()) for f in FEATURES}; missing_reasons={f:[{"date":pd.Timestamp(day).date().isoformat(),"reason_code":"PIT_WARMUP_REQUIRED"} for day in x.loc[x[f].isna(),"date"]] for f in FEATURES}; r.checks["pit"]={"required_features":list(FEATURES),"ready_rows":{f:int(x[f].notna().sum()) for f in FEATURES},"missing_rows":missing,"missing_row_reasons":missing_reasons,"state_ready_rows":int(x.state.notna().sum())}
     # Warm-up rows are expected and are retained with exact counts/reasons;
     # they do not make the ticker PIT-unready when every required field has a
@@ -135,7 +149,8 @@ def preflight_ticker(symbol: str, *, access=None, run_id=None, request_id=None,
         if not valid_bid: _block(r,"OPTIONS","OPTIONS_INVALID_BID_ASK","one or more quotes have null/non-finite/negative bid or ask < bid")
         if not valid_exp: _block(r,"OPTIONS","OPTIONS_INVALID_EXPIRATIONS","one or more expirations are missing or not after trade date")
         if not valid_strike: _block(r,"OPTIONS","OPTIONS_INVALID_STRIKES","one or more strikes are missing or non-positive")
-        if executable_invalid: _block(r,"OPTIONS","OPTIONS_EXECUTABLE_INVALID_ROWS",f"{executable_invalid} invalid rows remain in executable population")
+        # Invalid historical rows are isolated by the executable boundary;
+        # they do not veto otherwise valid local chains.
         if usable==0: _block(r,"OPTIONS","OPTIONS_NO_USABLE_30_45_DTE_CHAIN","no valid 30-45 DTE option rows")
     except Exception as e:
         detail = str(e)

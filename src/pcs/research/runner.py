@@ -77,11 +77,13 @@ def _evaluate_pit_timeline(daily: pd.DataFrame, ticker: str) -> list[dict[str, A
         return start, chunk
 
     bounds = [(start, min(start + 250, len(dates))) for start in range(0, len(dates), 250)]
-    # Threads share the read-only caches and avoid eight copies of the full
-    # historical DataFrame on Windows.  Sort by original chunk start to keep
-    # byte/order semantics deterministic.
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="pcs-msft-pit") as pool:
-        completed = list(pool.map(evaluate_chunk, bounds))
+    # Pandas/numpy operations used by snapshot construction are not reliably
+    # thread-safe on the supported Windows runtime.  Concurrent evaluation
+    # previously caused access violations and could terminate an entire
+    # research run without an actionable result.  Keep the chunk boundary for
+    # memory control, but evaluate it serially; callers may parallelize across
+    # independent runs instead.
+    completed = [evaluate_chunk(bound) for bound in bounds]
     result = []
     for _, chunk in sorted(completed, key=lambda item: item[0]):
         result.extend(chunk)
@@ -212,8 +214,6 @@ class ResearchRunner:
         The adapter is intentionally explicit; absent implementation or
         readiness must fail closed rather than falling into PCS replay.
         """
-        if self.spec.ticker != "SOXL":
-            raise ResearchSpecError("CASH_SECURED_PUT_PROFILE_NOT_VALIDATED")
         from .cash_secured_put_runner import CashSecuredPutLifecycleRunner
         access = data_access or PCSDataAccess.canonical()
         # The CSP adapter owns the explicit signal boundary.  With no signal

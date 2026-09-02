@@ -36,6 +36,15 @@ def calculate_base_indicators(df: pd.DataFrame, config: TrendIndicatorConfig | N
     return output
 
 
+def calculate_directional_indicators(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Return +DI/-DI without changing the stable base-indicator schema."""
+    _validate_ohlcv_input(df, TrendIndicatorConfig(adx_period=period))
+    talib = _load_talib()
+    high, low, close = (df[x].astype(float) for x in ("high", "low", "close"))
+    return pd.DataFrame({f"plus_di{period}": talib.PLUS_DI(high, low, close, timeperiod=period),
+                         f"minus_di{period}": talib.MINUS_DI(high, low, close, timeperiod=period)}, index=df.index)
+
+
 def _load_talib():
     try:
         import talib

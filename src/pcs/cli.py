@@ -105,6 +105,42 @@ def readiness(args):
     result = preflight_ticker(args.symbol, access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root))
     print(json.dumps(result.to_dict(), sort_keys=True, default=str))
 
+def pcs_status(args):
+    from pcs.pcs_status import evaluate_pcs_status
+    from pcs.data.access import PCSDataAccess
+    portfolio = json.loads(Path(args.portfolio_json).read_text(encoding="utf-8")) if args.portfolio_json else None
+    result = evaluate_pcs_status(args.symbol, args.as_of, mode=args.mode, portfolio_context=portfolio,
+        rules=load_rules(args.rules), data_access=PCSDataAccess(
+            manifest_path=args.manifest_path, parquet_root=args.parquet_root))
+    print(result.model_dump_json(indent=2 if args.json else None))
+
+def canonical_rollback(args):
+    from pcs.data.access import PCSDataAccess
+    result = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root).rollback_generation(
+        args.dataset, args.symbol, f"year={args.year}/quarter={args.quarter}")
+    print(json.dumps(result, sort_keys=True))
+
+def canonical_repair(args):
+    from pcs.data.access import PCSDataAccess
+    from pcs.data.canonical_recovery import CanonicalRecoveryService
+    access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+    service=CanonicalRecoveryService(access)
+    if args.action == "apply":
+        if not args.plan_id:
+            print(json.dumps({"status":"BLOCKED","reason_codes":["REPAIR_PLAN_ID_REQUIRED"]})); return
+        print(json.dumps(service.apply(args.plan_id), sort_keys=True, default=str, indent=2 if args.json else None)); return
+    plan=service.plan(dataset=args.dataset,symbol=args.symbol,year=args.year,quarter=args.quarter)
+    plan_path=Path(service.plan_root) / f"{plan.repair_plan_id}.json"
+    result=plan.to_dict(); result["plan_path"]=str(plan_path)
+    print(json.dumps(result, sort_keys=True, default=str, indent=2 if args.json else None))
+
+def doctor(args):
+    from pcs.recovery import SystemHealthController
+    from pcs.data.access import PCSDataAccess
+    result=SystemHealthController(PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)).ensure_capability(
+        "LIVE_PCS_DECISION" if args.mode == "live" else "EOD_PCS_DECISION", args.symbol, args.as_of or "2099-12-31")
+    print(json.dumps(result.to_dict(), sort_keys=True, default=str, indent=2 if args.json else None))
+
 
 def covered_call_status(args):
     """One-ticker covered-call admission/decision status.
@@ -114,11 +150,22 @@ def covered_call_status(args):
     research artifacts.
     """
     from pcs.data.access import PCSDataAccess
-    from pcs.research.covered_call_decision import evaluate_covered_call, evaluate_nvdl_research, build_pit_entry_features
+    from pcs.research.covered_call_decision import (evaluate_covered_call, evaluate_nvdl_research,
+        evaluate_covered_call_research_only, build_pit_entry_features)
     from pcs.research.covered_call_profiles import resolve_covered_call_profile
     from pcs.research.ticker_readiness import preflight_ticker
 
     symbol = str(args.symbol).strip().upper()
+    if args.research_only and symbol != "NVDL":
+        access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
+        result = evaluate_covered_call_research_only(
+            symbol, args.as_of, data_access=access,
+            market=args.market_context or {},
+            event_context=args.event_context or {"earnings_status": "UNKNOWN"},
+            shares_owned=args.shares_owned if args.shares_owned is not None else None,
+            active_calls=args.active_calls or 0)
+        print(json.dumps(result, sort_keys=True, default=str))
+        return
     if symbol == "NVDL" and args.research_only:
         access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
         stock = build_pit_entry_features(access.read_prices(symbol, end_date=args.as_of), as_of_date=args.as_of)
@@ -128,36 +175,27 @@ def covered_call_status(args):
             shares_owned=args.shares_owned, active_calls=args.active_calls)
         print(json.dumps(result, sort_keys=True, default=str))
         return
-    profile = resolve_covered_call_profile(symbol)
-    if profile.status.value != "VALIDATED":
-        result = evaluate_covered_call(
-            symbol=symbol, as_of_date=args.as_of,
-            shares_owned=args.shares_owned, active_calls=args.active_calls,
-            event_context=args.event_context,
-            market_context=args.market_context,
-            profile=profile,
-        )
-        print(json.dumps(result, sort_keys=True, default=str))
-        return
-    access = PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root)
-    readiness_result = preflight_ticker(symbol, access=access)
-    if readiness_result.PCS_RESEARCH_READY != "YES":
-        result = evaluate_covered_call(
-            symbol=symbol, as_of_date=args.as_of,
-            shares_owned=args.shares_owned, active_calls=args.active_calls,
-            event_context=args.event_context, market_context=args.market_context,
-            profile=profile,
-        )
-        result["reason_codes"] = list(result.get("reason_codes", [])) + ["TICKER_READINESS_NOT_PASSED"]
-        result["readiness"] = readiness_result.to_dict()
-        print(json.dumps(result, sort_keys=True, default=str))
-        return
-    result = evaluate_covered_call(
-        symbol=symbol, as_of_date=args.as_of,
-        shares_owned=args.shares_owned, active_calls=args.active_calls,
-        event_context=args.event_context, market_context=args.market_context,
-        data_access=access, profile=profile,
-    )
+    # Production requests have one canonical orchestration path.  The former
+    # implementation performed an independent preflight, swallowed refresh
+    # exceptions, then invoked the evaluator again, allowing readiness and
+    # strategy data to drift apart.
+    from pcs.covered_call_executor import execute_covered_call_request
+    result = execute_covered_call_request(
+        symbol, "live", as_of=args.as_of, research_only=False,
+        overrides={"shares_owned": args.shares_owned, "active_calls": args.active_calls}
+        if args.shares_owned is not None else None,
+        adapters={"data_access": PCSDataAccess(
+            manifest_path=args.manifest_path, parquet_root=args.parquet_root)})
+    print(json.dumps(result, sort_keys=True, default=str))
+    return
+
+
+def covered_call_status_executor(args):
+    from pcs.covered_call_executor import execute_covered_call_request
+    result = execute_covered_call_request(
+        args.symbol, args.mode, as_of=args.as_of, research_only=args.research_only,
+        overrides={"shares_owned": args.shares_owned, "active_calls": args.active_calls}
+        if args.shares_owned is not None else None)
     print(json.dumps(result, sort_keys=True, default=str))
 
 
@@ -214,6 +252,42 @@ def main():
     ready_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     ready_cmd.set_defaults(func=readiness)
 
+    status_cmd = sub.add_parser("pcs-status", help="read-only deterministic PCS decision for one ticker")
+    status_cmd.add_argument("symbol")
+    status_cmd.add_argument("--mode", choices=["eod", "live"], default="eod")
+    status_cmd.add_argument("--as-of", required=True)
+    status_cmd.add_argument("--rules", default="config/pcs_rules.yaml")
+    status_cmd.add_argument("--parquet-root", default="data/parquet")
+    status_cmd.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    status_cmd.add_argument("--portfolio-json")
+    status_cmd.add_argument("--json", action="store_true")
+    status_cmd.set_defaults(func=pcs_status)
+
+    admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")
+    admin_sub = admin.add_subparsers(required=True)
+
+    rollback = admin_sub.add_parser("canonical-rollback", help="switch a logical partition to its previous immutable generation")
+    rollback.add_argument("--dataset", required=True); rollback.add_argument("--symbol", required=True)
+    rollback.add_argument("--year", type=int, required=True); rollback.add_argument("--quarter", type=int, required=True)
+    rollback.add_argument("--parquet-root", default="data/parquet"); rollback.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    rollback.set_defaults(func=canonical_rollback)
+
+    repair = admin_sub.add_parser("canonical-repair", help="inspect or safely migrate a canonical partition")
+    repair.add_argument("action", choices=["plan", "apply"]); repair.add_argument("--dataset", required=True); repair.add_argument("--symbol", required=True)
+    repair.add_argument("--year", type=int, required=True); repair.add_argument("--quarter", type=int, required=True); repair.add_argument("--apply", action="store_true"); repair.add_argument("--plan-id")
+    repair.add_argument("--json", action="store_true"); repair.add_argument("--parquet-root", default="data/parquet"); repair.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    repair.set_defaults(func=canonical_repair)
+
+    generations = admin_sub.add_parser("canonical-generations", help="list immutable generations without garbage collection")
+    generations.add_argument("action", choices=["list"]); generations.add_argument("--dataset", required=True); generations.add_argument("--symbol", required=True)
+    generations.add_argument("--year", type=int, required=True); generations.add_argument("--quarter", type=int, required=True)
+    generations.add_argument("--parquet-root", default="data/parquet"); generations.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    generations.set_defaults(func=lambda a: print(json.dumps(__import__("pcs.data.canonical_generations", fromlist=["list_generations"]).list_generations(dataset=a.dataset,symbol=a.symbol,year=a.year,quarter=a.quarter,data_access=__import__("pcs.data.access", fromlist=["PCSDataAccess"]).PCSDataAccess(manifest_path=a.manifest_path,parquet_root=a.parquet_root)), default=str, indent=2)))
+
+    doc = admin_sub.add_parser("doctor", help="inspect and safely prepare system capabilities")
+    doc.add_argument("symbol", nargs="?"); doc.add_argument("--mode", choices=["eod","live"], default="eod"); doc.add_argument("--as-of"); doc.add_argument("--json", action="store_true")
+    doc.add_argument("--parquet-root", default="data/parquet"); doc.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv"); doc.set_defaults(func=doctor)
+
     md_status = sub.add_parser("market-data-status", help="inspect canonical coverage and produce an import plan")
     md_status.add_argument("symbol")
     md_status.add_argument("--start")
@@ -231,15 +305,16 @@ def main():
 
     cc = sub.add_parser("covered-call-status", help="evaluate one ticker's covered-call admission/decision")
     cc.add_argument("symbol")
-    cc.add_argument("--as-of", required=True)
-    cc.add_argument("--shares-owned", type=int, required=True)
-    cc.add_argument("--active-calls", type=int, required=True)
+    cc.add_argument("--as-of")
+    cc.add_argument("--mode", choices=["eod", "live"], default="eod")
+    cc.add_argument("--shares-owned", type=int, required=False)
+    cc.add_argument("--active-calls", type=int, default=0)
     cc.add_argument("--event-context", type=json.loads, default=None)
     cc.add_argument("--market-context", type=json.loads, default=None)
     cc.add_argument("--research-only", action="store_true", help="NVDL state-aware research decision; never production authorization")
     cc.add_argument("--parquet-root", default="data/parquet")
     cc.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
-    cc.set_defaults(func=covered_call_status)
+    cc.set_defaults(func=covered_call_status_executor)
 
     args = parser.parse_args()
     args.func(args)

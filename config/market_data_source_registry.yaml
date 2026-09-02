@@ -45,7 +45,7 @@ sources:
       enabled: true
       authorized: true
       adapter: pcs.data.clickhouse.PCSClickHouseClient
-      capabilities: [OPTION_HISTORY_QUOTES, OPTION_CURRENT_QUOTES, COVERAGE_PROBE]
+      capabilities: [OPTION_HISTORY_QUOTES, OPTION_EOD_QUOTES, COVERAGE_PROBE]
       priority: 2
     - source_id: massive_option_contracts
       type: API

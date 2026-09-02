@@ -17,7 +17,6 @@ from pcs.research.covered_call_timing import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-NVDA_CC_MIN_VALID_DATE = pd.Timestamp("2024-06-10")
 FAMILIES = list(TimingFamily)
 WAITS = list(WaitState)
 
@@ -28,8 +27,6 @@ def prefilter_candidate_frame(frame: pd.DataFrame, *, enforce_delta: bool = True
         return frame.copy()
     out = frame.copy()
     out["trade_date"] = pd.to_datetime(out["trade_date"], format="ISO8601")
-    if (out["trade_date"] < NVDA_CC_MIN_VALID_DATE).any():
-        raise ValueError("NVDA_CC_PRE_SPLIT_OPTION_QUOTE_REJECTED")
     out["expiration_date"] = pd.to_datetime(out["expiration_date"], format="ISO8601")
     out["dte"] = (out["expiration_date"] - out["trade_date"]).dt.days
     delta = pd.to_numeric(out["delta"], errors="coerce").abs()

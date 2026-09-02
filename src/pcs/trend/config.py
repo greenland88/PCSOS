@@ -61,6 +61,24 @@ class TrendIndicatorConfig:
     support_nearby_atr: float = 1.5
     support_nearby_pct: float = 0.03
     support_cluster_tolerance_atr: float = 0.25
+    # Market-structure opportunity state-machine thresholds.  Keep these
+    # centralized so replay and production snapshots resolve the same values.
+    pivot_tolerance_atr: float = 0.25
+    support_cluster_width_atr: float = 0.35
+    support_break_buffer_atr: float = 0.35
+    support_near_distance_atr: float = 0.50
+    reclaim_buffer_atr: float = 0.10
+    confirmation_max_sessions: int = 3
+    entry_window_max_sessions: int = 3
+    maximum_entry_distance_atr: float = 1.75
+    hard_extended_support_atr: float = 2.50
+    rsi_overheated: float = 72.0
+    rsi_hard_block: float = 78.0
+    upper_wick_rejection_atr: float = 0.50
+    upper_rejection_close_location: float = 0.35
+    minimum_confirmation_rvol: float = 0.80
+    breakout_rvol_reference: float = 0.90
+    breakout_level_max_age: int = 15
     trend_scoring_market_structure_weight: float = 30.0
     trend_scoring_ma_structure_weight: float = 25.0
     trend_scoring_relative_strength_weight: float = 20.0
@@ -221,6 +239,30 @@ class TrendIndicatorConfig:
         }
         if any(not isinstance(value, (int, float)) or value < 0 for value in support_numbers.values()):
             raise ValueError("support thresholds must be non-negative numbers")
+        opportunity_numbers = {
+            "pivot_tolerance_atr": self.pivot_tolerance_atr,
+            "support_cluster_width_atr": self.support_cluster_width_atr,
+            "support_break_buffer_atr": self.support_break_buffer_atr,
+            "support_near_distance_atr": self.support_near_distance_atr,
+            "reclaim_buffer_atr": self.reclaim_buffer_atr,
+            "maximum_entry_distance_atr": self.maximum_entry_distance_atr,
+            "hard_extended_support_atr": self.hard_extended_support_atr,
+            "rsi_overheated": self.rsi_overheated,
+            "rsi_hard_block": self.rsi_hard_block,
+            "upper_wick_rejection_atr": self.upper_wick_rejection_atr,
+            "upper_rejection_close_location": self.upper_rejection_close_location,
+            "minimum_confirmation_rvol": self.minimum_confirmation_rvol,
+            "breakout_rvol_reference": self.breakout_rvol_reference,
+        }
+        if any(not isinstance(value, (int, float)) or value < 0 for value in opportunity_numbers.values()):
+            raise ValueError("opportunity thresholds must be non-negative numbers")
+        opportunity_ints = {"confirmation_max_sessions": self.confirmation_max_sessions,
+                            "entry_window_max_sessions": self.entry_window_max_sessions,
+                            "breakout_level_max_age": self.breakout_level_max_age}
+        if any(not isinstance(value, int) or value <= 0 for value in opportunity_ints.values()):
+            raise ValueError("opportunity session limits must be positive integers")
+        if self.rsi_hard_block < self.rsi_overheated:
+            raise ValueError("rsi_hard_block must be >= rsi_overheated")
         weights = [
             self.trend_scoring_market_structure_weight,
             self.trend_scoring_ma_structure_weight,

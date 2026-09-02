@@ -65,6 +65,6 @@ def ensure_daily_data(symbol, as_of_date=None, historical_root="data/raw/daily_f
     hist_path = Path(historical_root) / f"{symbol.upper()}_daily_qfq.csv"
     if not hist_path.exists(): raise FileNotFoundError("historical_base_missing")
     current = provider.build_daily_series(symbol)
-    target = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.utcnow().tz_localize(None).normalize()
+    target = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else pd.Timestamp.now("UTC").tz_localize(None).normalize()
     if current.date.max() < target: update_live_daily(symbol, historical_root, live_root, fetcher=fetcher)
     return provider.build_daily_series(symbol, as_of_date)

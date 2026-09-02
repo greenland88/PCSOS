@@ -14,6 +14,7 @@ from pcs.trend.moving_averages import MAStructureResult, analyze_ma_structure
 from pcs.trend.pullback import PullbackResult, analyze_pullback
 from pcs.trend.relative_strength import RelativeStrengthResult, analyze_relative_strength
 from pcs.trend.support import SupportResult, analyze_support
+from pcs.trend.market_structure_engine import MarketStructureEngineResult, build_market_structure_engine
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class TrendSnapshotResult:
     pullback: PullbackResult
     support: SupportResult
     warnings: tuple[str, ...] = ()
+    market_structure_engine: MarketStructureEngineResult | None = None
 
 
 def build_trend_snapshot(
@@ -78,13 +80,17 @@ def build_trend_snapshot(
         "support": support,
     }
     warnings = tuple(f"{name}_unavailable" for name, result in results.items() if not result.available)
+    market_engine = build_market_structure_engine(
+        type("SnapshotProxy", (), {"available": ma_structure.available and market_structure.available, "ma_structure": ma_structure,
+                                    "market_structure": market_structure, "pullback": pullback})(),
+        source, cutoff)
     return TrendSnapshotResult(
         available=not warnings,
         as_of_date=cutoff,
         symbol=symbol,
         benchmark=benchmark,
         warnings=warnings,
-        **results,
+        **results, market_structure_engine=market_engine,
     )
 
 

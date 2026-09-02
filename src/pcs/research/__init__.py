@@ -20,7 +20,7 @@ from .covered_call import (replay_covered_call, CoveredCallEpisode,
                            CoveredCallDailyEngine, build_sell_timing_features)
 from .covered_call import audit_contract_candidates
 from .covered_call import build_pit_iv_features
-from .covered_call_decision import (evaluate_covered_call, CallDecision,
+from .covered_call_decision import (evaluate_covered_call, evaluate_covered_call_research_only, CallDecision,
                                     CoveredCallDecision, diagnose_unified_rows,
                                     evaluate_active_call, PositionDecision,
                                     build_pit_entry_features, classify_iv)

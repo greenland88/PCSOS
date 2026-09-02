@@ -94,19 +94,26 @@ class ShortPutContractSelector:
         self.config = config
 
     def select(self, quotes: Iterable[ShortPutContract], *, available_cash: float,
-               max_assignment_shares: int, current_soxl_risk: float = 0,
-               max_soxl_risk: float = float("inf"), open_positions: int = 0,
-               max_positions: int = 1) -> PutSelection:
+               max_assignment_shares: int, current_risk: float = 0,
+               max_risk: float = float("inf"), open_positions: int = 0,
+               max_positions: int = 1, expected_symbol: str | None = None,
+               **compat: Any) -> PutSelection:
+        current_risk = float(compat.pop("current_soxl_risk", current_risk))
+        max_risk = float(compat.pop("max_soxl_risk", max_risk))
+        if compat:
+            raise TypeError(f"UNSUPPORTED_SELECTOR_ARGUMENTS:{sorted(compat)}")
         reasons: list[str] = []
         if available_cash < 0: reasons.append("AVAILABLE_CASH_INVALID")
         if max_assignment_shares < 100: reasons.append("MAX_ASSIGNMENT_SHARES_INSUFFICIENT")
-        if current_soxl_risk > max_soxl_risk: reasons.append("SOXL_RISK_LIMIT_EXCEEDED")
+        if current_risk > max_risk: reasons.append("RISK_LIMIT_EXCEEDED")
         if open_positions >= max_positions: reasons.append("MAX_SIMULTANEOUS_POSITIONS_REACHED")
         rows: list[tuple[ShortPutContract, dict[str, Any]]] = []
+        expected = str(expected_symbol).strip().upper() if expected_symbol else None
         for c in quotes:
             rejected: list[str] = []
             vals = (c.bid, c.ask, c.strike, c.underlying_price, c.atr)
-            if c.symbol.upper() != "SOXL": rejected.append("UNDERLYING_MISMATCH")
+            if expected is not None and c.symbol.upper() != expected:
+                rejected.append("UNDERLYING_MISMATCH")
             if c.pit_status != "PIT_SAFE": rejected.append("QUOTE_NOT_PIT_SAFE")
             if any(not isfinite(float(x)) for x in vals) or c.bid <= 0 or c.ask < c.bid: rejected.append("INVALID_BID_ASK")
             if not self.config.dte_min <= c.dte <= self.config.dte_max: rejected.append("DTE_OUT_OF_RANGE")
@@ -118,7 +125,7 @@ class ShortPutContractSelector:
             if c.volume is None or c.volume < self.config.min_volume: rejected.append("VOLUME_INSUFFICIENT")
             if c.spread_pct > self.config.max_spread_pct: rejected.append("SPREAD_TOO_WIDE")
             if c.collateral_required > available_cash: rejected.append("AVAILABLE_CASH_INSUFFICIENT")
-            if c.collateral_required > max_soxl_risk - current_soxl_risk: rejected.append("ASSIGNMENT_RISK_LIMIT_EXCEEDED")
+            if c.collateral_required > max_risk - current_risk: rejected.append("ASSIGNMENT_RISK_LIMIT_EXCEEDED")
             row = {"expiration": c.expiration, "strike": c.strike, "dte": c.dte, "delta": c.delta,
                    "bid": c.bid, "ask": c.ask, "spread_pct": c.spread_pct, "iv": c.iv,
                    "open_interest": c.open_interest, "volume": c.volume, "credit": c.credit,

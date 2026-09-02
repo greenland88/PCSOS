@@ -33,8 +33,8 @@ typed Python APIs, and persisted JSON/CSV/Parquet artifacts described below.
 # Evaluate mock candidates and positions through the deterministic rule engine.
 pcs-lite analyze-mock
 
-# Collect read-only option-chain snapshots from a local Hood JSON export.
-pcs-lite collect-options --hood-json .\hood_snapshot.json QQQ NVDA MSFT
+# Get one canonical, point-in-time PCS status. This is read-only and never places orders.
+pcs-lite pcs-status HOOD --as-of 2026-08-31 --json
 
 # Run synthetic portfolio stress scenarios.
 pcs-lite stress .\portfolio.json
@@ -45,6 +45,15 @@ pcs-lite simulate-daily --as-of 2026-08-18
 # Incrementally update canonical daily/options_v2 inputs from local inbound files.
 pcs-lite update-data MSFT
 ```
+
+`pcs-status` normalizes the symbol, runs ticker readiness first, reads only
+canonical PIT data through `PCSDataAccess`, builds exact listed put spreads,
+and sends each candidate to the production `DecisionEngine`. A missing
+readiness stage or source returns `BLOCKED`/`WAIT` with machine-readable
+`reason_codes`; it never falls back to broker data or mock data.
+
+Administrative recovery and diagnostics are intentionally separate from the
+normal user workflow and are available under `pcs-lite admin ...`.
 
 `simulate-daily` writes under `research_outputs/paper_trading/YYYY-MM-DD/`:
 

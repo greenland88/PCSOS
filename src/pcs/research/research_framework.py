@@ -163,7 +163,19 @@ def from_mapping(raw: Mapping[str, Any]) -> ResearchSpec:
     except (ValueError, TypeError) as exc:
         raise ResearchSpecError(f"UNKNOWN_RESEARCH_MODE:{raw.get('research_mode')}") from exc
     try:
-        strategy_type = StrategyType(str(raw["strategy_type"]).upper())
+        # Older complete covered-call specs predate the explicit field.  Keep
+        # the schema strict for ambiguous specs, but derive the type when the
+        # strategy declaration is unambiguous; this preserves one canonical
+        # parser without silently guessing for generic requests.
+        declared_type = raw.get("strategy_type")
+        if declared_type is None:
+            rules = _mapping(raw.get("rules", {}), "rules")
+            declared_type = rules.get("strategy")
+            signal_definition = _mapping(raw.get("signal_definition", {}), "signal_definition")
+            family = rules.get("strategy_family", signal_definition.get("strategy_family", ""))
+            if declared_type is None and str(family).upper() == "GENERAL_PCS":
+                declared_type = StrategyType.PUT_CREDIT_SPREAD.value
+        strategy_type = StrategyType(str(declared_type).upper())
     except (KeyError, ValueError, TypeError) as exc:
         raise ResearchSpecError(f"UNKNOWN_STRATEGY_TYPE:{raw.get('strategy_type')}") from exc
     signal = _mapping(raw["signal_definition"], "signal_definition")

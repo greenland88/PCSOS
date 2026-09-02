@@ -26,7 +26,7 @@ def run():
     frame["symbol"] = "NVDA"
     frame["ticker"] = "NVDA"
     for k, v in identity.items(): frame[k] = v
-    frame["created_at"] = pd.Timestamp.utcnow().isoformat()
+    frame["created_at"] = pd.Timestamp.now("UTC").isoformat()
     for c in frame.columns:
         if frame[c].map(lambda x: isinstance(x, (list, dict, tuple))).any():
             frame[c] = frame[c].map(lambda x: json.dumps(x, default=str) if isinstance(x, (list, dict, tuple)) else x)

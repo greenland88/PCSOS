@@ -1,4 +1,4 @@
-"""Production-only, read-only NVDA covered-call decision boundary.
+"""Production-only, read-only covered-call decision boundary.
 
 This module does not import or invoke research runners.  Broker/account and
 market adapters are injected so unavailable live state fails closed.
@@ -24,6 +24,7 @@ class DecisionPacket:
     selected_contract: Mapping[str, Any] | None = None
     gate_results: Mapping[str, Any] | None = None
     decision_status: str = "EVALUATED"
+    error_detail: str | None = None
 
     def to_dict(self):
         out = asdict(self); out["reason_codes"] = list(self.reason_codes)
@@ -40,56 +41,70 @@ def _value(row, key, default=None):
     return row.get(key, default) if isinstance(row, Mapping) else getattr(row, key, default)
 
 
-def decide_nvda_call_today(provider: Any, *, as_of: str | date,
-                           mode: RequestDataMode = RequestDataMode.PRODUCTION_LIVE) -> dict[str, Any]:
-    """Answer whether one NVDA call can be sold today from live snapshots."""
-    day = str(as_of)[:10]; profile = resolve_covered_call_profile("NVDA")
+def decide_call_today(symbol: str, provider: Any, *, as_of: str | date,
+                      mode: RequestDataMode = RequestDataMode.PRODUCTION_LIVE) -> dict[str, Any]:
+    """Answer whether one covered call can be sold today for ``symbol``."""
+    symbol = str(symbol).strip().upper()
+    day = str(as_of)[:10]; profile = resolve_covered_call_profile(symbol)
+    if not as_of or day in {"", "None", "NaT"}:
+        return DecisionPacket(symbol, "", "DATA_BLOCKED", ("DECISION_AS_OF_REQUIRED",),
+                              profile.to_dict(), 0, 0, 0,
+                              decision_status="NOT_EVALUATED").to_dict()
     try:
         mode = RequestDataMode(mode)
     except ValueError:
         mode = None
     if mode is not RequestDataMode.PRODUCTION_LIVE:
-        return DecisionPacket("NVDA", day, "WAIT", ("PRODUCTION_LIVE_MODE_REQUIRED",),
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("PRODUCTION_LIVE_MODE_REQUIRED",),
                               profile.to_dict(), 0, 0, 0, decision_status="NOT_EVALUATED").to_dict()
     provider_mode = getattr(provider, "data_mode", RequestDataMode.PRODUCTION_LIVE)
     if str(provider_mode) != RequestDataMode.PRODUCTION_LIVE.value:
-        return DecisionPacket("NVDA", day, "WAIT", ("PRODUCTION_LIVE_PROVIDER_REQUIRED",),
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("PRODUCTION_LIVE_PROVIDER_REQUIRED",),
                               profile.to_dict(), 0, 0, 0, decision_status="NOT_EVALUATED").to_dict()
     freshness = getattr(provider, "freshness", None)
-    if freshness is not None and not freshness(day):
-        return DecisionPacket("NVDA", day, "WAIT", ("LIVE_DATA_STALE",), profile.to_dict(), 0, 0, 0,
+    if not callable(freshness):
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("LIVE_FRESHNESS_UNAVAILABLE",),
+                              profile.to_dict(), 0, 0, 0, decision_status="NOT_EVALUATED").to_dict()
+    if not freshness(day):
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("LIVE_DATA_STALE",), profile.to_dict(), 0, 0, 0,
                               decision_status="NOT_EVALUATED").to_dict()
     try:
-        share_rows = provider.get_share_position("NVDA", day)
-        option_rows = provider.get_open_option_positions("NVDA", day)
-    except Exception:
-        return DecisionPacket("NVDA", day, "WAIT", ("LIVE_DATA_UNAVAILABLE",),
-                              resolve_covered_call_profile("NVDA").to_dict(), 0, 0, 0,
-                              decision_status="NOT_EVALUATED").to_dict()
+        share_rows = provider.get_share_position(symbol, day)
+        option_rows = provider.get_open_option_positions(symbol, day)
+    except Exception as exc:
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("LIVE_DATA_UNAVAILABLE",),
+                              resolve_covered_call_profile(symbol).to_dict(), 0, 0, 0,
+                              decision_status="NOT_EVALUATED",
+                              error_detail=f"{type(exc).__name__}: {exc}").to_dict()
     shares = sum(int(_value(p, "shares", 0) or 0) for p in share_rows)
     open_calls = sum(int(_value(p, "contracts", 0) or 0) for p in option_rows
                      if str(_value(p, "option_type", _value(p, "asset_type", ""))).upper() in {"CALL", "OPTION"}
                      and str(_value(p, "side", "SHORT")).upper() in {"SHORT", "SELL"})
     capacity = max(0, min(shares // 100 - open_calls, int(profile.max_calls)))
-    base = dict(symbol="NVDA", as_of=day, profile=profile.to_dict(), shares=shares,
+    base = dict(symbol=symbol, as_of=day, profile=profile.to_dict(), shares=shares,
                 open_calls=open_calls, available_capacity=capacity)
     def packet(action, codes, selected=None, gates=None):
         return DecisionPacket(action=action, reason_codes=tuple(codes), selected_contract=selected,
                               gate_results=gates, **base).to_dict()
     if profile.status is not ProfileStatus.VALIDATED:
-        return packet("WAIT", ["PROFILE_NOT_VALIDATED"])
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("PROFILE_NOT_VALIDATED",),
+                              profile.to_dict(), shares, open_calls, capacity,
+                              decision_status="NOT_EVALUATED").to_dict()
     if capacity <= 0:
         return packet("WAIT", ["COVERED_CALL_CAPACITY_UNAVAILABLE"])
     try:
-        quote = provider.get_underlying_quote("NVDA", day)
-        chain = provider.get_call_chain("NVDA", (14, 35), day)
-        event_risk = provider.get_event_risk("NVDA", day)
-    except Exception:
-        return packet("WAIT", ["LIVE_PROVIDER_UNAVAILABLE"])
+        quote = provider.get_underlying_quote(symbol, day)
+        chain = provider.get_call_chain(symbol, (14, 35), day)
+        event_risk = provider.get_event_risk(symbol, day)
+    except Exception as exc:
+        return DecisionPacket(symbol, day, "DATA_BLOCKED", ("LIVE_PROVIDER_UNAVAILABLE",),
+                              profile.to_dict(), shares, open_calls, capacity,
+                              decision_status="NOT_EVALUATED",
+                              error_detail=f"{type(exc).__name__}: {exc}").to_dict()
     spot = float(_value(quote, "price", _value(quote, "close", 0)) or 0)
-    if spot <= 0: return packet("WAIT", ["QUOTE_STALE"])
-    if not chain: return packet("WAIT", ["OPTION_CHAIN_UNAVAILABLE"])
-    if event_risk is None: return packet("WAIT", ["EVENT_DATA_UNAVAILABLE"])
+    if spot <= 0: return packet("DATA_BLOCKED", ["QUOTE_STALE"])
+    if not chain: return packet("DATA_BLOCKED", ["OPTION_CHAIN_UNAVAILABLE"])
+    if event_risk is None: return packet("DATA_BLOCKED", ["EVENT_DATA_UNAVAILABLE"])
     candidates = []
     for c in chain:
         exp = str(_value(c, "expiration", ""))[:10]
@@ -111,8 +126,15 @@ def decide_nvda_call_today(provider: Any, *, as_of: str | date,
     gates = {}
     for name in ("liquidity", "event", "ticker_risk", "assignment"):
         fn = getattr(provider, f"check_{name}", None)
-        if fn is None: return packet("WAIT", [f"{name.upper()}_GATE_UNAVAILABLE"], selected, gates)
-        gates[name] = fn("NVDA", chosen)
+        if fn is None:
+            return packet("DATA_BLOCKED", [f"{name.upper()}_GATE_UNAVAILABLE"], selected, gates)
+        gates[name] = fn(symbol, chosen)
         if not gates[name].get("pass", False): return packet("WAIT", [f"{name.upper()}_GATE_FAILED"], selected, gates)
     return packet("SELL_CALL", ["PROFILE_FROZEN", "CAPACITY_AVAILABLE", "COMMON_LIVE_SELECTION",
                                 "SHARES_PRESERVED", "ASSIGNMENT_DISALLOWED", "ALL_GATES_PASS"], selected, gates)
+
+
+def decide_nvda_call_today(provider: Any, *, as_of: str | date,
+                           mode: RequestDataMode = RequestDataMode.PRODUCTION_LIVE) -> dict[str, Any]:
+    """Backward-compatible NVDA wrapper; the implementation is generic."""
+    return decide_call_today("NVDA", provider, as_of=as_of, mode=mode)

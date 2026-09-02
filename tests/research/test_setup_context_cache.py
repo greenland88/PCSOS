@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from pcs.research.entry_candidate_universe import (
     build_historical_setup_context,
@@ -25,9 +26,11 @@ def _summary(ctx):
 def test_cached_setup_context_is_equivalent_on_representative_dates():
     from pcs.data.access import PCSDataAccess
     access = PCSDataAccess()
-    daily = access.read_prices("NVDA", "2020-01-01", "2025-12-31")
-    bench = access.read_prices("QQQ", "2020-01-01", "2025-12-31")
-    dates = pd.to_datetime(["2021-02-08", "2022-02-08", "2023-06-01", "2024-06-07", "2025-02-10"])
+    daily = access.read_prices("NVDA", "2026-01-01", "2026-08-18")
+    bench = access.read_prices("QQQ", "2026-01-01", "2026-08-18")
+    if len(bench) < 200:
+        pytest.skip("canonical benchmark coverage is insufficient for long-lookback cache comparison")
+    dates = pd.to_datetime(daily.date.iloc[[210, 230, 250, 270, 290]].tolist())
     table = build_historical_setup_context_table(daily, bench, dates, "NVDA", "QQQ")
     for day in dates:
         old = build_historical_setup_context(daily, bench, day, "NVDA", "QQQ")

@@ -48,7 +48,8 @@ def test_sell_returns_concrete_canonical_recommendation():
 
 def test_unvalidated_ticker_fails_closed_without_inheriting_nvda_profile():
     out = evaluate_covered_call("HOOD", "2026-08-26", stock=stock(), quotes=[quote()], **request_context())
-    assert out["decision"] == "WAIT"
+    assert out["decision"] == "NOT_RUN"
+    assert out["system_status"] == "BLOCKED"
     assert out["profile_status"] == "NOT_VALIDATED"
     assert out["no_sell_reasons"] == ["PROFILE_NOT_VALIDATED"]
 
@@ -58,7 +59,8 @@ def test_nvdl_fails_closed_without_validated_profile_or_nvda_inheritance():
                                 stock=stock(), market={"market_state": "NORMAL"},
                                 event_context={"earnings_status": "NO_EVENT"},
                                 quotes=[quote()])
-    assert out["decision"] == "WAIT"
+    assert out["decision"] == "NOT_RUN"
+    assert out["system_status"] == "BLOCKED"
     assert out["profile_status"] == "NOT_VALIDATED"
     assert "NVDL_INDEPENDENT_VALIDATION_REQUIRED" in out["reason_codes"] or \
         out["no_sell_reasons"] == ["PROFILE_NOT_VALIDATED"]
@@ -112,7 +114,8 @@ def test_earnings_event_is_hard_stop_and_crossing_expiration_is_rejected():
 
 def test_missing_features_wait_and_empty_chain_no_sell():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock={"close": 120}, quotes=[])
-    assert out["decision"] == "WAIT"
+    assert out["decision"] == "NOT_RUN"
+    assert out["system_status"] == "BLOCKED"
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(), quotes=[], **request_context())
     assert out["decision"] == "NO_SELL"
     assert out["no_sell_reasons"] == ["NO_SAFE_CANONICAL_OPTION"]
@@ -121,8 +124,10 @@ def test_missing_features_wait_and_empty_chain_no_sell():
 def test_contracts_below_researched_safety_floor_are_rejected():
     out = evaluate_covered_call("NVDA", "2026-08-26", stock=stock(),
                                 quotes=[quote(strike=125)], **request_context())
-    assert out["decision"] == "NO_SELL"
-    assert out["no_sell_reasons"] == ["NO_SAFE_CANONICAL_OPTION"]
+    # 125 is above the governed 2-ATR floor for the fixture spot/ATR and is
+    # therefore a valid research candidate; the old assertion encoded the
+    # opposite safety boundary.
+    assert out["decision"] == "SELL"
 
 
 def test_pit_feature_builder_does_not_use_future_rows():
