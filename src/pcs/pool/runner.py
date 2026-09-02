@@ -9,6 +9,7 @@ import uuid
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
+from pcs.data.strategy_readiness import resolve_active_verified_daily_handle
 from pcs.trend.snapshot import build_trend_snapshot
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
@@ -18,7 +19,8 @@ from .modes import completed_daily_cutoff
 
 
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
-                     options_reader, option_rules, daily_asof=None, static_metadata_reader=None):
+                     options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
+                     daily_handle_resolver=None):
     started = perf_counter()
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
@@ -27,7 +29,10 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             final_action=FinalAction.DATA_FAILED, reason_codes=entry.reason_codes,
             latency_ms=(perf_counter()-started)*1000)
     try:
-        daily = access.read_prices(symbol, end_date=daily_asof or asof)
+        resolver = daily_handle_resolver or resolve_active_verified_daily_handle
+        handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
+        daily = access.read_verified_dataset(handle, end_date=daily_asof or asof,
+                                             required_warmup_rows=200)
         if benchmark is None or daily.empty:
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
         # Each worker receives an independent immutable snapshot boundary;
@@ -44,7 +49,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             timing, action = TimingStatus.WAIT, FinalAction.WAIT
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
         feature_date = getattr(engine, "feature_max_date", None)
-        if timing == TimingStatus.TIMING_ENTRY_READY and options_reader is not None:
+        if timing in {TimingStatus.TIMING_ENTRY_READY, TimingStatus.WATCH} and options_reader is not None:
             from .options import shortlist_spreads
             chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
             close = float(daily.iloc[-1].close)
@@ -57,8 +62,14 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
             latency_ms=(perf_counter()-started)*1000)
     except Exception as exc:
+        failure_code = str(exc).strip()
+        reasons = (failure_code,) if failure_code in {
+            "DATASET_CHECKSUM_MISMATCH", "DATASET_FINGERPRINT_MISMATCH",
+            "INSUFFICIENT_FEATURE_WARMUP", "DUPLICATE_CANONICAL_PRICE_KEY",
+            "DATASET_PROVENANCE_INCOMPLETE", "GENERATION_NOT_VERIFIED",
+        } else ("DAILY_TIMING_FAILED", type(exc).__name__)
         return TickerScanResult(symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
-            final_action=FinalAction.DATA_FAILED, reason_codes=("DAILY_TIMING_FAILED", type(exc).__name__),
+            final_action=FinalAction.DATA_FAILED, reason_codes=reasons,
             latency_ms=(perf_counter()-started)*1000)
 
 
@@ -78,7 +89,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  data_access: PCSDataAccess | None = None,
                  benchmark_symbol: str = "QQQ", options_reader=None,
                  option_rules=None, event_status_reader=None,
-                 portfolio_status_reader=None, static_metadata_reader=None) -> PoolScanResult:
+                 portfolio_status_reader=None, static_metadata_reader=None,
+                 daily_handle_resolver=None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
     Options, events, and portfolio stages intentionally remain not evaluated
@@ -102,7 +114,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     access = data_access or PCSDataAccess()
     benchmark = None
     try:
-        benchmark = access.read_prices(benchmark_symbol, end_date=asof)
+        resolver = daily_handle_resolver or resolve_active_verified_daily_handle
+        benchmark_handle = resolver(benchmark_symbol, asof, 200, data_access=access)
+        benchmark = access.read_verified_dataset(benchmark_handle, end_date=asof,
+                                                 required_warmup_rows=200)
     except Exception:
         benchmark = None
     completed = completed_daily_cutoff(benchmark, asof, mode) if benchmark is not None else None
@@ -115,7 +130,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
             options_reader=options_reader, option_rules=option_rules,
             daily_asof=str(completed.date()) if completed is not None else None,
-            static_metadata_reader=static_metadata_reader), max_workers=max_workers)
+            static_metadata_reader=static_metadata_reader,
+            daily_handle_resolver=daily_handle_resolver), max_workers=max_workers)
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
@@ -145,7 +161,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         results = finalized
         summary["pcs_trade_ready_count"] = sum(row.final_action == FinalAction.PCS_TRADE_READY for row in results)
     counters = {
-        "ordinary_reader_calls": 1 + len(spec.symbols),
+        "ordinary_reader_calls": 0,
         "options_reader_calls": summary["options_check_count"],
         "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
     }
