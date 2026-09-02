@@ -39,6 +39,9 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     parquet_rows = [asdict(row) for row in result.ticker_results]
     files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
     files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
+    empty_schema = {"symbol": [], "run_id": [], "as_of": [], "status": [], "reason_codes": []}
+    for name in ("intraday_overlay.parquet", "options_shortlist.parquet", "final_decisions.parquet"):
+        files[name] = _write_parquet_atomic(root / name, empty_schema)
     summary = json.dumps(dict(result.summary), sort_keys=True, indent=2)
     files["aggregate_summary.json"] = _write_atomic(root / "aggregate_summary.json", summary)
     transitions = []
