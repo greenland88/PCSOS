@@ -307,3 +307,33 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
         except Exception as exc:
             stages["READ-BACK VERIFY"]="FAILED"; last=exc
     return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.SOURCE_UNAVAILABLE.value,"DATA_BLOCKED","SOURCE_UNAVAILABLE",None,stages,None,max_attempts,{"detail":str(last)})
+
+def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None) -> VerifiedDatasetHandle:
+    """Resolve one complete active daily generation without refresh or promotion."""
+    access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
+    manifest = access._read_manifest(access.manifest_path)
+    rows = manifest[(manifest.dataset.astype(str) == "daily") &
+                    (manifest.symbol.astype(str).str.upper() == s) &
+                    manifest.active_generation.astype(str).str.strip().ne("")]
+    candidates = rows[
+        pd.to_datetime(rows.max_date, errors="coerce").ge(day) &
+        pd.to_numeric(rows.row_count, errors="coerce").ge(int(required_warmup_sessions))
+    ].sort_values(["row_count", "max_date"], ascending=[False, False])
+    if len(candidates) == 0:
+        raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
+    row = candidates.iloc[0]
+    required = ["active_generation", "content_hash", "row_count", "min_date", "max_date", "schema_version", "parquet_path", "partition_ids"]
+    if any(pd.isna(row.get(k)) or not str(row.get(k)).strip() for k in required):
+        raise ValueError("DATASET_PROVENANCE_INCOMPLETE")
+    path = str(row.parquet_path); partition = str(row.partition_ids)
+    frame = access.read_pinned_generation("daily", s, partition, str(row.active_generation))
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    if len(frame) != int(row.row_count) or frame.date.max() < day or len(frame) < int(required_warmup_sessions):
+        raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
+    if frame[["symbol", "date"]].duplicated().any(): raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
+    if str(access.semantic_content_hash(frame)) != str(row.content_hash): raise ValueError("DATASET_CHECKSUM_MISMATCH")
+    return VerifiedDatasetHandle("daily", s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (path,),
+        {"min_date": str(row.min_date), "max_date": str(row.max_date)},
+        dataset_fingerprint=str(row.content_hash), schema_version=str(row.schema_version),
+        price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
+        min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)
