@@ -95,7 +95,7 @@ def test_manifest_scalar_partition_is_not_split_into_characters():
 def test_pinned_daily_read_has_no_legacy_fallback_and_checks_coverage(tmp_path):
     from pcs.data.strategy_readiness import VerifiedDatasetHandle
     a=access(tmp_path); r=a.promote_generation(daily_frame(),"daily","ZZZ","year=2024",source_version="fixture")
-    h=VerifiedDatasetHandle("daily","ZZZ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint="f",min_date="2024-01-02",max_date="2024-01-03",schema_version="1",price_basis="canonical_adjusted",corporate_action_version="canonical_identity" )
+    h=VerifiedDatasetHandle("daily","ZZZ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint=r.dataset_fingerprint,min_date="2024-01-02",max_date="2024-01-03",schema_version="2",price_basis="canonical_adjusted",corporate_action_version="canonical_identity" )
     out=a.read_prices("ZZZ","2024-01-02","2024-01-03",verified_handle=h)
     assert len(out)==2 and out.date.duplicated().sum()==0
     with pytest.raises(Exception, match="PINNED_GENERATION_COVERAGE_INSUFFICIENT"):
@@ -113,5 +113,33 @@ def test_daily_duplicate_canonical_key_fails_closed(tmp_path):
 def test_non_nvda_ticker_uses_same_pinned_path(tmp_path):
     from pcs.data.strategy_readiness import VerifiedDatasetHandle
     a=access(tmp_path); r=a.promote_generation(daily_frame("QQQ"),"daily","QQQ","year=2024",source_version="fixture")
-    h=VerifiedDatasetHandle("daily","QQQ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint="f",min_date="2024-01-02",max_date="2024-01-03",schema_version="1",price_basis="canonical_adjusted",corporate_action_version="canonical_identity")
+    h=VerifiedDatasetHandle("daily","QQQ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint=r.dataset_fingerprint,min_date="2024-01-02",max_date="2024-01-03",schema_version="2",price_basis="canonical_adjusted",corporate_action_version="canonical_identity")
     assert len(a.read_prices("QQQ","2024-01-02","2024-01-03",verified_handle=h))==2
+
+def test_promotion_fingerprint_is_independent_from_content_checksum(tmp_path):
+    a=access(tmp_path); r=a.promote_generation(daily_frame(),"daily","ZZZ","year=2024",source_version="fixture")
+    assert r.dataset_fingerprint and r.dataset_fingerprint != r.checksum
+
+def test_wrong_dataset_fingerprint_fails_closed(tmp_path):
+    from pcs.data.strategy_readiness import VerifiedDatasetHandle
+    a=access(tmp_path); r=a.promote_generation(daily_frame(),"daily","ZZZ","year=2024",source_version="fixture")
+    h=VerifiedDatasetHandle("daily","ZZZ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint="wrong",min_date="2024-01-02",max_date="2024-01-03",schema_version="2",price_basis="canonical_adjusted",corporate_action_version="canonical_identity")
+    with pytest.raises(Exception, match="DATASET_FINGERPRINT_MISMATCH"):
+        a.read_verified_dataset(h)
+
+def test_pit_warmup_uses_only_rows_at_or_before_as_of(tmp_path):
+    from pcs.data.strategy_readiness import VerifiedDatasetHandle
+    a=access(tmp_path); dates=pd.date_range("2024-01-02", periods=201, freq="B")
+    x=daily_frame(dates=tuple(str(d.date()) for d in dates)); r=a.promote_generation(x,"daily","ZZZ","year=2024",source_version="fixture")
+    h=VerifiedDatasetHandle("daily","ZZZ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":str(dates.min().date())},dataset_fingerprint=r.dataset_fingerprint,min_date=str(dates.min().date()),max_date=str(dates.max().date()),schema_version="2",price_basis="canonical_adjusted",corporate_action_version="canonical_identity")
+    with pytest.raises(Exception, match="INSUFFICIENT_FEATURE_WARMUP"):
+        a.read_verified_dataset(h, end_date=dates[198], required_warmup_rows=200)
+    assert len(a.read_verified_dataset(h, end_date=dates[199], required_warmup_rows=200)) == 200
+
+def test_overlapping_active_generations_fail_closed(tmp_path):
+    a=access(tmp_path); x=daily_frame(); p1=tmp_path/"g1.parquet"; p2=tmp_path/"g2.parquet"; x.to_parquet(p1,index=False); x.to_parquet(p2,index=False)
+    for p, gid, year in ((p1,"generation-one",2024),(p2,"generation-two",2025)):
+        digest=a.semantic_content_hash(x)
+        a.update_manifest("daily","ZZZ",x,p,"fixture",f"year={year}",replace_existing=True,active_generation=gid,content_hash=digest)
+    with pytest.raises(Exception, match="ACTIVE_GENERATION_OVERLAP_CONFLICT"):
+        a.read_prices("ZZZ")

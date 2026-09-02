@@ -37,8 +37,7 @@ def ready_pcs_data_bundle(tmp_path, monkeypatch):
         access.promote_generation(_daily(benchmark), "daily", benchmark, "year=2026", source_version="fixture-benchmark")
     receipts = [daily.to_dict(), options.to_dict()]
     for receipt, frame in zip(receipts, (_daily(), _options())):
-        receipt.update({"dataset_fingerprint": access.semantic_content_hash(frame),
-                        "schema_version": "1", "price_basis": "canonical_adjusted",
+        receipt.update({"schema_version": "2", "price_basis": "canonical_adjusted",
                         "corporate_action_version": "canonical_identity",
                         "min_date": "2026-09-01", "max_date": "2026-09-01"})
     calls = {"provider": 0, "pinned": [], "legacy": 0, "selector": 0}

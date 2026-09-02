@@ -32,6 +32,8 @@ class PromotionReceipt:
     source_lineage: tuple[dict[str, Any], ...] = ()
     created_at: str = ""
     partition_ids: tuple[str, ...] = ()
+    dataset_fingerprint: str = ""
+    snapshot_descriptor: dict[str, Any] | None = None
     @property
     def promoted_generation_id(self) -> str:
         return self.generation_id
@@ -57,6 +59,8 @@ class PromotionReceipt:
             "created_at": self.created_at,
             "promotion_timestamp": self.promotion_timestamp,
             "path": self.path,
+            "dataset_fingerprint": self.dataset_fingerprint,
+            "snapshot_descriptor": self.snapshot_descriptor,
         }
     def __fspath__(self): return self.path
     def __str__(self): return self.path
@@ -409,23 +413,26 @@ class PCSDataAccess:
         if resolved_dataset == "daily" and not rows.empty and "active_generation" in rows:
             # A promoted partition supersedes its legacy physical files.
             # Leaving both in the glob creates false duplicate-date failures.
-            active_rows = rows[rows.active_generation.astype(str).str.len().gt(0)]
+            active_ids = rows.active_generation.astype(str).str.strip()
+            active_rows = rows[rows.active_generation.notna() & active_ids.ne("") & active_ids.str.lower().ne("nan")]
             if not active_rows.empty:
-                # A repaired full-window generation can occupy a partition
-                # label such as year=2026 while covering earlier years.  It
-                # supersedes any smaller active rows whose date ranges
-                # overlap; disjoint active partitions remain admissible.
                 active_rows = active_rows.copy()
                 active_rows["_lo"] = pd.to_datetime(active_rows.min_date, errors="coerce")
                 active_rows["_hi"] = pd.to_datetime(active_rows.max_date, errors="coerce")
-                active_rows = active_rows.sort_values(["row_count", "_lo", "_hi"], ascending=[False, True, False])
-                kept = []
-                for idx, candidate in active_rows.iterrows():
-                    overlaps = any(candidate["_lo"] <= prior["_hi"] and prior["_lo"] <= candidate["_hi"] for prior in kept)
-                    if not overlaps:
-                        kept.append(candidate)
-                selected = pd.DataFrame(kept).drop(columns=["_lo", "_hi"], errors="ignore")
-                rows = pd.concat([rows[~rows.index.isin(active_rows.index)], selected], ignore_index=True)
+                overlap_pairs = []
+                for left_idx, left in active_rows.iterrows():
+                    for right_idx, right in active_rows.iterrows():
+                        if left_idx >= right_idx or pd.isna(left["_lo"]) or pd.isna(right["_lo"]):
+                            continue
+                        if left["_lo"] <= right["_hi"] and right["_lo"] <= left["_hi"]:
+                            left_gid, right_gid = str(left.active_generation), str(right.active_generation)
+                            declared = (str(left.get("previous_generation", "")) == right_gid or
+                                        str(right.get("previous_generation", "")) == left_gid)
+                            if not declared:
+                                overlap_pairs.append((left_gid, right_gid))
+                if overlap_pairs:
+                    raise DataQualityError(f"ACTIVE_GENERATION_OVERLAP_CONFLICT:{symbol}:{overlap_pairs[:3]}")
+                rows = pd.concat([rows[~rows.index.isin(active_rows.index)], active_rows.drop(columns=["_lo", "_hi"])], ignore_index=True)
         if resolved_dataset.startswith("options_v2"):
             integrity = self.audit_manifest_physical_integrity(
                 symbol, dataset=resolved_dataset, start_date=start_date, end_date=end_date
@@ -928,7 +935,7 @@ class PCSDataAccess:
         """
         return self.read_prices(symbol, start_date, end_date)
 
-    def read_verified_dataset(self, handle, start_date=None, end_date=None) -> pd.DataFrame:
+    def read_verified_dataset(self, handle, start_date=None, end_date=None, *, required_warmup_rows: int = 0) -> pd.DataFrame:
         """Read and validate every partition represented by a verified handle."""
         from .correctness_gate import validate_price_input, DataCorrectnessError
         if getattr(handle, "verification_status", None) != "VERIFIED":
@@ -945,6 +952,25 @@ class PCSDataAccess:
         actual_checksum = self.semantic_content_hash(frame)
         if str(actual_checksum) != str(handle.checksum):
             raise DataCorrectnessError("DATASET_CHECKSUM_MISMATCH")
+        if str(handle.dataset).lower() == "daily":
+            if frame[["symbol", "date"]].duplicated().any():
+                raise DataCorrectnessError("DUPLICATE_CANONICAL_PRICE_KEY")
+        elif {"symbol", "trade_date", "expiration_date", "call_put", "strike"}.issubset(frame.columns):
+            if frame[["symbol", "trade_date", "expiration_date", "call_put", "strike"]].duplicated().any():
+                raise DataCorrectnessError("DUPLICATE_CANONICAL_OPTION_KEY")
+        from .canonical_generations import canonical_snapshot_descriptor
+        if len(handle.partitions) != 1 or len(handle.canonical_paths) != 1:
+            raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
+        path = Path(str(handle.canonical_paths[0]))
+        if not path.exists():
+            raise DataCorrectnessError("UNPINNED_INPUT")
+        descriptor = canonical_snapshot_descriptor(
+            dataset=str(handle.dataset), symbol=str(handle.ticker), frame=frame,
+            file_hash=hashlib.sha256(path.read_bytes()).hexdigest(), byte_size=path.stat().st_size,
+            schema_version=str(handle.schema_version), price_basis=str(handle.price_basis),
+            corporate_action_version=str(handle.corporate_action_version), partition_key=str(handle.partitions[0]))
+        if str(descriptor["dataset_fingerprint"]) != str(handle.dataset_fingerprint):
+            raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
         date_column = "date" if str(handle.dataset).lower() == "daily" else "trade_date"
         if start_date is not None:
             frame = frame[pd.to_datetime(frame[date_column], errors="coerce") >= pd.Timestamp(start_date)]
@@ -955,7 +981,8 @@ class PCSDataAccess:
             raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT")
         if str(handle.dataset).lower() == "daily":
             try:
-                validate_price_input(frame, handle, handle.ticker, start_date, end_date)
+                validate_price_input(frame, handle, handle.ticker, start_date, end_date,
+                                     as_of=end_date, required_warmup_rows=required_warmup_rows)
             except DataCorrectnessError as exc:
                 if exc.reason_code == "INSUFFICIENT_DATE_COVERAGE":
                     raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT") from exc
@@ -1043,13 +1070,16 @@ class PCSDataAccess:
     def write_partition(self, frame, dataset, symbol, partition, *, source_version, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False):
         return self.write(frame, dataset, symbol, partition, source_version=source_version, allow_overwrite=allow_overwrite, update_manifest=update_manifest, filename=filename, replace_manifest=replace_manifest)
 
-    def promote_generation(self, frame, dataset, symbol, partition, *, source_version):
+    def promote_generation(self, frame, dataset, symbol, partition, *, source_version,
+                           supersedes_generation_ids=()):
         """Publish an immutable generation for a mutable logical partition.
 
         Existing active data is merged by the canonical option identity. The
         old parquet object is never changed; the manifest pointer is switched
         only after the new object and its hash have been verified.
         """
+        if supersedes_generation_ids:
+            raise DataAccessError("SUPERSESSION_REQUIRES_ADMIN_PLAN")
         symbol = self._symbol(symbol)
         current = self._read_manifest(self.manifest_path)
         partition_parts = dict(x.split("=", 1) for x in str(partition).split("/"))
@@ -1087,6 +1117,13 @@ class PCSDataAccess:
             if self.semantic_content_hash(pd.read_parquet(tmp)) != digest:
                 tmp.unlink(missing_ok=True); raise DataQualityError("GENERATION_HASH_VERIFICATION_FAILED")
             os.replace(tmp, path)
+        from .canonical_generations import canonical_snapshot_descriptor
+        descriptor = canonical_snapshot_descriptor(
+            dataset=str(dataset), symbol=symbol, frame=merged,
+            file_hash=hashlib.sha256(path.read_bytes()).hexdigest(), byte_size=path.stat().st_size,
+            schema_version="2", price_basis="canonical_adjusted",
+            corporate_action_version="canonical_identity", partition_key=str(partition))
+        dataset_fingerprint = str(descriptor["dataset_fingerprint"])
         manifest_before = self.manifest_path.read_bytes() if self.manifest_path.exists() else None
         try:
             self.update_manifest(dataset, symbol, merged, path, source_version, partition, replace_existing=True,
@@ -1094,8 +1131,12 @@ class PCSDataAccess:
                              manifest_active_generation_id=generation, read_back_generation_id=generation,
                              active_generation=generation, previous_generation=previous_generation,
                              content_hash=digest, previous_path=previous_path,
+                             dataset_fingerprint=dataset_fingerprint,
+                             schema_fingerprint=str(descriptor["schema_fingerprint"]),
+                             price_basis="canonical_adjusted",
+                             corporate_action_version="canonical_identity",
                              partition_ids=str(partition), source_lineage=json.dumps({"source":source_version,"partition":str(partition)}, sort_keys=True),
-                             created_at=created_at)
+                             created_at=created_at, lifecycle_status="ACTIVE")
             read_back = pd.read_parquet(path)
             read_back_checksum = self.semantic_content_hash(read_back)
             if read_back_checksum != digest or len(read_back) != len(merged):
@@ -1114,7 +1155,8 @@ class PCSDataAccess:
             read_back_row_count=len(read_back), staging_generation_id=generation,
             manifest_active_generation_id=generation,
             source_lineage=({"source": source_version, "partition": str(partition)},),
-            created_at=created_at, partition_ids=(str(partition),))
+            created_at=created_at, partition_ids=(str(partition),),
+            dataset_fingerprint=dataset_fingerprint, snapshot_descriptor=descriptor)
 
     def read_pinned_generation(self, dataset: str, symbol: str, partition: str,
                                generation_id: str) -> pd.DataFrame:
@@ -1155,7 +1197,7 @@ class PCSDataAccess:
 
     def _update_manifest_locked(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, generation=None):
         generation = generation or {}
-        fields = ["dataset","symbol","source_file","source_size","source_modified_time","row_count","min_date","max_date","year","quarter","parquet_path","schema_version","import_timestamp","status","active_generation","previous_generation","staging_generation_id","promoted_generation_id","manifest_active_generation_id","read_back_generation_id","content_hash","file_hash","created_at","promoted_at","source","source_lineage","partition_ids","provenance_id","previous_path"]
+        fields = ["dataset","symbol","source_file","source_size","source_modified_time","row_count","min_date","max_date","year","quarter","parquet_path","schema_version","schema_fingerprint","dataset_fingerprint","price_basis","corporate_action_version","import_timestamp","status","lifecycle_status","superseded_by","active_generation","previous_generation","staging_generation_id","promoted_generation_id","manifest_active_generation_id","read_back_generation_id","content_hash","file_hash","created_at","promoted_at","source","source_lineage","partition_ids","provenance_id","previous_path"]
         now = datetime.now(timezone.utc).isoformat()
         file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).exists() else None
         row = {k: None for k in fields}; row.update(dataset=dataset, symbol=self._symbol(symbol), source_file=source_version, row_count=len(frame), parquet_path=str(path), schema_version="2" if generation else "1", import_timestamp=now, created_at=now, promoted_at=now, source=source_version, status="SUCCESS", file_hash=file_hash)

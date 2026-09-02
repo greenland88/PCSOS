@@ -167,13 +167,13 @@ def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_contex
     if handle is None:
         return _blocked(symbol, as_of, "DATA_BLOCKED", {"data_reason":"VERIFIED_DATA_HANDLE_MISSING"}, run_id=run_id, request_id=request_id)
     try:
-        daily = access.read_verified_dataset(handle.underlying_handle, end_date=as_of)
+        daily = access.read_verified_dataset(handle.underlying_handle, end_date=as_of, required_warmup_rows=200)
         quotes = access.read_verified_dataset(handle.options_handle, end_date=as_of)
         benchmark_handles = handle.benchmark_handles
         if set(benchmark_handles) != {"QQQ", "SPY", "SOXX"}:
             return _blocked(symbol, as_of, "BENCHMARK_GENERATION_MISSING", run_id=run_id, request_id=request_id)
         benchmark_frames = {
-            name: access.read_verified_dataset(benchmark_handles[name], end_date=as_of)
+            name: access.read_verified_dataset(benchmark_handles[name], end_date=as_of, required_warmup_rows=200)
             for name in ("QQQ", "SPY", "SOXX")
         }
     except Exception as exc:

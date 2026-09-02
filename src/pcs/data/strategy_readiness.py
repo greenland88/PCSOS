@@ -165,7 +165,9 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                 manifest = access._read_manifest(access.manifest_path)
                 active = manifest[(manifest.dataset.astype(str).isin({"daily", "options", "options_v2"})) &
                                   manifest.symbol.astype(str).str.upper().eq(s) &
-                                  manifest.active_generation.astype(str).str.strip().ne("")]
+                                  manifest.active_generation.notna() &
+                                  manifest.active_generation.astype(str).str.strip().ne("") &
+                                  manifest.active_generation.astype(str).str.lower().ne("nan")]
                 if active.empty:
                     return ReadinessResult(s, strategy_type, str(day.date()),
                         DataStatus.CORRUPTED.value, "DATA_BLOCKED", "DATASET_GENERATION_ID_MISSING",
@@ -179,7 +181,7 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                         "checksum": str(row.content_hash), "read_back_checksum": str(row.content_hash),
                         "row_count": int(row.row_count), "read_back_row_count": int(row.row_count),
                         "partition_ids": [partition], "path": str(row.parquet_path),
-                        "dataset_fingerprint": str(row.content_hash), "schema_version": str(row.schema_version),
+                        "dataset_fingerprint": str(row.get("dataset_fingerprint", "")), "schema_version": str(row.schema_version),
                         "min_date": str(row.min_date), "max_date": str(row.max_date),
                         "price_basis": strategy_requirements.price_basis,
                         "corporate_action_version": strategy_requirements.corporate_action_basis,
@@ -357,11 +359,22 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     manifest = access._read_manifest(access.manifest_path)
     rows = manifest[(manifest.dataset.astype(str) == "daily") &
                     (manifest.symbol.astype(str).str.upper() == s) &
-                    manifest.active_generation.astype(str).str.strip().ne("")]
-    candidates = rows[
-        pd.to_datetime(rows.max_date, errors="coerce").ge(day) &
-        pd.to_numeric(rows.row_count, errors="coerce").ge(int(required_warmup_sessions))
-    ].sort_values(["row_count", "max_date"], ascending=[False, False])
+                    manifest.active_generation.notna() &
+                    manifest.active_generation.astype(str).str.strip().ne("") &
+                    manifest.active_generation.astype(str).str.lower().ne("nan")]
+    active = rows.copy()
+    active["_lo"] = pd.to_datetime(active.min_date, errors="coerce")
+    active["_hi"] = pd.to_datetime(active.max_date, errors="coerce")
+    for left_idx, left in active.iterrows():
+        for right_idx, right in active.iterrows():
+            if left_idx >= right_idx or pd.isna(left["_lo"]) or pd.isna(right["_lo"]):
+                continue
+            if left["_lo"] <= right["_hi"] and right["_lo"] <= left["_hi"]:
+                left_gid, right_gid = str(left.active_generation), str(right.active_generation)
+                if str(left.get("previous_generation", "")) != right_gid and str(right.get("previous_generation", "")) != left_gid:
+                    raise ValueError("ACTIVE_GENERATION_OVERLAP_CONFLICT")
+    candidates = rows[pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values(
+        ["row_count", "max_date"], ascending=[False, False])
     if len(candidates) == 0:
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
     row = candidates.iloc[0]
@@ -371,13 +384,15 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     path = str(row.parquet_path); partition = str(row.partition_ids)
     frame = access.read_pinned_generation("daily", s, partition, str(row.active_generation))
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
-    if len(frame) != int(row.row_count) or frame.date.max() < day or len(frame) < int(required_warmup_sessions):
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    pit_rows = int(frame.loc[frame["date"] <= day, "date"].nunique())
+    if len(frame) != int(row.row_count) or frame.date.max() < day or pit_rows < int(required_warmup_sessions):
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
     if frame[["symbol", "date"]].duplicated().any(): raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
     if str(access.semantic_content_hash(frame)) != str(row.content_hash): raise ValueError("DATASET_CHECKSUM_MISMATCH")
     return VerifiedDatasetHandle("daily", s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (path,),
         {"min_date": str(row.min_date), "max_date": str(row.max_date)},
-        dataset_fingerprint=str(row.content_hash), schema_version=str(row.schema_version),
+        dataset_fingerprint=str(row.get("dataset_fingerprint", "")), schema_version=str(row.schema_version),
         price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
         min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)
 
@@ -387,7 +402,9 @@ def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_acce
     manifest = access._read_manifest(access.manifest_path)
     rows = manifest[(manifest.dataset.astype(str).isin({"options", "options_v2", "options_v3"})) &
                     (manifest.symbol.astype(str).str.upper() == s) &
-                    manifest.active_generation.astype(str).str.strip().ne("")]
+                    manifest.active_generation.notna() &
+                    manifest.active_generation.astype(str).str.strip().ne("") &
+                    manifest.active_generation.astype(str).str.lower().ne("nan")]
     rows = rows[pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values("max_date", ascending=False)
     if rows.empty: raise ValueError("OPTIONS_GENERATION_MISSING")
     row = rows.iloc[0]
@@ -407,6 +424,6 @@ def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_acce
         raise ValueError("DUPLICATE_CANONICAL_OPTION_KEY")
     return VerifiedDatasetHandle(dataset, s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (str(row.parquet_path),),
         {"min_date": str(row.min_date), "max_date": str(row.max_date)},
-        ({"source": str(row.source), "partition": partition},), dataset_fingerprint=str(row.content_hash),
+        ({"source": str(row.source), "partition": partition},), dataset_fingerprint=str(row.get("dataset_fingerprint", "")),
         schema_version=str(row.schema_version), price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
         min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)
