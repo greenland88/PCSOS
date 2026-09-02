@@ -14,6 +14,7 @@ from .final_gates import (PoolEventResult, evaluate_pool_event, PoolPortfolioRes
                           evaluate_pool_portfolio, compose_final_action)
 from .options import SpreadCandidate, shortlist_spreads
 from .validation import validate_pool_result
+from .concurrency import WorkerOutcome, run_symbol_workers
 
 __all__ = [
     "EligibilityStatus", "FinalAction", "PoolRunSnapshot", "PoolScanResult",
@@ -23,4 +24,5 @@ __all__ = [
     "PoolPortfolioResult", "evaluate_pool_portfolio", "compose_final_action",
     "SpreadCandidate", "shortlist_spreads",
     "validate_pool_result",
+    "WorkerOutcome", "run_symbol_workers",
 ]
