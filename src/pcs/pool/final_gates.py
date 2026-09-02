@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from pcs.entry.gates import EventGate, GateStatus
+from .models import FinalAction, TimingStatus, OptionsStatus
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,46 @@ class PoolEventResult:
     force_exit_date: str | None = None
     exit_buffer_sessions: int | None = None
     event_date: str | None = None
+
+
+@dataclass(frozen=True)
+class PoolPortfolioResult:
+    status: str
+    reason_codes: tuple[str, ...] = ()
+
+
+def evaluate_pool_portfolio(snapshot, *, rules) -> PoolPortfolioResult:
+    """Apply supplied portfolio limits to the canonical risk snapshot."""
+    if snapshot is None:
+        return PoolPortfolioResult("PORTFOLIO_DATA_STALE", ("PORTFOLIO_SNAPSHOT_MISSING",))
+    failures = []
+    planned = float(getattr(snapshot, "planned_loss", 0.0))
+    max_total = rules.get("max_total_planned_loss", rules.get("max_planned_risk"))
+    if max_total is not None and planned > float(max_total):
+        failures.append("PORTFOLIO_PLANNED_LOSS_LIMIT")
+    max_ticker = rules.get("max_ticker_planned_loss")
+    if max_ticker is not None and any(float(v) > float(max_ticker) for v in getattr(snapshot, "ticker_planned_loss", {}).values()):
+        failures.append("PORTFOLIO_TICKER_CONCENTRATION_LIMIT")
+    return PoolPortfolioResult("PORTFOLIO_BLOCKED" if failures else "PORTFOLIO_PASS", tuple(failures))
+
+
+def compose_final_action(*, timing_status, options_status, event_status, portfolio_status,
+                         base_reasons=()):
+    """Compose one terminal action without allowing timing alone to open."""
+    reasons = list(base_reasons)
+    if timing_status != TimingStatus.TIMING_ENTRY_READY:
+        action = FinalAction.WATCH if timing_status == TimingStatus.WATCH else FinalAction.WAIT
+    elif options_status == OptionsStatus.DATA_BLOCKED:
+        action, reasons = FinalAction.DATA_FAILED, reasons + ["OPTIONS_DATA_BLOCKED"]
+    elif options_status != OptionsStatus.PASS:
+        action, reasons = FinalAction.WAIT, reasons + ["OPTIONS_NOT_PASS"]
+    elif event_status not in {"EVENT_PASS", "EVENT_MANAGED_CONDITIONAL"}:
+        action, reasons = FinalAction.TEMP_BLOCKED, reasons + ["EVENT_GATE_NOT_PASS"]
+    elif portfolio_status != "PORTFOLIO_PASS":
+        action, reasons = FinalAction.TEMP_BLOCKED, reasons + ["PORTFOLIO_GATE_NOT_PASS"]
+    else:
+        action = FinalAction.PCS_TRADE_READY
+    return action, tuple(reasons)
 
 
 def evaluate_pool_event(candidate, calendar: pd.DataFrame | None, *, policy: str = "HOLD_TO_EXPIRY",
