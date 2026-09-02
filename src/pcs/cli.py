@@ -203,6 +203,20 @@ def onboarding_status(args):
     print(json.dumps(OnboardingEngine(args.symbol, args.state_root).progress(), sort_keys=True, default=str))
 
 
+def pool_scan(args):
+    from pcs.pool.runner import run_pcs_pool
+    from pcs.data.access import PCSDataAccess
+    result = run_pcs_pool(
+        symbols=args.symbols,
+        universe_id=args.universe_id,
+        as_of=args.as_of,
+        mode=args.mode,
+        max_workers=args.max_workers,
+        data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
+    )
+    print(result.to_json())
+
+
 def market_data_status(args):
     from pcs.data.control_plane import ImportCoordinator, MarketDataControlPlane, default_import_handlers, get_market_data_status
     requirements = {"symbol": args.symbol, "required_start": args.start, "required_end": args.end,
@@ -262,6 +276,16 @@ def main():
     status_cmd.add_argument("--portfolio-json")
     status_cmd.add_argument("--json", action="store_true")
     status_cmd.set_defaults(func=pcs_status)
+
+    pool = sub.add_parser("pool-scan", help="run the read-only ticker-neutral PCS universe funnel")
+    pool.add_argument("--symbol", dest="symbols", action="append", help="explicit symbol; repeat for multiple symbols")
+    pool.add_argument("--universe-id")
+    pool.add_argument("--as-of", default="latest")
+    pool.add_argument("--mode", choices=["PREMARKET", "INTRADAY", "EOD"], required=True)
+    pool.add_argument("--max-workers", type=int, default=8)
+    pool.add_argument("--parquet-root", default="data/parquet")
+    pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    pool.set_defaults(func=pool_scan)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")
     admin_sub = admin.add_subparsers(required=True)
