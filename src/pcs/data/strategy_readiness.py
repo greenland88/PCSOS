@@ -392,6 +392,8 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     generations = tuple(str(row.active_generation) for _, row in candidates.iterrows())
     paths = tuple(str(row.parquet_path) for _, row in candidates.iterrows())
     frame = pd.concat([access.read_pinned_generation("daily", s, p, g) for p, g in zip(partitions, generations)], ignore_index=True)
+    if "symbol" not in frame.columns:
+        frame.insert(0, "symbol", s)
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     pit_rows = int(frame.loc[frame["date"] <= day, "date"].nunique())

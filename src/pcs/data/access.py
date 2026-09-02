@@ -951,6 +951,8 @@ class PCSDataAccess:
         if not frames:
             raise DataCorrectnessError("UNPINNED_INPUT")
         frame = pd.concat(frames, ignore_index=True)
+        if str(handle.dataset).lower() == "daily" and "symbol" not in frame.columns:
+            frame.insert(0, "symbol", str(handle.ticker).upper())
         if len(frame) != int(handle.row_count):
             raise DataCorrectnessError("DATASET_ROW_COUNT_MISMATCH")
         actual_checksum = self.semantic_content_hash(frame)
