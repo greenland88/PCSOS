@@ -411,7 +411,21 @@ class PCSDataAccess:
             # Leaving both in the glob creates false duplicate-date failures.
             active_rows = rows[rows.active_generation.astype(str).str.len().gt(0)]
             if not active_rows.empty:
-                rows = pd.concat([rows[~rows.year.isin(active_rows.year)], active_rows], ignore_index=True)
+                # A repaired full-window generation can occupy a partition
+                # label such as year=2026 while covering earlier years.  It
+                # supersedes any smaller active rows whose date ranges
+                # overlap; disjoint active partitions remain admissible.
+                active_rows = active_rows.copy()
+                active_rows["_lo"] = pd.to_datetime(active_rows.min_date, errors="coerce")
+                active_rows["_hi"] = pd.to_datetime(active_rows.max_date, errors="coerce")
+                active_rows = active_rows.sort_values(["row_count", "_lo", "_hi"], ascending=[False, True, False])
+                kept = []
+                for idx, candidate in active_rows.iterrows():
+                    overlaps = any(candidate["_lo"] <= prior["_hi"] and prior["_lo"] <= candidate["_hi"] for prior in kept)
+                    if not overlaps:
+                        kept.append(candidate)
+                selected = pd.DataFrame(kept).drop(columns=["_lo", "_hi"], errors="ignore")
+                rows = pd.concat([rows[~rows.index.isin(active_rows.index)], selected], ignore_index=True)
         if resolved_dataset.startswith("options_v2"):
             integrity = self.audit_manifest_physical_integrity(
                 symbol, dataset=resolved_dataset, start_date=start_date, end_date=end_date
@@ -931,6 +945,14 @@ class PCSDataAccess:
         actual_checksum = self.semantic_content_hash(frame)
         if str(actual_checksum) != str(handle.checksum):
             raise DataCorrectnessError("DATASET_CHECKSUM_MISMATCH")
+        date_column = "date" if str(handle.dataset).lower() == "daily" else "trade_date"
+        if start_date is not None:
+            frame = frame[pd.to_datetime(frame[date_column], errors="coerce") >= pd.Timestamp(start_date)]
+        if end_date is not None:
+            frame = frame[pd.to_datetime(frame[date_column], errors="coerce") <= pd.Timestamp(end_date)]
+        frame = frame.reset_index(drop=True)
+        if frame.empty:
+            raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT")
         if str(handle.dataset).lower() == "daily":
             try:
                 validate_price_input(frame, handle, handle.ticker, start_date, end_date)
@@ -945,12 +967,10 @@ class PCSDataAccess:
             if frame[keys].duplicated().any():
                 raise DataQualityError("DUPLICATE_CANONICAL_OPTION_KEY")
             dates = pd.to_datetime(frame["trade_date"], errors="coerce")
-            if dates.isna().any() or dates.max() > pd.Timestamp(end_date) if end_date is not None else dates.isna().any():
+            if dates.isna().any():
                 raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT")
         sort_columns = ["symbol", "date"] if str(handle.dataset).lower() == "daily" else ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
         frame = frame.sort_values(sort_columns).reset_index(drop=True)
-        if start_date is not None: frame = frame[frame.date >= pd.Timestamp(start_date)]
-        if end_date is not None: frame = frame[frame.date <= pd.Timestamp(end_date)]
         return frame.reset_index(drop=True)
 
     def write(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False) -> Path:

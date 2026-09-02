@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from enum import StrEnum
 from typing import Any, Callable
+from types import SimpleNamespace
 import pandas as pd
 from .access import PCSDataAccess
 from .control_plane import ensure_market_data
@@ -144,7 +145,8 @@ def validate_generation_evidence(*, promoted_generation_id: str, manifest_active
 def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str,
                           strategy_requirements: StrategyDataRequirements, *, data_access=None,
                           strike_range_resolver: Callable[[pd.DataFrame],tuple[float,float]]|None=None,
-                          max_attempts: int = 2) -> ReadinessResult:
+                          max_attempts: int = 2, require_benchmarks: bool = False,
+                          refresh_policy: str = "INCREMENTAL_IF_NEEDED") -> ReadinessResult:
     s=str(ticker).strip().upper(); access=data_access or PCSDataAccess(); day=pd.Timestamp(as_of).normalize()
     stages={"REQUEST":"COMPLETE","REQUIREMENTS":"COMPLETE","DISCOVER":"RUNNING"}
     req={"required_start":str((day-pd.Timedelta(days=max(30,strategy_requirements.underlying_lookback))).date()),"required_end":str(day.date()),"decision_as_of":str(day.date()),"datasets":("daily","options"),"option_type":strategy_requirements.option_right.lower(),"min_dte":strategy_requirements.target_dte_min,"max_dte":strategy_requirements.target_dte_max,"required_fields":strategy_requirements.required_fields,"required_history_rows":strategy_requirements.underlying_lookback,"consumer":"STRATEGY_READINESS"}
@@ -159,14 +161,50 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
             for child in value: yield from receipts(child)
     for attempt in range(1,max_attempts+1):
         try:
-            last=ensure_market_data(s,req,access=access)
+            if refresh_policy == "REUSE_VERIFIED":
+                manifest = access._read_manifest(access.manifest_path)
+                active = manifest[(manifest.dataset.astype(str).isin({"daily", "options", "options_v2"})) &
+                                  manifest.symbol.astype(str).str.upper().eq(s) &
+                                  manifest.active_generation.astype(str).str.strip().ne("")]
+                if active.empty:
+                    return ReadinessResult(s, strategy_type, str(day.date()),
+                        DataStatus.CORRUPTED.value, "DATA_BLOCKED", "DATASET_GENERATION_ID_MISSING",
+                        None, stages, None, attempt, {"refresh_policy": refresh_policy})
+                reuse_receipts = []
+                for _, row in active.iterrows():
+                    partition = "/".join([f"year={int(row.year)}"] +
+                                         ([f"quarter={int(row.quarter)}"] if pd.notna(row.get("quarter")) else []))
+                    reuse_receipts.append({"dataset_type": str(row.dataset), "promoted_generation_id": str(row.active_generation),
+                        "manifest_active_generation_id": str(row.active_generation), "read_back_generation_id": str(row.active_generation),
+                        "checksum": str(row.content_hash), "read_back_checksum": str(row.content_hash),
+                        "row_count": int(row.row_count), "read_back_row_count": int(row.row_count),
+                        "partition_ids": [partition], "path": str(row.parquet_path),
+                        "dataset_fingerprint": str(row.content_hash), "schema_version": str(row.schema_version),
+                        "min_date": str(row.min_date), "max_date": str(row.max_date),
+                        "price_basis": strategy_requirements.price_basis,
+                        "corporate_action_version": strategy_requirements.corporate_action_basis,
+                        "source_lineage": [{"source": str(row.source), "partition": partition}]})
+                last = SimpleNamespace(status="READY", to_dict=lambda: {"receipts": reuse_receipts})
+            else:
+                last=ensure_market_data(s,req,access=access)
             if getattr(last, "status", None) in {"BLOCKED", "SOURCE_UNAVAILABLE"}:
                 stages["DISCOVER"]="COMPLETE"; stages["FETCH"]="FAILED"; stages["PROMOTE"]="NOT_RUN"
                 return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.SOURCE_UNAVAILABLE.value,"DATA_BLOCKED","SOURCE_UNAVAILABLE",None,stages,None,attempt,{"control_plane":last.to_dict() if hasattr(last,"to_dict") else last})
             stages["DISCOVER"]="COMPLETE"; stages["FETCH"]="COMPLETE"; stages["NORMALIZE"]="COMPLETE"; stages["REPAIR/QUARANTINE"]="COMPLETE"; stages["PROMOTE"]="COMPLETE"
-            daily=access.read_prices(s,end_date=day); daily=daily.sort_values("date").drop_duplicates("date",keep="last")
+            if refresh_policy == "REUSE_VERIFIED":
+                target_handle = resolve_active_verified_daily_handle(s, str(day.date()), strategy_requirements.underlying_lookback, data_access=access)
+                daily = access.read_verified_dataset(target_handle, end_date=day)
+            else:
+                daily=access.read_prices(s,end_date=day)
+            daily=daily.sort_values("date")
+            if daily["date"].duplicated().any():
+                raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
             if daily.empty: raise ValueError("DAILY_DATA_MISSING")
-            q=access.read_quotes(s,daily.date.max().isoformat(),daily.date.max().isoformat())
+            if refresh_policy == "REUSE_VERIFIED":
+                options_handle = resolve_active_verified_options_handle(s, str(day.date()), data_access=access)
+                q = access.read_verified_dataset(options_handle, end_date=day)
+            else:
+                q=access.read_quotes(s,daily.date.max().isoformat(),daily.date.max().isoformat())
             q=q[q.symbol.astype(str).str.upper().eq(s)]
             if str(mode).upper() == "LIVE":
                 live_reasons = []
@@ -221,16 +259,7 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                             "source_lineage": [{"source": str(r.source), "partition": str(r.partition_ids)}]
                         } for _, r in active.iterrows()]
                 if not any(str(x.get("dataset_type", "")).lower() == "daily" for x in receipts_found):
-                    # Older canonical daily partitions predate generation
-                    # metadata.  Upgrade that partition through the normal
-                    # promotion boundary before a strategy may consume it.
-                    legacy_daily = access.read_prices(s, end_date=day)
-                    if legacy_daily.empty:
-                        raise ValueError("DAILY_GENERATION_UNAVAILABLE")
-                    daily_partition = f"year={pd.Timestamp(legacy_daily.date.max()).year}"
-                    promoted = access.promote_generation(legacy_daily, "daily", s, daily_partition, source_version="canonical-daily-upgrade")
-                    if hasattr(promoted, "to_dict"):
-                        receipts_found.append(promoted.to_dict())
+                    raise ValueError("DATASET_GENERATION_ID_MISSING")
                 rows = receipts_found or payload.get("promoted_partitions", ()) or payload.get("source_inventory", ())
                 gens = [str(x.get("generation_id") or x.get("promoted_generation_id") or x.get("active_generation") or "") for x in rows if isinstance(x, dict)]
                 gen = next((x for x in gens if x), "")
@@ -296,10 +325,24 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                     min_date=str(options_receipt.get("min_date", report.available_window.get("min_date", ""))),
                     max_date=str(options_receipt.get("max_date", report.available_window.get("max_date", ""))),
                     partition_count=len(_ids(options_receipt.get("partition_ids", options_receipt.get("promoted_partitions", partitions)), partitions)))
+                benchmark_handles = {}
+                if require_benchmarks:
+                    for benchmark in ("QQQ", "SPY", "SOXX"):
+                        try:
+                            benchmark_handles[benchmark] = resolve_active_verified_daily_handle(
+                                benchmark, str(day.date()), strategy_requirements.underlying_lookback,
+                                data_access=access)
+                        except ValueError as exc:
+                            return ReadinessResult(s, strategy_type, str(day.date()),
+                                DataStatus.CORRUPTED.value, "DATA_BLOCKED",
+                                "BENCHMARK_GENERATION_MISSING" if str(exc) == "INSUFFICIENT_FEATURE_WARMUP" else str(exc),
+                                report, stages, None, attempt,
+                                {"benchmark": benchmark, "detail": str(exc)})
                 handle = VerifiedDataHandle(
                     s, str(strategy_type), str(day.date()), str(mode).upper(), underlying, options,
                     strategy_requirements.price_basis, strategy_requirements.corporate_action_basis,
-                    pd.Timestamp.now("UTC").isoformat(), str(pd.Timestamp(daily.date.max()).date()), None)
+                    pd.Timestamp.now("UTC").isoformat(), str(pd.Timestamp(daily.date.max()).date()), None,
+                    benchmark_handles=benchmark_handles, refresh_policy="REUSE_VERIFIED")
             if report.status == DataStatus.READY.value and handle is None:
                 return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.CORRUPTED.value,"DATA_BLOCKED","VERIFIED_DATA_HANDLE_MISSING",report,stages,None,attempt,{"control_plane":last.to_dict() if hasattr(last,"to_dict") else last})
             stages["READ-BACK VERIFY"]="COMPLETE"; stages["TARGET-WINDOW COVERAGE"]="COMPLETE" if report.status==DataStatus.READY.value else "FAILED"; stages["STRATEGY"]="ALLOWED" if report.status==DataStatus.READY.value else "BLOCKED"
@@ -336,4 +379,34 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
         {"min_date": str(row.min_date), "max_date": str(row.max_date)},
         dataset_fingerprint=str(row.content_hash), schema_version=str(row.schema_version),
         price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
+        min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)
+
+def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_access=None) -> VerifiedDatasetHandle:
+    """Resolve and validate the active canonical options generation for a session."""
+    access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
+    manifest = access._read_manifest(access.manifest_path)
+    rows = manifest[(manifest.dataset.astype(str).isin({"options", "options_v2", "options_v3"})) &
+                    (manifest.symbol.astype(str).str.upper() == s) &
+                    manifest.active_generation.astype(str).str.strip().ne("")]
+    rows = rows[pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values("max_date", ascending=False)
+    if rows.empty: raise ValueError("OPTIONS_GENERATION_MISSING")
+    row = rows.iloc[0]
+    required = ["active_generation", "content_hash", "row_count", "min_date", "max_date", "schema_version", "parquet_path"]
+    if any(pd.isna(row.get(k)) or not str(row.get(k)).strip() for k in required):
+        raise ValueError("DATASET_PROVENANCE_INCOMPLETE")
+    partition = "/".join([f"year={int(row.year)}"] + ([f"quarter={int(row.quarter)}"] if pd.notna(row.get("quarter")) else []))
+    dataset = str(row.dataset)
+    frame = access.read_pinned_generation(dataset, s, partition, str(row.active_generation))
+    if len(frame) != int(row.row_count): raise ValueError("READ_BACK_ROW_COUNT_MISMATCH")
+    if str(access.semantic_content_hash(frame)) != str(row.content_hash): raise ValueError("DATASET_CHECKSUM_MISMATCH")
+    required_columns = {"symbol", "trade_date", "expiration_date", "call_put", "strike"}
+    if not required_columns.issubset(frame.columns): raise ValueError("OPTIONS_SCHEMA_INCOMPLETE")
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce").dt.normalize()
+    if frame["trade_date"].isna().any() or frame["trade_date"].max() < day: raise ValueError("OPTIONS_DATE_COVERAGE_INSUFFICIENT")
+    if frame[["symbol", "trade_date", "expiration_date", "call_put", "strike"]].duplicated().any():
+        raise ValueError("DUPLICATE_CANONICAL_OPTION_KEY")
+    return VerifiedDatasetHandle(dataset, s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (str(row.parquet_path),),
+        {"min_date": str(row.min_date), "max_date": str(row.max_date)},
+        ({"source": str(row.source), "partition": partition},), dataset_fingerprint=str(row.content_hash),
+        schema_version=str(row.schema_version), price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
         min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)

@@ -6,9 +6,10 @@ from pcs.pcs_status import evaluate_pcs_status
 
 
 def _daily(symbol="ZZZ"):
-    return pd.DataFrame({"symbol": [symbol], "date": pd.to_datetime(["2026-09-01"]),
-                         "open": [100.], "high": [101.], "low": [99.],
-                         "close": [100.], "volume": [1000]})
+    dates = pd.date_range(end="2026-09-01", periods=200, freq="B")
+    return pd.DataFrame({"symbol": symbol, "date": dates,
+                         "open": 100., "high": 101., "low": 99.,
+                         "close": 100., "volume": 1000})
 
 
 def _options(symbol="ZZZ"):
@@ -32,6 +33,8 @@ def ready_pcs_data_bundle(tmp_path, monkeypatch):
     access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     daily = access.promote_generation(_daily(), "daily", "ZZZ", "year=2026", source_version="fixture-daily")
     options = access.promote_generation(_options(), "options", "ZZZ", "year=2026/quarter=3", source_version="fixture-options")
+    for benchmark in ("QQQ", "SPY", "SOXX"):
+        access.promote_generation(_daily(benchmark), "daily", benchmark, "year=2026", source_version="fixture-benchmark")
     receipts = [daily.to_dict(), options.to_dict()]
     for receipt, frame in zip(receipts, (_daily(), _options())):
         receipt.update({"dataset_fingerprint": access.semantic_content_hash(frame),
@@ -66,7 +69,8 @@ def test_pcs_non_ready_never_calls_selector(monkeypatch, ready_pcs_data_bundle):
     access, _, calls, *_ = ready_pcs_data_bundle
     monkeypatch.setattr("pcs.data.strategy_readiness.ensure_market_data", lambda *a, **k: (_ for _ in ()).throw(AssertionError("provider must not run")))
     result = evaluate_pcs_status("ZZZ", "2026-09-01", data_access=access)
-    assert result.action is None and result.reason_codes == ["DATA_BLOCKED"]
+    assert result.action == "DATA_BLOCKED"
+    assert calls["provider"] == 0
     assert calls["selector"] == 0
 
 

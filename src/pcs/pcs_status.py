@@ -160,15 +160,22 @@ def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_contex
         return _blocked(symbol, as_of or "", "DECISION_AS_OF_REQUIRED", run_id=run_id, request_id=request_id)
     from pcs.data.strategy_readiness import StrategyDataRequirements, ensure_strategy_ready
     readiness_mode = "LIVE" if mode == "live" else "HISTORICAL"
-    gate = ensure_strategy_ready(symbol, "PUT_CREDIT_SPREAD", as_of, readiness_mode, StrategyDataRequirements(option_right="PUT", target_dte_min=30, target_dte_max=45), data_access=access)
+    gate = ensure_strategy_ready(symbol, "PUT_CREDIT_SPREAD", as_of, readiness_mode, StrategyDataRequirements(option_right="PUT", target_dte_min=30, target_dte_max=45), data_access=access, require_benchmarks=True, refresh_policy="REUSE_VERIFIED")
     if gate.data_status != "READY":
         return _blocked(symbol, as_of, "DATA_BLOCKED", {"data_reason":gate.data_reason,"coverage":gate.to_dict()}, run_id=run_id, request_id=request_id)
     handle = gate.verified_data_handle
     if handle is None:
         return _blocked(symbol, as_of, "DATA_BLOCKED", {"data_reason":"VERIFIED_DATA_HANDLE_MISSING"}, run_id=run_id, request_id=request_id)
     try:
-        daily = _read_verified_dataset(access, handle.underlying_handle)
-        quotes = _read_verified_dataset(access, handle.options_handle)
+        daily = access.read_verified_dataset(handle.underlying_handle, end_date=as_of)
+        quotes = access.read_verified_dataset(handle.options_handle, end_date=as_of)
+        benchmark_handles = handle.benchmark_handles
+        if set(benchmark_handles) != {"QQQ", "SPY", "SOXX"}:
+            return _blocked(symbol, as_of, "BENCHMARK_GENERATION_MISSING", run_id=run_id, request_id=request_id)
+        benchmark_frames = {
+            name: access.read_verified_dataset(benchmark_handles[name], end_date=as_of)
+            for name in ("QQQ", "SPY", "SOXX")
+        }
     except Exception as exc:
         return _blocked(symbol, as_of, "DATA_BLOCKED", {"data_reason":"PINNED_READ_FAILED", "detail":str(exc)}, run_id=run_id, request_id=request_id)
     readiness_ids = {"underlying": handle.underlying_generation_id, "options": handle.options_generation_id}
@@ -188,12 +195,7 @@ def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_contex
         if not initial.empty: effective=pd.to_datetime(initial.date).dt.normalize().max().date().isoformat()
         recovered=False
         if initial.empty:
-            health=SystemHealthController(access).ensure_capability("EOD_PCS_DECISION",symbol,as_of)
-            if health.status != "READY": return _blocked(symbol,as_of,(list(health.reason_codes) or ["CAPABILITY_NOT_READY"])[0],{"system_health":health.to_dict()},run_id=run_id,request_id=request_id,effective=effective)
-            recovered=bool(health.repairs_succeeded)
-            initial=daily.copy()
-            if initial.empty: return _blocked(symbol,as_of,"DAILY_CANONICAL_UNAVAILABLE",run_id=run_id,request_id=request_id)
-            effective=pd.to_datetime(initial.date).dt.normalize().max().date().isoformat()
+            return _blocked(symbol,as_of,"DAILY_CANONICAL_UNAVAILABLE",run_id=run_id,request_id=request_id)
         # A decision is a current-session request.  Historical coverage alone
         # is insufficient: force the control plane to assess freshness and,
         # when needed, synchronize the current options snapshot before the
@@ -215,16 +217,11 @@ def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_contex
         else:
             rd={"decision_readiness":"READY","daily_rows":int(len(initial)),"option_rows":int(len(quotes)),"effective_market_date":effective}
         daily=initial.copy()
-        # Use the same deterministic duplicate-date repair as readiness so a
-        # small historical duplicate set cannot poison the state adapter.
+        # Duplicate canonical keys are a correctness failure, never a repair
+        # opportunity in the formal decision path.
         daily["date"] = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
         if daily["date"].duplicated().any():
-            daily["_complete"] = daily[["open","high","low","close","volume"]].notna().sum(axis=1)
-            daily["_priority"] = pd.to_numeric(daily.get("source_priority", pd.Series(index=daily.index)), errors="coerce").fillna(-1)
-            daily["_updated"] = pd.to_datetime(daily.get("updated_at", pd.Series(index=daily.index)), errors="coerce")
-            daily = (daily.sort_values(["date","_priority","_updated","_complete"], ascending=[True,False,False,False])
-                     .drop_duplicates("date", keep="first")
-                     .drop(columns=["_complete","_priority","_updated"], errors="ignore"))
+            return _blocked(symbol, as_of, "DUPLICATE_CANONICAL_PRICE_KEY", run_id=run_id, request_id=request_id, effective=effective)
         calendar = _event_calendar(event_calendar_path) if event_calendar is None else event_calendar.copy()
         event_blocker = _event_source_blocker(symbol,effective,calendar)
         if event_blocker:
@@ -251,7 +248,7 @@ def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_contex
         chain=quotes.rename(columns={"trade_date":"Trade Date","expiration_date":"Expiry Date","call_put":"Call/Put","strike":"Strike","bid":"Bid Price","ask":"Ask Price","open_interest":"Open Interest","volume":"Volume","delta":"Delta"})
         rows=generate_structural_put_opportunities(chain,symbol,effective); funnel={"chains_loaded":int(bool(len(chain))),"candidates_generated":len(rows),"hard_eligible_candidates":0,"engine_evaluated":0,"engine_open":0}
         if not rows: return PCSStatusResult(symbol=symbol,as_of=as_of,status="PASS",action=Action.WAIT.value,system_status="READY",strategy_status="EXECUTED",strategy_evaluated=True,contract_selection_evaluated=True,auto_recovered=recovered,reason_codes=["NO_EXACT_PUT_SPREAD_CANDIDATE"],data_timestamp=effective,run_id=run_id,request_id=request_id,readiness=rd,funnel=funnel,effective_market_date=effective,readiness_underlying_generation_id=readiness_ids["underlying"],readiness_options_generation_id=readiness_ids["options"],runner_underlying_generation_id=readiness_ids["underlying"],runner_options_generation_id=readiness_ids["options"])
-        active_rules=rules or load_rules(); context=build_market_context(symbol,effective,data_access=access,rules=active_rules,daily_frame=daily,mode="FORMAL"); engine=DecisionEngine(active_rules); portfolio=portfolio_context or {"planned_risk":0,"theoretical_max_loss":0,"bucket_risk":{}}
+        active_rules=rules or load_rules(); context=build_market_context(symbol,effective,data_access=access,rules=active_rules,daily_frame=daily,benchmark_frame=benchmark_frames["QQQ"],spy_frame=benchmark_frames["SPY"],soxx_frame=benchmark_frames["SOXX"],verified_handles={symbol: handle.underlying_handle, **benchmark_handles},mode="FORMAL"); engine=DecisionEngine(active_rules); portfolio=portfolio_context or {"planned_risk":0,"theoretical_max_loss":0,"bucket_risk":{}}
         # Trend/timing is authoritative and precedes option ranking.  A valid
         # chain must not turn a structural downtrend or an unconfirmed
         # reclaim into an OPEN result.
