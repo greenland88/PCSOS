@@ -43,7 +43,8 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
         return ()
     frame = chain.copy()
     frame["expiration"] = pd.to_datetime(frame["expiration"], errors="coerce").dt.normalize()
-    frame = frame[frame.option_type.astype(str).str.lower().isin({"p", "put"})].copy()
+    frame["option_type"] = frame["option_type"].astype(str).str.lower().replace({"put": "p"})
+    frame = frame[frame.option_type.isin({"p"})].copy()
     if frame.empty:
         return ()
     keys = ["expiration", "strike", "option_type"]

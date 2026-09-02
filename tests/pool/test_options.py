@@ -23,3 +23,11 @@ def test_duplicate_contract_keys_fail_closed():
     chain = pd.concat([_chain(), _chain().iloc[[0]]], ignore_index=True)
     with pytest.raises(ValueError, match="DUPLICATE_OPTION_CONTRACT_KEY"):
         shortlist_spreads("AAA", "2025-01-01", 100, 2, chain, rules={})
+
+
+def test_duplicate_type_spellings_are_the_same_contract():
+    chain = _chain()
+    chain.loc[0, "option_type"] = "PUT"
+    with pytest.raises(ValueError, match="DUPLICATE_OPTION_CONTRACT_KEY"):
+        shortlist_spreads("AAA", "2025-01-01", 100, 2,
+                          pd.concat([_chain(), chain.iloc[[0]]], ignore_index=True), rules={})
