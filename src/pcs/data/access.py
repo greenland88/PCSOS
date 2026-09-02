@@ -941,8 +941,13 @@ class PCSDataAccess:
             raise DataCorrectnessError("GENERATION_NOT_VERIFIED")
         if not getattr(handle, "dataset_fingerprint", "") or not getattr(handle, "checksum", ""):
             raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
-        frames = [self.read_pinned_generation(handle.dataset, handle.ticker, partition, handle.generation_id)
-                  for partition in handle.partitions]
+        generation_ids = str(handle.generation_id).split("|")
+        if len(generation_ids) not in {1, len(handle.partitions)}:
+            raise DataCorrectnessError("UNPINNED_INPUT")
+        if len(generation_ids) == 1:
+            generation_ids = generation_ids * len(handle.partitions)
+        frames = [self.read_pinned_generation(handle.dataset, handle.ticker, partition, generation)
+                  for partition, generation in zip(handle.partitions, generation_ids)]
         if not frames:
             raise DataCorrectnessError("UNPINNED_INPUT")
         frame = pd.concat(frames, ignore_index=True)
@@ -952,22 +957,23 @@ class PCSDataAccess:
         if str(actual_checksum) != str(handle.checksum):
             raise DataCorrectnessError("DATASET_CHECKSUM_MISMATCH")
         if str(handle.dataset).lower() == "daily":
-            if frame[["symbol", "date"]].duplicated().any():
+            duplicate_key = ["date"] if "symbol" not in frame.columns else ["symbol", "date"]
+            if frame[duplicate_key].duplicated().any():
                 raise DataCorrectnessError("DUPLICATE_CANONICAL_PRICE_KEY")
         elif {"symbol", "trade_date", "expiration_date", "call_put", "strike"}.issubset(frame.columns):
             if frame[["symbol", "trade_date", "expiration_date", "call_put", "strike"]].duplicated().any():
                 raise DataCorrectnessError("DUPLICATE_CANONICAL_OPTION_KEY")
         from .canonical_generations import canonical_snapshot_descriptor
-        if len(handle.partitions) != 1 or len(handle.canonical_paths) != 1:
-            raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
-        path = Path(str(handle.canonical_paths[0]))
-        if not path.exists():
+        paths = [Path(str(p)) for p in handle.canonical_paths]
+        if len(paths) != len(handle.partitions) or any(not p.exists() for p in paths):
             raise DataCorrectnessError("UNPINNED_INPUT")
+        file_hash = hashlib.sha256(b"".join(p.read_bytes() for p in paths)).hexdigest()
+        byte_size = sum(p.stat().st_size for p in paths)
         descriptor = canonical_snapshot_descriptor(
             dataset=str(handle.dataset), symbol=str(handle.ticker), frame=frame,
-            file_hash=hashlib.sha256(path.read_bytes()).hexdigest(), byte_size=path.stat().st_size,
+            file_hash=file_hash, byte_size=byte_size,
             schema_version=str(handle.schema_version), price_basis=str(handle.price_basis),
-            corporate_action_version=str(handle.corporate_action_version), partition_key=str(handle.partitions[0]))
+            corporate_action_version=str(handle.corporate_action_version), partition_key="|".join(handle.partitions))
         if str(descriptor["dataset_fingerprint"]) != str(handle.dataset_fingerprint):
             raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
         date_column = "date" if str(handle.dataset).lower() == "daily" else "trade_date"

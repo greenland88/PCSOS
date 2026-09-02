@@ -9,6 +9,8 @@ from enum import StrEnum
 from typing import Any, Callable
 from types import SimpleNamespace
 import pandas as pd
+import hashlib
+from pathlib import Path
 from .access import PCSDataAccess
 from .control_plane import ensure_market_data
 
@@ -380,28 +382,33 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
             if left["_lo"] <= right["_hi"] and right["_lo"] <= left["_hi"]:
                 left_gid, right_gid = str(left.active_generation), str(right.active_generation)
                 raise ValueError("ACTIVE_GENERATION_OVERLAP_CONFLICT")
-    candidates = rows[pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values(
-        ["row_count", "max_date"], ascending=[False, False])
-    if len(candidates) == 0:
+    candidates = rows[pd.to_datetime(rows.min_date, errors="coerce").le(day)].sort_values("min_date")
+    if len(candidates) == 0 or not pd.to_datetime(candidates.max_date, errors="coerce").ge(day).any():
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
-    row = candidates.iloc[0]
     required = ["active_generation", "content_hash", "row_count", "min_date", "max_date", "schema_version", "parquet_path", "partition_ids"]
-    if any(pd.isna(row.get(k)) or not str(row.get(k)).strip() for k in required):
+    if any(pd.isna(row.get(k)) or not str(row.get(k)).strip() for _, row in candidates.iterrows() for k in required):
         raise ValueError("DATASET_PROVENANCE_INCOMPLETE")
-    path = str(row.parquet_path); partition = str(row.partition_ids)
-    frame = access.read_pinned_generation("daily", s, partition, str(row.active_generation))
+    partitions = tuple(str(row.partition_ids) for _, row in candidates.iterrows())
+    generations = tuple(str(row.active_generation) for _, row in candidates.iterrows())
+    paths = tuple(str(row.parquet_path) for _, row in candidates.iterrows())
+    frame = pd.concat([access.read_pinned_generation("daily", s, p, g) for p, g in zip(partitions, generations)], ignore_index=True)
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     pit_rows = int(frame.loc[frame["date"] <= day, "date"].nunique())
-    if len(frame) != int(row.row_count) or frame.date.max() < day or pit_rows < int(required_warmup_sessions):
+    if len(frame) != int(candidates.row_count.sum()) or frame.date.max() < day or pit_rows < int(required_warmup_sessions):
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
-    if frame[["symbol", "date"]].duplicated().any(): raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
-    if str(access.semantic_content_hash(frame)) != str(row.content_hash): raise ValueError("DATASET_CHECKSUM_MISMATCH")
-    return VerifiedDatasetHandle("daily", s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (path,),
-        {"min_date": str(row.min_date), "max_date": str(row.max_date)},
-        dataset_fingerprint=str(row.get("dataset_fingerprint", "")), schema_version=str(row.schema_version),
+    duplicate_key = ["date"] if "symbol" not in frame.columns else ["symbol", "date"]
+    if frame[duplicate_key].duplicated().any(): raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
+    checksum = access.semantic_content_hash(frame)
+    descriptor = __import__("pcs.data.canonical_generations", fromlist=["canonical_snapshot_descriptor"]).canonical_snapshot_descriptor(
+        dataset="daily", symbol=s, frame=frame,
+        file_hash=hashlib.sha256(b"".join(Path(p).read_bytes() for p in paths)).hexdigest(),
+        byte_size=sum(Path(p).stat().st_size for p in paths), partition_key="|".join(partitions))
+    return VerifiedDatasetHandle("daily", s, "|".join(generations), partitions, str(checksum), len(frame), paths,
+        {"min_date": str(candidates.min_date.iloc[0]), "max_date": str(candidates.max_date.max())},
+        dataset_fingerprint=descriptor["dataset_fingerprint"], schema_version=str(candidates.schema_version.iloc[0]),
         price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
-        min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)
+        min_date=str(candidates.min_date.iloc[0]), max_date=str(candidates.max_date.max()), partition_count=len(partitions))
 
 def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_access=None) -> VerifiedDatasetHandle:
     """Resolve and validate the active canonical options generation for a session."""
