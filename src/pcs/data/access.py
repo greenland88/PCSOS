@@ -1188,9 +1188,9 @@ class PCSDataAccess:
         parts=dict(x.split("=",1) for x in str(partition).split("/") if "=" in x)
         mask=(manifest.get("dataset",pd.Series(dtype=str)).astype(str).eq(str(dataset)) &
               manifest.get("symbol",pd.Series(dtype=str)).astype(str).str.upper().eq(self._symbol(symbol)) &
-              manifest.get("year",pd.Series(dtype=str)).astype(str).eq(str(parts.get("year", ""))))
+              pd.to_numeric(manifest.get("year",pd.Series(dtype=float)), errors="coerce").eq(pd.to_numeric(parts.get("year", ""), errors="coerce")))
         if "quarter" in parts:
-            mask &= manifest.get("quarter",pd.Series(dtype=str)).astype(str).eq(str(parts["quarter"]))
+            mask &= pd.to_numeric(manifest.get("quarter",pd.Series(dtype=float)), errors="coerce").eq(pd.to_numeric(parts["quarter"], errors="coerce"))
         if not mask.any(): raise DataAccessError("ACTIVE_MANIFEST_RECORD_MISSING")
         return manifest.loc[mask].iloc[-1].to_dict()
 
