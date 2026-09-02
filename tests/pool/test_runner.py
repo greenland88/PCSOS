@@ -41,4 +41,8 @@ def test_one_ticker_failure_does_not_abort_batch():
     access = FakeAccess({"QQQ": frame, "GOOD": frame})
     result = run_pcs_pool(symbols=["GOOD", "BAD"], as_of="2025-03-21", mode="EOD", data_access=access)
     assert {row.symbol for row in result.ticker_results} == {"GOOD", "BAD"}
-    assert next(row for row in result.ticker_results if row.symbol == "GOOD").final_action != "DATA_FAILED"
+    good = next(row for row in result.ticker_results if row.symbol == "GOOD")
+    bad = next(row for row in result.ticker_results if row.symbol == "BAD")
+    assert good.symbol == "GOOD" and bad.symbol == "BAD"
+    assert "DAILY_TIMING_FAILED" in bad.reason_codes
+    assert good.reason_codes != bad.reason_codes
