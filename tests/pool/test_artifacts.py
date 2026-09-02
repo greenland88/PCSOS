@@ -17,4 +17,5 @@ def test_artifacts_are_manifested_and_atomic(tmp_path: Path):
     assert (root / "human_report.md").exists()
     assert (root / "static_eligibility.parquet").exists()
     assert (root / "daily_timing.parquet").exists()
+    assert manifest["stage_status"]["OPTIONS_SHORTLIST"] == "NOT_RUN"
     assert not list(root.glob("*.tmp"))

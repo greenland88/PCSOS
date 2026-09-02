@@ -70,8 +70,10 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         "current": True, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,
         "stage_status": {"RAW_UNIVERSE": "COMPLETE", "STATIC_ELIGIBILITY": "COMPLETE",
-                          "DAILY_TIMING": "COMPLETE", "OPTIONS_SHORTLIST": "NOT_IMPLEMENTED",
-                          "EVENT_GATE": "NOT_IMPLEMENTED", "PORTFOLIO_GATE": "NOT_IMPLEMENTED"},
+                          "DAILY_TIMING": "COMPLETE",
+                          "OPTIONS_SHORTLIST": "COMPLETE" if result.summary.get("options_check_count", 0) else "NOT_RUN",
+                          "EVENT_GATE": "COMPLETE" if any(row.event_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN",
+                          "PORTFOLIO_GATE": "COMPLETE" if any(row.portfolio_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN"},
         "input_symbol_count": len(result.ticker_results), "summary": dict(result.summary),
         "counters": dict(result.counters), "artifact_hashes": files,
     }
