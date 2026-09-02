@@ -10,7 +10,8 @@ from .models import (
     OptionsStatus,
 )
 from .runner import run_pcs_pool
-from .final_gates import PoolEventResult, evaluate_pool_event
+from .final_gates import (PoolEventResult, evaluate_pool_event, PoolPortfolioResult,
+                          evaluate_pool_portfolio, compose_final_action)
 from .options import SpreadCandidate, shortlist_spreads
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "TickerScanResult", "TimingStatus", "OptionsStatus",
     "run_pcs_pool",
     "PoolEventResult", "evaluate_pool_event",
+    "PoolPortfolioResult", "evaluate_pool_portfolio", "compose_final_action",
     "SpreadCandidate", "shortlist_spreads",
 ]
