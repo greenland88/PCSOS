@@ -9,7 +9,8 @@ import uuid
 import pandas as pd
 
 from pcs.data.access import PCSDataAccess
-from pcs.data.strategy_readiness import resolve_active_verified_daily_handle
+from pcs.data.strategy_readiness import (resolve_active_verified_daily_handle,
+                                          resolve_active_verified_options_handle)
 from pcs.data.control_plane import MarketDataRequirements, ensure_market_data
 from pcs.trend.snapshot import build_trend_snapshot
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
@@ -157,6 +158,17 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     run_id = uuid.uuid4().hex
     asof = _as_of(as_of)
     access = data_access or PCSDataAccess()
+    if options_reader is None and data_access is None and auto_prepare_data:
+        def options_reader(symbol, trade_date):
+            day = pd.Timestamp(trade_date).normalize()
+            req = MarketDataRequirements(symbol=symbol,
+                required_start=str(day.date()), required_end=str(day.date()),
+                datasets=("options",), decision_as_of=str(day.date()),
+                option_type="PUT", min_dte=30, max_dte=45,
+                required_history_rows=0)
+            ensure_market_data(symbol, req, access=access)
+            handle = resolve_active_verified_options_handle(symbol, str(day.date()), data_access=access)
+            return access.read_verified_dataset(handle, end_date=str(day.date()))
     benchmark = None
     try:
         resolver = daily_handle_resolver or resolve_active_verified_daily_handle
