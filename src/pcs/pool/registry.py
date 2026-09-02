@@ -48,7 +48,8 @@ class UniverseSpec:
         pointer = json.loads(source.read_text(encoding="utf-8"))
         snapshot = Path(pointer["snapshot_path"])
         payload = json.loads(snapshot.with_suffix(".json").read_text(encoding="utf-8"))
-        return cls("global_pcs_candidates", tuple(payload["symbols"]), payload["version"],
+        executable_symbols = payload.get("included_symbols", payload["symbols"])
+        return cls("global_pcs_candidates", tuple(executable_symbols), payload["version"],
                     "GLOBAL_CANDIDATE_UNIVERSE", payload["inventory_fingerprint"])
 
     @classmethod
@@ -116,7 +117,8 @@ def build_global_pcs_universe(*, source: str | Path = "data/manifests/daily_univ
                "inventory_fingerprint":inventory_fingerprint, "rule_version":"BasePoolConfig-v1",
                "raw_inventory_count":int(len(raw)), "normalized_count":len(symbols), "duplicate_count":duplicate_count,
                "invalid_count":invalid_count, "migration_failed_count":int((~raw.status.astype(str).str.upper().eq("SUCCESS")).sum()),
-               "included_symbol_count":len(included), "excluded_symbol_count":len(excluded), "symbols":symbols}
+               "included_symbol_count":len(included), "excluded_symbol_count":len(excluded),
+               "symbols":symbols, "included_symbols":included, "excluded_symbols":excluded}
     temporary = meta.with_name(meta.name + ".tmp"); temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"); os.replace(temporary, meta)
     payload["artifact_hash"] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     temporary = manifest.with_name(manifest.name + ".tmp"); temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"); os.replace(temporary, manifest)
