@@ -18,9 +18,10 @@ from .modes import completed_daily_cutoff
 
 
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
-                     options_reader, option_rules, daily_asof=None):
+                     options_reader, option_rules, daily_asof=None, static_metadata_reader=None):
     started = perf_counter()
-    entry = evaluate_static_eligibility(symbol)
+    metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
+    entry = evaluate_static_eligibility(symbol, metadata)
     if entry.status != EligibilityStatus.PCS_ELIGIBLE:
         return TickerScanResult(symbol, run_id, asof, entry.status,
             final_action=FinalAction.DATA_FAILED, reason_codes=entry.reason_codes,
@@ -77,7 +78,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  data_access: PCSDataAccess | None = None,
                  benchmark_symbol: str = "QQQ", options_reader=None,
                  option_rules=None, event_status_reader=None,
-                 portfolio_status_reader=None) -> PoolScanResult:
+                 portfolio_status_reader=None, static_metadata_reader=None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
     Options, events, and portfolio stages intentionally remain not evaluated
@@ -113,7 +114,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
             options_reader=options_reader, option_rules=option_rules,
-            daily_asof=str(completed.date()) if completed is not None else None), max_workers=max_workers)
+            daily_asof=str(completed.date()) if completed is not None else None,
+            static_metadata_reader=static_metadata_reader), max_workers=max_workers)
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
