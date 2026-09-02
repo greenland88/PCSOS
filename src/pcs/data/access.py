@@ -1072,16 +1072,13 @@ class PCSDataAccess:
     def write_partition(self, frame, dataset, symbol, partition, *, source_version, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False):
         return self.write(frame, dataset, symbol, partition, source_version=source_version, allow_overwrite=allow_overwrite, update_manifest=update_manifest, filename=filename, replace_manifest=replace_manifest)
 
-    def promote_generation(self, frame, dataset, symbol, partition, *, source_version,
-                           supersedes_generation_ids=()):
+    def promote_generation(self, frame, dataset, symbol, partition, *, source_version):
         """Publish an immutable generation for a mutable logical partition.
 
         Existing active data is merged by the canonical option identity. The
         old parquet object is never changed; the manifest pointer is switched
         only after the new object and its hash have been verified.
         """
-        if supersedes_generation_ids:
-            raise DataAccessError("SUPERSESSION_REQUIRES_ADMIN_PLAN")
         symbol = self._symbol(symbol)
         current = self._read_manifest(self.manifest_path)
         partition_parts = dict(x.split("=", 1) for x in str(partition).split("/"))
@@ -1103,10 +1100,6 @@ class PCSDataAccess:
             merged = merged.drop_duplicates("date", keep="last").reset_index(drop=True)
         digest = self.semantic_content_hash(merged)
         generation = digest[:24]
-        if len(rows) and str(rows.iloc[-1].get("active_generation", "")).strip() not in ("", "nan"):
-            prior_digest = str(rows.iloc[-1].get("content_hash", "")).strip()
-            if prior_digest and prior_digest != digest:
-                raise DataAccessError("SUPERSESSION_REQUIRES_ADMIN_PLAN")
         generation_partition = f"{partition}/generations"
         path = self.parquet_root / dataset / f"symbol={symbol}" / generation_partition / f"{generation}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -48,25 +48,28 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
                                           data_access: PCSDataAccess | None = None) -> dict[str, Any]:
     """Explicit ADMIN operation to register identity for an existing generation.
 
-    This never discovers or downloads data.  It verifies the active object,
-    computes the independent snapshot fingerprint, records provenance, and
-    formally supersedes overlapping active rows.
+    This never discovers or downloads data. It verifies the precisely named
+    active object and records only its independent provenance fingerprints.
     """
-    access = data_access or PCSDataAccess(); s = str(symbol).strip().upper(); m = access._read_manifest(access.manifest_path)
-    matches = m[(m.dataset.astype(str) == str(dataset)) & m.symbol.astype(str).str.upper().eq(s) &
-                m.active_generation.astype(str).eq(str(generation_id))]
-    if len(matches) != 1: raise DataAccessError("ACTIVE_GENERATION_NOT_UNIQUE")
-    row = matches.iloc[0]; path = Path(_strict_text(row.parquet_path, "ACTIVE_GENERATION_PATH_MISSING"))
-    if not path.exists(): raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
-    frame = pd.read_parquet(path); checksum = access.semantic_content_hash(frame)
-    if str(row.get("content_hash", "")) != checksum: raise DataQualityError("CONTENT_HASH_MISMATCH")
-    partition = "/".join([f"year={int(row.year)}"] + ([f"quarter={int(row.quarter)}"] if pd.notna(row.get("quarter")) else []))
-    descriptor = canonical_snapshot_descriptor(dataset=dataset, symbol=s, frame=frame,
-        file_hash=hashlib.sha256(path.read_bytes()).hexdigest(), byte_size=path.stat().st_size,
-        schema_version=str(row.get("schema_version") or "2"), price_basis=price_basis,
-        corporate_action_version=corporate_action_version, partition_key=partition)
+    access = data_access or PCSDataAccess(); s = str(symbol).strip().upper()
+    manifest_before = access.manifest_path.read_bytes() if access.manifest_path.exists() else b""
+    before_hash = hashlib.sha256(manifest_before).hexdigest()
     with access._file_lock(access.manifest_path):
         current = access._read_manifest(access.manifest_path)
+        if hashlib.sha256(access.manifest_path.read_bytes()).hexdigest() != before_hash:
+            raise DataAccessError("PROVENANCE_PLAN_STALE")
+        matches = current[(current.dataset.astype(str) == str(dataset)) & current.symbol.astype(str).str.upper().eq(s) &
+                          current.active_generation.astype(str).eq(str(generation_id))]
+        if len(matches) != 1: raise DataAccessError("ACTIVE_GENERATION_NOT_UNIQUE")
+        row = matches.iloc[0]; path = Path(_strict_text(row.parquet_path, "ACTIVE_GENERATION_PATH_MISSING"))
+        if not path.exists(): raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
+        frame = pd.read_parquet(path); checksum = access.semantic_content_hash(frame)
+        if str(row.get("content_hash", "")) != checksum: raise DataQualityError("CONTENT_HASH_MISMATCH")
+        partition = "/".join([f"year={int(row.year)}"] + ([f"quarter={int(row.quarter)}"] if pd.notna(row.get("quarter")) else []))
+        descriptor = canonical_snapshot_descriptor(dataset=dataset, symbol=s, frame=frame,
+            file_hash=hashlib.sha256(path.read_bytes()).hexdigest(), byte_size=path.stat().st_size,
+            schema_version=str(row.get("schema_version") or "2"), price_basis=price_basis,
+            corporate_action_version=corporate_action_version, partition_key=partition)
         for column in ("schema_fingerprint", "dataset_fingerprint", "price_basis", "corporate_action_version", "lifecycle_status", "superseded_by"):
             if column not in current: current[column] = ""
         current.loc[matches.index, "schema_fingerprint"] = descriptor["schema_fingerprint"]
@@ -74,9 +77,9 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
         current.loc[matches.index, "price_basis"] = price_basis
         current.loc[matches.index, "corporate_action_version"] = corporate_action_version
         current.loc[matches.index, "lifecycle_status"] = "ACTIVE"
-        date_column = "trade_date" if "trade_date" in frame.columns and "date" not in frame.columns else "date"
-        lo, hi = pd.to_datetime(frame[date_column]).min(), pd.to_datetime(frame[date_column]).max()
-        current.to_csv(access.manifest_path, index=False)
+        tmp = access.manifest_path.with_name(f".{access.manifest_path.name}.{uuid.uuid4().hex}.tmp")
+        current.to_csv(tmp, index=False)
+        os.replace(tmp, access.manifest_path)
     return {"status": "REGISTERED", "generation_id": str(generation_id), "dataset_fingerprint": descriptor["dataset_fingerprint"], "snapshot_descriptor": descriptor}
 
 REPAIR_ACTION_POLICY = {
@@ -102,95 +105,6 @@ class RepairPlan:
     observed_manifest_hash: str = ""
     relationships: tuple[dict[str, Any], ...] = ()
     def to_dict(self): return asdict(self) | {"classifications": list(self.classifications), "physical_generations": list(self.physical_generations), "legacy_files": list(self.legacy_files), "proposed_actions": list(self.proposed_actions), "relationships": list(self.relationships)}
-
-@dataclass(frozen=True)
-class GenerationSupersessionPlan:
-    plan_id: str; manifest_hash: str; dataset: str; symbol: str
-    target_generation_id: str; proposed_superseded_generation_ids: tuple[str, ...]
-    generations: tuple[dict[str, Any], ...]; relationships: tuple[dict[str, Any], ...]
-    proposed_manifest_diff: tuple[dict[str, Any], ...]; created_at: str
-    def to_dict(self):
-        return asdict(self) | {"proposed_superseded_generation_ids": list(self.proposed_superseded_generation_ids),
-                               "generations": list(self.generations), "relationships": list(self.relationships),
-                               "proposed_manifest_diff": list(self.proposed_manifest_diff)}
-
-def _generation_record(access, row: pd.Series) -> dict[str, Any]:
-    path = Path(_strict_text(row.get("parquet_path"), "GENERATION_PATH_MISSING"))
-    if not path.exists(): raise DataAccessError("GENERATION_FILE_MISSING")
-    frame = pd.read_parquet(path)
-    checksum = access.semantic_content_hash(frame)
-    expected = _strict_text(row.get("content_hash"), "GENERATION_CHECKSUM_MISSING")
-    if checksum != expected: raise DataQualityError("GENERATION_CHECKSUM_MISMATCH")
-    date_col = "trade_date" if "trade_date" in frame.columns and "date" not in frame.columns else "date"
-    dates = pd.to_datetime(frame[date_col], errors="coerce")
-    descriptor = canonical_snapshot_descriptor(dataset=str(row.dataset), symbol=str(row.symbol), frame=frame,
-        file_hash=hashlib.sha256(path.read_bytes()).hexdigest(), byte_size=path.stat().st_size,
-        schema_version=str(row.get("schema_version") or "2"), price_basis=str(row.get("price_basis") or "canonical_adjusted"),
-        corporate_action_version=str(row.get("corporate_action_version") or "canonical_identity"),
-        partition_key=f"year={int(row.year)}" + (f"/quarter={int(row.quarter)}" if pd.notna(row.get("quarter")) else ""))
-    active_id = row.get("active_generation")
-    if pd.isna(active_id) or not str(active_id).strip(): active_id = row.get("promoted_generation_id")
-    return {"generation_id": _strict_text(active_id, "GENERATION_ID_MISSING"),
-            "path": str(path), "checksum": checksum, "file_fingerprint": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "dataset_fingerprint": descriptor["dataset_fingerprint"], "schema_fingerprint": descriptor["schema_fingerprint"], "dataset": str(row.dataset), "symbol": str(row.symbol).upper(),
-            "min_date": str(dates.min().date()), "max_date": str(dates.max().date()), "row_count": len(frame),
-            "source_lineage": str(row.get("source_lineage", "")), "date_column": date_col}
-
-def plan_generation_supersession(*, dataset: str, symbol: str, target_generation_id: str | None = None,
-                                 proposed_superseded_generation_ids: list[str] | None = None,
-                                 data_access: PCSDataAccess | None = None) -> GenerationSupersessionPlan:
-    """Read-only ADMIN planning; never changes manifest or generation state."""
-    access = data_access or PCSDataAccess(); s = str(symbol).upper(); m = access._read_manifest(access.manifest_path)
-    rows = m[(m.dataset.astype(str) == str(dataset)) & m.symbol.astype(str).str.upper().eq(s) &
-             m.active_generation.notna() & m.active_generation.astype(str).str.strip().ne("")]
-    records = tuple(_generation_record(access, row) for _, row in rows.iterrows())
-    if not records: raise DataAccessError("NO_ACTIVE_GENERATIONS")
-    target = target_generation_id or max(records, key=lambda x: (x["max_date"], x["generation_id"]))["generation_id"]
-    if target not in {x["generation_id"] for x in records}: raise DataAccessError("TARGET_GENERATION_NOT_FOUND")
-    proposed = tuple(proposed_superseded_generation_ids or ())
-    if len(set(proposed)) != len(proposed) or any(x not in {r["generation_id"] for r in records} or x == target for x in proposed):
-        raise DataAccessError("SUPERSESSION_ID_INVALID")
-    rel=[]; target_rec=next(x for x in records if x["generation_id"] == target)
-    for rec in records:
-        if rec["generation_id"] == target: continue
-        overlap = rec["min_date"] <= target_rec["max_date"] and target_rec["min_date"] <= rec["max_date"]
-        target_contains = target_rec["min_date"] <= rec["min_date"] and target_rec["max_date"] >= rec["max_date"] and target_rec["row_count"] >= rec["row_count"]
-        rec_contains = rec["min_date"] <= target_rec["min_date"] and rec["max_date"] >= target_rec["max_date"] and rec["row_count"] >= target_rec["row_count"]
-        relation = ("EXACT_EQUAL" if rec["checksum"] == target_rec["checksum"] else
-                    "STRICT_SUPERSET" if target_contains and overlap else
-                    "STRICT_SUBSET" if rec_contains and overlap else
-                    "OVERLAPPING_CONFLICT" if overlap else "DISJOINT")
-        rel.append({"left": target, "right": rec["generation_id"], "date_overlap": overlap, "relation": relation,
-                    "content_same": rec["checksum"] == target_rec["checksum"], "row_count_left": target_rec["row_count"], "row_count_right": rec["row_count"]})
-    diff=[{"generation_id": x, "active_generation": "", "lifecycle_status": "SUPERSEDED", "superseded_by": target} for x in proposed]
-    return GenerationSupersessionPlan(uuid.uuid4().hex, hashlib.sha256(access.manifest_path.read_bytes()).hexdigest(), str(dataset), s, target, proposed, records, tuple(rel), tuple(diff), datetime.now(timezone.utc).isoformat())
-
-def apply_generation_supersession(plan_id: str, *, data_access: PCSDataAccess | None = None, root="data/manifests/supersession_plans") -> dict[str, Any]:
-    access=data_access or PCSDataAccess(); path=Path(root)/f"{plan_id}.json"
-    if not path.exists(): raise DataAccessError("SUPERSESSION_PLAN_NOT_FOUND")
-    raw=json.loads(path.read_text(encoding="utf-8")); actual=hashlib.sha256(access.manifest_path.read_bytes()).hexdigest()
-    if actual != raw.get("manifest_hash"): return {"status":"BLOCKED","reason_codes":["SUPERSESSION_PLAN_STALE"]}
-    plan = plan_generation_supersession(dataset=raw["dataset"], symbol=raw["symbol"], target_generation_id=raw["target_generation_id"], proposed_superseded_generation_ids=raw.get("proposed_superseded_generation_ids", []), data_access=access)
-    comparable = ("manifest_hash", "dataset", "symbol", "target_generation_id", "proposed_superseded_generation_ids", "generations", "relationships", "proposed_manifest_diff")
-    if any(plan.to_dict().get(k) != raw.get(k) for k in comparable):
-        return {"status":"BLOCKED","reason_codes":["SUPERSESSION_PLAN_STALE"]}
-    undeclared = [r["right"] for r in raw.get("relationships", []) if r.get("date_overlap") and r["right"] not in raw.get("proposed_superseded_generation_ids", [])]
-    if undeclared: return {"status":"BLOCKED","reason_codes":["UNDECLARED_OVERLAPPING_ACTIVE_GENERATION"],"generation_ids":undeclared}
-    with access._file_lock(access.manifest_path):
-        manifest=access._read_manifest(access.manifest_path)
-        for col in ("lifecycle_status", "superseded_by"):
-            if col not in manifest: manifest[col]="" if col == "superseded_by" else "ACTIVE"
-        for gid in raw.get("proposed_superseded_generation_ids", []):
-            mask=manifest.active_generation.astype(str).eq(str(gid))
-            manifest.loc[mask, "active_generation"]=""
-            manifest.loc[mask, "lifecycle_status"]="SUPERSEDED"
-            manifest.loc[mask, "superseded_by"]=raw["target_generation_id"]
-        manifest.to_csv(access.manifest_path, index=False)
-    return {"status":"APPLIED", "plan_id":plan_id, "superseded_generation_ids":raw.get("proposed_superseded_generation_ids", [])}
-
-def persist_generation_supersession_plan(plan: GenerationSupersessionPlan, root="data/manifests/supersession_plans") -> Path:
-    path=Path(root)/f"{plan.plan_id}.json"; path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(plan.to_dict(), sort_keys=True, indent=2), encoding="utf-8"); return path
 
 def _part(symbol, year, quarter): return {"symbol": str(symbol).upper(), "year": int(year), "quarter": int(quarter)}
 def _rows(access, dataset, p):
