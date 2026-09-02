@@ -161,6 +161,11 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     if options_reader is None and data_access is None and auto_prepare_data:
         def options_reader(symbol, trade_date):
             day = pd.Timestamp(trade_date).normalize()
+            try:
+                existing = resolve_active_verified_options_handle(symbol, str(day.date()), data_access=access)
+                return access.read_verified_dataset(existing, end_date=str(day.date()))
+            except Exception:
+                pass
             req = MarketDataRequirements(symbol=symbol,
                 required_start=str(day.date()), required_end=str(day.date()),
                 datasets=("options",), decision_as_of=str(day.date()),
