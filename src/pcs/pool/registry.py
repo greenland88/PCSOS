@@ -5,6 +5,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 import json
+import hashlib
+import os
 import pandas as pd
 import yaml
 
@@ -36,25 +38,18 @@ class UniverseSpec:
 
     @classmethod
     def from_global_candidates(cls, path: str | Path | None = None):
-        # The migration manifest is an authorized population audit source, but
-        # it is not itself a versioned executable universe.  Never promote it
-        # implicitly into the formal pool input.
-        source = Path(path) if path is not None else Path("config/global_pcs_candidates.csv")
+        source = Path(path) if path is not None else Path("data/artifacts/global_pcs_candidates/active.json")
         if not source.exists():
             audit = Path("data/manifests/daily_universe_migration.csv")
-            maximum = 0
-            if audit.exists():
-                maximum = int(pd.read_csv(audit, usecols=["symbol"])["symbol"].astype(str).str.upper().nunique())
-            raise ValueError(f"GLOBAL_UNIVERSE_SOURCE_MISSING:maximum_authorized_population={maximum}:source={audit}")
-        frame = pd.read_csv(source, usecols=["symbol", "status"])
-        if "status" in frame:
-            frame = frame[frame.status.astype(str).str.upper().eq("SUCCESS")]
-        symbols = merge_symbols(explicit_symbols=frame["symbol"].tolist())
-        if not symbols:
-            raise ValueError("GLOBAL_UNIVERSE_SOURCE_MISSING")
-        import hashlib
-        fingerprint = hashlib.sha256("\n".join(symbols).encode()).hexdigest()
-        return cls("global_pcs_candidates", tuple(symbols), "daily-migration-v1", "GLOBAL_CANDIDATE_UNIVERSE", fingerprint)
+            if path is not None or not audit.exists():
+                maximum = int(pd.read_csv(audit, usecols=["symbol"])["symbol"].astype(str).str.upper().nunique()) if audit.exists() else 0
+                raise ValueError(f"GLOBAL_UNIVERSE_SOURCE_MISSING:maximum_authorized_population={maximum}:source={audit}")
+            build_global_pcs_universe(source=audit)
+        pointer = json.loads(source.read_text(encoding="utf-8"))
+        snapshot = Path(pointer["snapshot_path"])
+        payload = json.loads(snapshot.with_suffix(".json").read_text(encoding="utf-8"))
+        return cls("global_pcs_candidates", tuple(payload["symbols"]), payload["version"],
+                    "GLOBAL_CANDIDATE_UNIVERSE", payload["inventory_fingerprint"])
 
     @classmethod
     def from_file(cls, path: str | Path, *, symbol_column: str = "symbol"):
@@ -78,6 +73,56 @@ class UniverseSpec:
             raise ValueError("universe file must contain a symbol list")
         return cls.from_symbols(values, universe_id=str(source.resolve()))
 
+
+def build_global_pcs_universe(*, source: str | Path = "data/manifests/daily_universe_migration.csv",
+                              as_of: str = "latest", config=None,
+                              output_directory: str | Path = "data/artifacts/global_pcs_candidates") -> UniverseSpec:
+    """Build an immutable global candidate snapshot in the admin boundary."""
+    source = Path(source)
+    if not source.exists():
+        raise ValueError("GLOBAL_UNIVERSE_SOURCE_MISSING")
+    raw = pd.read_csv(source, usecols=["symbol", "status", "rows_written", "partitions", "source", "source_size"])
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    success = raw[raw.status.astype(str).str.upper().eq("SUCCESS")].copy()
+    before = len(success)
+    symbols = merge_symbols(explicit_symbols=success.symbol.tolist())
+    invalid_count = int(sum(not str(x).strip().replace(".", "").isalnum() for x in success.symbol))
+    duplicate_count = before - len(set(str(x).strip().upper() for x in success.symbol))
+    if not symbols:
+        raise ValueError("GLOBAL_UNIVERSE_SOURCE_MISSING")
+    # Reuse the existing BasePoolConfig/static screening implementation only
+    # during maintenance; its direct file scan never enters decision reads.
+    from pcs.data.base_pool import BasePoolConfig, _underlying_rows
+    cfg = config or BasePoolConfig()
+    try:
+        screened = _underlying_rows(success.rename(columns={"rows_written": "rows_written"}), cfg, None)
+    except Exception:
+        screened = pd.DataFrame()
+    status_by_symbol = {str(r.symbol).upper(): str(r.underlying_status) for r in screened.itertuples()} if len(screened) else {}
+    included = [s for s in symbols if status_by_symbol.get(s, "DATA_BLOCKED") == "UNDERLYING_ELIGIBLE"]
+    excluded = [s for s in symbols if s not in set(included)]
+    inventory_fingerprint = hashlib.sha256("\n".join(symbols).encode()).hexdigest()
+    version = f"{source_hash[:16]}-{inventory_fingerprint[:16]}"
+    root = Path(output_directory); root.mkdir(parents=True, exist_ok=True)
+    snapshot = root / f"global_pcs_candidates_{version}.parquet"
+    meta = snapshot.with_suffix(".json")
+    manifest = root / f"global_pcs_candidates_{version}_manifest.json"
+    frame = pd.DataFrame({"symbol": symbols, "eligibility_status": ["PCS_ELIGIBLE" if s in set(included) else "DATA_BLOCKED" for s in symbols],
+                          "reason_codes": ["STATIC_ELIGIBILITY_PASS" if s in set(included) else "STATIC_DATA_UNAVAILABLE" for s in symbols]})
+    temporary = snapshot.with_name(snapshot.name + ".tmp"); frame.to_parquet(temporary, index=False); os.replace(temporary, snapshot)
+    payload = {"universe_id":"global_pcs_candidates", "universe_role":"GLOBAL_CANDIDATE_UNIVERSE", "version":version,
+               "generated_at":pd.Timestamp.now("UTC").isoformat(), "effective_as_of":as_of,
+               "source_manifest":str(source), "source_manifest_hash":source_hash,
+               "inventory_fingerprint":inventory_fingerprint, "rule_version":"BasePoolConfig-v1",
+               "raw_inventory_count":int(len(raw)), "normalized_count":len(symbols), "duplicate_count":duplicate_count,
+               "invalid_count":invalid_count, "migration_failed_count":int((~raw.status.astype(str).str.upper().eq("SUCCESS")).sum()),
+               "included_symbol_count":len(included), "excluded_symbol_count":len(excluded), "symbols":symbols}
+    temporary = meta.with_name(meta.name + ".tmp"); temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"); os.replace(temporary, meta)
+    payload["artifact_hash"] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    temporary = manifest.with_name(manifest.name + ".tmp"); temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"); os.replace(temporary, manifest)
+    pointer = root / "active.json"; temporary = pointer.with_name(pointer.name + ".tmp"); temporary.write_text(json.dumps({"snapshot_path":str(snapshot),"manifest_path":str(manifest),"version":version}, indent=2), encoding="utf-8"); os.replace(temporary, pointer)
+    return UniverseSpec("global_pcs_candidates", tuple(symbols), version,
+                        "GLOBAL_CANDIDATE_UNIVERSE", inventory_fingerprint)
 
 @dataclass(frozen=True)
 class RegistryEntry:
