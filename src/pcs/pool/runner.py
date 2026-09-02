@@ -92,7 +92,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     if event_policy == "PLANNED_EARLY_EXIT" and (planned_exit_before_event_sessions is None or planned_exit_before_event_sessions < 1):
         raise ValueError("planned early exit requires positive exit buffer sessions")
     if symbols is None:
-        spec = UniverseSpec.from_config("config/market_universe.yaml")
+        spec = (UniverseSpec.from_file(universe_id) if universe_id is not None
+                else UniverseSpec.from_config("config/market_universe.yaml"))
     else:
         spec = UniverseSpec.from_symbols(symbols, universe_id=universe_id or "explicit")
     run_id = uuid.uuid4().hex
