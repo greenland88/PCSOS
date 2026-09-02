@@ -403,7 +403,9 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     descriptor = __import__("pcs.data.canonical_generations", fromlist=["canonical_snapshot_descriptor"]).canonical_snapshot_descriptor(
         dataset="daily", symbol=s, frame=frame,
         file_hash=hashlib.sha256(b"".join(Path(p).read_bytes() for p in paths)).hexdigest(),
-        byte_size=sum(Path(p).stat().st_size for p in paths), partition_key="|".join(partitions))
+        byte_size=sum(Path(p).stat().st_size for p in paths),
+        schema_version=str(candidates.schema_version.iloc[0]), price_basis="canonical_adjusted",
+        corporate_action_version="canonical_identity", partition_key="|".join(partitions))
     return VerifiedDatasetHandle("daily", s, "|".join(generations), partitions, str(checksum), len(frame), paths,
         {"min_date": str(candidates.min_date.iloc[0]), "max_date": str(candidates.max_date.max())},
         dataset_fingerprint=descriptor["dataset_fingerprint"], schema_version=str(candidates.schema_version.iloc[0]),
