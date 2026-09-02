@@ -35,10 +35,17 @@ class UniverseSpec:
         return cls(spec.universe_id, spec.symbols, spec.version, role, spec.fingerprint)
 
     @classmethod
-    def from_global_candidates(cls, path: str | Path = "data/manifests/daily_universe_migration.csv"):
-        source = Path(path)
+    def from_global_candidates(cls, path: str | Path | None = None):
+        # The migration manifest is an authorized population audit source, but
+        # it is not itself a versioned executable universe.  Never promote it
+        # implicitly into the formal pool input.
+        source = Path(path) if path is not None else Path("config/global_pcs_candidates.csv")
         if not source.exists():
-            raise ValueError("GLOBAL_UNIVERSE_SOURCE_MISSING")
+            audit = Path("data/manifests/daily_universe_migration.csv")
+            maximum = 0
+            if audit.exists():
+                maximum = int(pd.read_csv(audit, usecols=["symbol"])["symbol"].astype(str).str.upper().nunique())
+            raise ValueError(f"GLOBAL_UNIVERSE_SOURCE_MISSING:maximum_authorized_population={maximum}:source={audit}")
         frame = pd.read_csv(source, usecols=["symbol", "status"])
         if "status" in frame:
             frame = frame[frame.status.astype(str).str.upper().eq("SUCCESS")]

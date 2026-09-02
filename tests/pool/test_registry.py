@@ -37,6 +37,9 @@ def test_core_watchlist_is_not_global_candidate_universe():
     spec = UniverseSpec.from_config("config/market_universe.yaml")
     assert len(spec.symbols) == 25
     assert spec.universe_role == "CORE_WATCHLIST"
-    global_spec = UniverseSpec.from_global_candidates()
-    assert global_spec.universe_role == "GLOBAL_CANDIDATE_UNIVERSE"
-    assert len(global_spec.symbols) != len(spec.symbols)
+    try:
+        UniverseSpec.from_global_candidates()
+    except ValueError as exc:
+        assert str(exc).startswith("GLOBAL_UNIVERSE_SOURCE_MISSING:")
+    else:
+        raise AssertionError("unversioned migration population must not be executable global universe")
