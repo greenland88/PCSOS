@@ -29,7 +29,10 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         daily = access.read_prices(symbol, end_date=daily_asof or asof)
         if benchmark is None or daily.empty:
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
-        trend = build_trend_snapshot(daily, benchmark, as_of_date=asof, symbol=symbol, benchmark=benchmark_symbol)
+        # Each worker receives an independent immutable snapshot boundary;
+        # trend helpers may construct intermediate columns internally.
+        trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
+                                     as_of_date=asof, symbol=symbol, benchmark=benchmark_symbol)
         engine = trend.market_structure_engine
         phase = str(getattr(engine, "short_term_phase", ""))
         if phase in {"RECLAIM_CONFIRMED", "HEALTHY_PULLBACK", "BREAKOUT_CONFIRMED"}:
