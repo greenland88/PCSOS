@@ -14,10 +14,11 @@ from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnaps
                      PoolScanResult, TickerScanResult, TimingStatus)
 from .registry import UniverseSpec, evaluate_static_eligibility
 from .concurrency import run_symbol_workers
+from .modes import completed_daily_cutoff
 
 
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
-                     options_reader, option_rules):
+                     options_reader, option_rules, daily_asof=None):
     started = perf_counter()
     entry = evaluate_static_eligibility(symbol)
     if entry.status != EligibilityStatus.PCS_ELIGIBLE:
@@ -25,7 +26,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             final_action=FinalAction.DATA_FAILED, reason_codes=entry.reason_codes,
             latency_ms=(perf_counter()-started)*1000)
     try:
-        daily = access.read_prices(symbol, end_date=asof)
+        daily = access.read_prices(symbol, end_date=daily_asof or asof)
         if benchmark is None or daily.empty:
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
         trend = build_trend_snapshot(daily, benchmark, as_of_date=asof, symbol=symbol, benchmark=benchmark_symbol)
@@ -95,12 +96,16 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         benchmark = access.read_prices(benchmark_symbol, end_date=asof)
     except Exception:
         benchmark = None
-    snapshot = PoolRunSnapshot(run_id, asof, mode, None, f"{spec.universe_id}:{spec.version}",
+    completed = completed_daily_cutoff(benchmark, asof, mode) if benchmark is not None else None
+    if benchmark is not None and completed is not None:
+        benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
+    snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}",
                                benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
     outcomes = run_symbol_workers(spec.symbols,
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
-            options_reader=options_reader, option_rules=option_rules), max_workers=max_workers)
+            options_reader=options_reader, option_rules=option_rules,
+            daily_asof=str(completed.date()) if completed is not None else None), max_workers=max_workers)
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)

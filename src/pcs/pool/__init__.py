@@ -16,6 +16,7 @@ from .final_gates import finalize_ticker_result
 from .options import SpreadCandidate, shortlist_spreads
 from .validation import validate_pool_result
 from .concurrency import WorkerOutcome, run_symbol_workers
+from .modes import completed_daily_cutoff
 
 __all__ = [
     "EligibilityStatus", "FinalAction", "PoolRunSnapshot", "PoolScanResult",
@@ -27,4 +28,5 @@ __all__ = [
     "SpreadCandidate", "shortlist_spreads",
     "validate_pool_result",
     "WorkerOutcome", "run_symbol_workers",
+    "completed_daily_cutoff",
 ]
