@@ -19,6 +19,26 @@ from .concurrency import run_symbol_workers
 from .modes import completed_daily_cutoff
 
 
+def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
+    """Adopt only the exact complete canonical rows for one ticker."""
+    from pcs.data.canonical_generations import adopt_legacy_canonical_generation
+    manifest = access._read_manifest(access.manifest_path)
+    rows = manifest[(manifest.dataset.astype(str) == "daily") &
+                    manifest.symbol.astype(str).str.upper().eq(str(symbol).upper())]
+    if rows.empty or rows.active_generation.notna().any():
+        return
+    for _, row in rows.iterrows():
+        path = str(row.get("parquet_path") or "").strip()
+        if not path:
+            return
+        import hashlib
+        from pathlib import Path
+        file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        adopt_legacy_canonical_generation(dataset="daily", symbol=symbol,
+            legacy_manifest=row.to_dict(), expected_file_hash=file_hash,
+            adoption_reason="AUTO_ADOPT_EXISTING_CANONICAL", data_access=access)
+
+
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
                      daily_handle_resolver=None, auto_prepare_data=True,
@@ -41,7 +61,9 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             prep = MarketDataRequirements(symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
                                           required_end=str(day.date()), datasets=("daily",),
                                           decision_as_of=str(day.date()), required_history_rows=200)
-            ensure_market_data(symbol, prep, access=access)
+            prepared = ensure_market_data(symbol, prep, access=access)
+            if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
+                _adopt_existing_daily_canonical(symbol, access)
             handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
         daily = access.read_verified_dataset(handle, end_date=daily_asof or asof,
                                              required_warmup_rows=200)
