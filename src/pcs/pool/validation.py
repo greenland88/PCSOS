@@ -12,7 +12,7 @@ def validate_pool_result(result: PoolScanResult, expected_symbols) -> None:
     if set(actual) != expected:
         raise ValueError("MISSING_TICKER_DECISION")
     for row in result.ticker_results:
-        if row.options_status != OptionsStatus.NOT_EVALUATED and row.timing_status != TimingStatus.TIMING_ENTRY_READY:
+        if row.options_status != OptionsStatus.NOT_EVALUATED and row.timing_status not in {TimingStatus.TIMING_ENTRY_READY, TimingStatus.WATCH}:
             raise ValueError("OPTIONS_EVALUATED_BEFORE_TIMING_READY")
     if result.summary.get("missing_ticker_decisions", 0) != 0:
         raise ValueError("MISSING_TICKER_DECISION")
