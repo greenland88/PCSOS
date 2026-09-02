@@ -87,6 +87,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
     if max_workers < 1:
         raise ValueError("max_workers must be positive")
+    if event_policy not in {"HOLD_TO_EXPIRY", "PLANNED_EARLY_EXIT"}:
+        raise ValueError("unsupported event policy")
+    if event_policy == "PLANNED_EARLY_EXIT" and (planned_exit_before_event_sessions is None or planned_exit_before_event_sessions < 1):
+        raise ValueError("planned early exit requires positive exit buffer sessions")
     if symbols is None:
         spec = UniverseSpec.from_config("config/market_universe.yaml")
     else:
