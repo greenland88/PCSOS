@@ -13,6 +13,48 @@ from pcs.trend.snapshot import build_trend_snapshot
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
 from .registry import UniverseSpec, evaluate_static_eligibility
+from .concurrency import run_symbol_workers
+
+
+def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
+                     options_reader, option_rules):
+    started = perf_counter()
+    entry = evaluate_static_eligibility(symbol)
+    if entry.status != EligibilityStatus.PCS_ELIGIBLE:
+        return TickerScanResult(symbol, run_id, asof, entry.status,
+            final_action=FinalAction.DATA_FAILED, reason_codes=entry.reason_codes,
+            latency_ms=(perf_counter()-started)*1000)
+    try:
+        daily = access.read_prices(symbol, end_date=asof)
+        if benchmark is None or daily.empty:
+            raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
+        trend = build_trend_snapshot(daily, benchmark, as_of_date=asof, symbol=symbol, benchmark=benchmark_symbol)
+        engine = trend.market_structure_engine
+        phase = str(getattr(engine, "short_term_phase", ""))
+        if phase in {"RECLAIM_CONFIRMED", "HEALTHY_PULLBACK", "BREAKOUT_CONFIRMED"}:
+            timing, action = TimingStatus.TIMING_ENTRY_READY, FinalAction.WAIT
+        elif phase:
+            timing, action = TimingStatus.WATCH, FinalAction.WATCH
+        else:
+            timing, action = TimingStatus.WAIT, FinalAction.WAIT
+        options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
+        feature_date = getattr(engine, "feature_max_date", None)
+        if timing == TimingStatus.TIMING_ENTRY_READY and options_reader is not None:
+            from .options import shortlist_spreads
+            chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
+            close = float(daily.iloc[-1].close)
+            atr = float(getattr(trend.support, "current_atr", 0) or 0)
+            candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
+            options_status = OptionsStatus.PASS if candidates else OptionsStatus.REJECT
+            option_reasons = ("OPTIONS_SHORTLIST_PASS" if candidates else "NO_QUALIFYING_SPREAD",)
+        reasons = tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",)
+        return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
+            final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
+            latency_ms=(perf_counter()-started)*1000)
+    except Exception as exc:
+        return TickerScanResult(symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
+            final_action=FinalAction.DATA_FAILED, reason_codes=("DAILY_TIMING_FAILED", type(exc).__name__),
+            latency_ms=(perf_counter()-started)*1000)
 
 
 def _as_of(value) -> str:
@@ -54,52 +96,14 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         benchmark = None
     snapshot = PoolRunSnapshot(run_id, asof, mode, None, f"{spec.universe_id}:{spec.version}",
                                benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
-    results = []
-    for symbol in spec.symbols:
-        started = perf_counter()
-        entry = evaluate_static_eligibility(symbol)
-        if entry.status != EligibilityStatus.PCS_ELIGIBLE:
-            results.append(TickerScanResult(symbol, run_id, asof, entry.status,
-                final_action=FinalAction.DATA_FAILED, reason_codes=entry.reason_codes,
-                latency_ms=(perf_counter()-started)*1000))
-            continue
-        try:
-            daily = access.read_prices(symbol, end_date=asof)
-            if benchmark is None or daily.empty:
-                raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
-            trend = build_trend_snapshot(daily, benchmark, as_of_date=asof, symbol=symbol, benchmark=benchmark_symbol)
-            engine = trend.market_structure_engine
-            phase = str(getattr(engine, "short_term_phase", ""))
-            if phase in {"RECLAIM_CONFIRMED", "HEALTHY_PULLBACK", "BREAKOUT_CONFIRMED"}:
-                timing = TimingStatus.TIMING_ENTRY_READY
-                action = FinalAction.WAIT  # options/event/risk are not yet evaluated
-            elif phase:
-                timing = TimingStatus.WATCH
-                action = FinalAction.WATCH
-            else:
-                timing = TimingStatus.WAIT
-                action = FinalAction.WAIT
-            feature_date = getattr(engine, "feature_max_date", None)
-            options_status = OptionsStatus.NOT_EVALUATED
-            option_reasons = ()
-            if timing == TimingStatus.TIMING_ENTRY_READY and options_reader is not None:
-                from .options import shortlist_spreads
-                chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
-                close = float(daily.loc[pd.to_datetime(daily.date).idxmax(), "close"])
-                atr = float(getattr(trend.support, "current_atr", 0) or 0)
-                candidates = shortlist_spreads(symbol, feature_date, close, atr, chain,
-                                                rules=option_rules or {})
-                options_status = OptionsStatus.PASS if candidates else OptionsStatus.REJECT
-                option_reasons = ("OPTIONS_SHORTLIST_PASS" if candidates else "NO_QUALIFYING_SPREAD",)
-                action = FinalAction.WAIT
-            results.append(TickerScanResult(symbol, run_id, asof, entry.status, timing,
-                options_status, final_action=action,
-                reason_codes=tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",),
-                feature_max_date=str(feature_date), latency_ms=(perf_counter()-started)*1000))
-        except Exception as exc:
-            results.append(TickerScanResult(symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
-                final_action=FinalAction.DATA_FAILED, reason_codes=("DAILY_TIMING_FAILED", type(exc).__name__),
-                latency_ms=(perf_counter()-started)*1000))
+    outcomes = run_symbol_workers(spec.symbols,
+        lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
+            benchmark=benchmark, benchmark_symbol=benchmark_symbol,
+            options_reader=options_reader, option_rules=option_rules), max_workers=max_workers)
+    results = [outcome.value if outcome.value is not None else TickerScanResult(
+        outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
+        final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
+        for outcome in outcomes]
     summary = {"raw_count": len(spec.symbols),
                "pcs_eligible_count": sum(r.eligibility_status == EligibilityStatus.PCS_ELIGIBLE for r in results),
                "timing_entry_ready_count": sum(r.timing_status == TimingStatus.TIMING_ENTRY_READY for r in results),
