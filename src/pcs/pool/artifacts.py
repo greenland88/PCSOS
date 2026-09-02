@@ -44,6 +44,16 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         "".join(json.dumps(item, sort_keys=True) + "\n" for item in transitions))
     files["failures.jsonl"] = _write_atomic(root / "failures.jsonl",
         "".join(json.dumps(item, sort_keys=True) + "\n" for item in failures))
+    report = (f"# PCS pool scan {result.snapshot.run_id}\n\n"
+              f"Mode: `{result.snapshot.mode}`  \nAs of: `{result.snapshot.as_of}`  \n"
+              f"Symbols: **{len(result.ticker_results)}**  \n\n"
+              "This artifact contains the implemented U1 daily funnel. Options, event, "
+              "and portfolio stages are not implemented in this run.\n")
+    files["human_report.md"] = _write_atomic(root / "human_report.md", report)
+    files["ai_decision_packets.jsonl"] = _write_atomic(root / "ai_decision_packets.jsonl",
+        "".join(json.dumps({"symbol": row.symbol, "final_action": row.final_action.value,
+                            "reason_codes": list(row.reason_codes)}, sort_keys=True) + "\n"
+                for row in result.ticker_results))
     manifest = {
         "current": True, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,
