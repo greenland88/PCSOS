@@ -33,6 +33,10 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     files: dict[str, str] = {}
     snapshot = json.dumps(asdict(result.snapshot), default=str, sort_keys=True, indent=2)
     files["universe_snapshot.json"] = _write_atomic(root / "universe_snapshot.json", snapshot)
+    files["universe_snapshot.parquet"] = _write_parquet_atomic(root / "universe_snapshot.parquet", [
+        {"symbol": row.symbol, "run_id": row.run_id, "as_of": row.as_of,
+         "universe_snapshot_id": result.snapshot.universe_snapshot_id}
+        for row in result.ticker_results])
     rows = json.dumps([asdict(row) for row in result.ticker_results], default=str, sort_keys=True, indent=2)
     files["static_eligibility.json"] = _write_atomic(root / "static_eligibility.json", rows)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
