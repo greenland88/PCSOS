@@ -85,12 +85,16 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         feature_date = getattr(engine, "feature_max_date", None)
         if timing in {TimingStatus.TIMING_ENTRY_READY, TimingStatus.WATCH} and options_reader is not None:
             from .options import shortlist_spreads
-            chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
-            close = float(daily.iloc[-1].close)
-            atr = float(getattr(trend.support, "current_atr", 0) or 0)
-            candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
-            options_status = OptionsStatus.PASS if candidates else OptionsStatus.REJECT
-            option_reasons = ("OPTIONS_SHORTLIST_PASS" if candidates else "NO_QUALIFYING_SPREAD",)
+            try:
+                chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
+                close = float(daily.iloc[-1].close)
+                atr = float(getattr(trend.support, "current_atr", 0) or 0)
+                candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
+                options_status = OptionsStatus.PASS if candidates else OptionsStatus.REJECT
+                option_reasons = ("OPTIONS_SHORTLIST_PASS" if candidates else "NO_QUALIFYING_SPREAD",)
+            except Exception as exc:
+                options_status = OptionsStatus.DATA_BLOCKED
+                option_reasons = (str(exc).strip() or "OPTIONS_DATA_BLOCKED",)
         reasons = tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",)
         return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
