@@ -21,6 +21,8 @@ def test_runner_returns_one_result_per_symbol_and_does_not_read_options():
     assert len(result.ticker_results) == 1
     assert result.summary["missing_ticker_decisions"] == 0
     assert result.summary["options_check_count"] == 0
+    assert result.counters["ordinary_reader_calls"] == 2
+    assert result.counters["provider_calls"] == 0
 
 
 def test_worker_count_does_not_change_decisions():

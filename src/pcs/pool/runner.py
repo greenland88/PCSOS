@@ -134,7 +134,12 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                                                     portfolio_status=portfolio_status))
         results = finalized
         summary["pcs_trade_ready_count"] = sum(row.final_action == FinalAction.PCS_TRADE_READY for row in results)
-    result = PoolScanResult(snapshot, tuple(results), summary)
+    counters = {
+        "ordinary_reader_calls": 1 + len(spec.symbols),
+        "options_reader_calls": summary["options_check_count"],
+        "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
+    }
+    result = PoolScanResult(snapshot, tuple(results), summary, counters=counters)
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory)
