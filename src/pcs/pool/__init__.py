@@ -13,6 +13,7 @@ from .runner import run_pcs_pool
 from .final_gates import (PoolEventResult, evaluate_pool_event, PoolPortfolioResult,
                           evaluate_pool_portfolio, compose_final_action)
 from .options import SpreadCandidate, shortlist_spreads
+from .validation import validate_pool_result
 
 __all__ = [
     "EligibilityStatus", "FinalAction", "PoolRunSnapshot", "PoolScanResult",
@@ -21,4 +22,5 @@ __all__ = [
     "PoolEventResult", "evaluate_pool_event",
     "PoolPortfolioResult", "evaluate_pool_portfolio", "compose_final_action",
     "SpreadCandidate", "shortlist_spreads",
+    "validate_pool_result",
 ]

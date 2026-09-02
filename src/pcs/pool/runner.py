@@ -108,6 +108,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory)
+    from .validation import validate_pool_result
+    validate_pool_result(result, spec.symbols)
     return result
 
 
