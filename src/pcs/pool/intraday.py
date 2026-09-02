@@ -16,6 +16,13 @@ class ExecutionTimingSnapshot:
     current_price: float | None = None
 
 
+def run_intraday_overlay(daily_results, *, as_of: str, current_price_reader):
+    """Build overlays for a frozen daily result set without daily recomputation."""
+    return tuple(build_intraday_overlay(row, as_of=as_of,
+                                        current_price_reader=current_price_reader)
+                 for row in daily_results)
+
+
 def build_intraday_overlay(daily_result, *, as_of: str, current_price_reader) -> ExecutionTimingSnapshot:
     """Refresh a hot pool ticker from current price only."""
     symbol = daily_result.symbol

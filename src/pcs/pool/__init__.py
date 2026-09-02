@@ -17,7 +17,7 @@ from .options import SpreadCandidate, shortlist_spreads
 from .validation import validate_pool_result
 from .concurrency import WorkerOutcome, run_symbol_workers
 from .modes import completed_daily_cutoff
-from .intraday import ExecutionTimingSnapshot, build_intraday_overlay
+from .intraday import ExecutionTimingSnapshot, build_intraday_overlay, run_intraday_overlay
 
 __all__ = [
     "EligibilityStatus", "FinalAction", "PoolRunSnapshot", "PoolScanResult",
@@ -30,5 +30,5 @@ __all__ = [
     "validate_pool_result",
     "WorkerOutcome", "run_symbol_workers",
     "completed_daily_cutoff",
-    "ExecutionTimingSnapshot", "build_intraday_overlay",
+    "ExecutionTimingSnapshot", "build_intraday_overlay", "run_intraday_overlay",
 ]
