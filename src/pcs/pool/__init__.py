@@ -12,6 +12,7 @@ from .models import (
 from .runner import run_pcs_pool
 from .final_gates import (PoolEventResult, evaluate_pool_event, PoolPortfolioResult,
                           evaluate_pool_portfolio, compose_final_action)
+from .final_gates import finalize_ticker_result
 from .options import SpreadCandidate, shortlist_spreads
 from .validation import validate_pool_result
 from .concurrency import WorkerOutcome, run_symbol_workers
@@ -22,6 +23,7 @@ __all__ = [
     "run_pcs_pool",
     "PoolEventResult", "evaluate_pool_event",
     "PoolPortfolioResult", "evaluate_pool_portfolio", "compose_final_action",
+    "finalize_ticker_result",
     "SpreadCandidate", "shortlist_spreads",
     "validate_pool_result",
     "WorkerOutcome", "run_symbol_workers",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 import pandas as pd
 
 from pcs.entry.gates import EventGate, GateStatus
@@ -55,6 +56,16 @@ def compose_final_action(*, timing_status, options_status, event_status, portfol
     else:
         action = FinalAction.PCS_TRADE_READY
     return action, tuple(reasons)
+
+
+def finalize_ticker_result(row, *, event_status: str, portfolio_status: str):
+    """Apply final gates to one immutable ticker result."""
+    action, reasons = compose_final_action(
+        timing_status=row.timing_status, options_status=row.options_status,
+        event_status=event_status, portfolio_status=portfolio_status,
+        base_reasons=row.reason_codes)
+    return replace(row, event_status=event_status, portfolio_status=portfolio_status,
+                   final_action=action, reason_codes=reasons)
 
 
 def evaluate_pool_event(candidate, calendar: pd.DataFrame | None, *, policy: str = "HOLD_TO_EXPIRY",
