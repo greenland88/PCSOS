@@ -146,17 +146,13 @@ def _candidate_report(row, context, *, qualified=False):
             "risk_level": ("LOW" if qualified and short < float(context.underlying_price) and abs(float(row["short_delta"])) < .35 and (not context.atr14 or ((float(context.underlying_price)-short)/float(context.atr14) >= 2.3)) and credit/max_loss >= .25 else "MEDIUM" if qualified else "REJECTED")}
 
 def _read_verified_dataset(access, handle):
-    """Read every partition through the generation-pinned boundary only."""
-    frames = [access.read_pinned_generation(handle.dataset, handle.ticker, partition, handle.generation_id)
-              for partition in handle.partitions]
-    if not frames:
-        raise ValueError("VERIFIED_DATASET_HAS_NO_PARTITIONS")
-    return pd.concat(frames, ignore_index=True)
+    """Read every partition through the shared validated pinned reader."""
+    return access.read_verified_dataset(handle)
 
 def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_context=None,
                         data_access=None, rules=None, event_calendar=None,
-                        event_calendar_path=None, full_research_readiness=True,
-                        auto_recover=True):
+                        event_calendar_path=None, full_research_readiness=False,
+                        auto_recover=False):
     symbol=str(symbol).strip().upper(); run_id,request_id=uuid4().hex,uuid4().hex; access=data_access or PCSDataAccess()
     if mode not in {"eod", "live"}:
         return _blocked(symbol,as_of,"MODE_NOT_SUPPORTED",{"mode":mode},run_id=run_id,request_id=request_id)
@@ -255,7 +251,7 @@ def evaluate_pcs_status(symbol: str, as_of: str, *, mode="eod", portfolio_contex
         chain=quotes.rename(columns={"trade_date":"Trade Date","expiration_date":"Expiry Date","call_put":"Call/Put","strike":"Strike","bid":"Bid Price","ask":"Ask Price","open_interest":"Open Interest","volume":"Volume","delta":"Delta"})
         rows=generate_structural_put_opportunities(chain,symbol,effective); funnel={"chains_loaded":int(bool(len(chain))),"candidates_generated":len(rows),"hard_eligible_candidates":0,"engine_evaluated":0,"engine_open":0}
         if not rows: return PCSStatusResult(symbol=symbol,as_of=as_of,status="PASS",action=Action.WAIT.value,system_status="READY",strategy_status="EXECUTED",strategy_evaluated=True,contract_selection_evaluated=True,auto_recovered=recovered,reason_codes=["NO_EXACT_PUT_SPREAD_CANDIDATE"],data_timestamp=effective,run_id=run_id,request_id=request_id,readiness=rd,funnel=funnel,effective_market_date=effective,readiness_underlying_generation_id=readiness_ids["underlying"],readiness_options_generation_id=readiness_ids["options"],runner_underlying_generation_id=readiness_ids["underlying"],runner_options_generation_id=readiness_ids["options"])
-        active_rules=rules or load_rules(); context=build_market_context(symbol,effective,data_access=access,rules=active_rules,daily_frame=daily); engine=DecisionEngine(active_rules); portfolio=portfolio_context or {"planned_risk":0,"theoretical_max_loss":0,"bucket_risk":{}}
+        active_rules=rules or load_rules(); context=build_market_context(symbol,effective,data_access=access,rules=active_rules,daily_frame=daily,mode="FORMAL"); engine=DecisionEngine(active_rules); portfolio=portfolio_context or {"planned_risk":0,"theoretical_max_loss":0,"bucket_risk":{}}
         # Trend/timing is authoritative and precedes option ranking.  A valid
         # chain must not turn a structural downtrend or an unconfirmed
         # reclaim into an OPEN result.

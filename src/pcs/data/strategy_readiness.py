@@ -58,6 +58,12 @@ class VerifiedDatasetHandle:
             raise ValueError("INCOMPLETE_VERIFIED_DATASET_HANDLE")
         if self.generation_id in {"UNKNOWN", "UNPINNED_GENERATION"}:
             raise ValueError("PLACEHOLDER_GENERATION_FORBIDDEN")
+        required = (self.dataset_fingerprint, self.checksum, self.coverage,
+                    self.row_count, self.min_date, self.max_date,
+                    self.schema_version, self.price_basis,
+                    self.corporate_action_version)
+        if any(value is None or value == "" or value == {} or value == 0 for value in required):
+            raise ValueError("INCOMPLETE_VERIFIED_DATASET_PROVENANCE")
         if self.verification_status != "VERIFIED": raise ValueError("UNVERIFIED_DATASET_HANDLE")
 
 @dataclass(frozen=True, init=False)
@@ -67,9 +73,15 @@ class VerifiedDataHandle:
     price_basis: str; corporate_action_basis: str; verified_at: str
     quote_date: str | None; quote_timestamp: str | None
     source_lineage: tuple[dict[str, Any], ...]
+    benchmark_handles: dict[str, VerifiedDatasetHandle] = field(default_factory=dict)
+    event_provenance: dict[str, Any] = field(default_factory=dict)
+    input_summary: dict[str, Any] = field(default_factory=dict)
+    refresh_policy: str = "REUSE_VERIFIED"
     def __init__(self, ticker, strategy_type, as_of, mode, underlying_handle, options_handle,
                  price_basis, corporate_action_basis, verified_at, quote_date, quote_timestamp,
-                 source_lineage=(), *legacy):
+                 source_lineage=(), *legacy, benchmark_handles=None,
+                 event_provenance=None, input_summary=None,
+                 refresh_policy="REUSE_VERIFIED"):
         # Accept the pre-split positional shape only to fail it deterministically;
         # no legacy data can be consumed or turned into a READY handle.
         if isinstance(underlying_handle, str) or isinstance(options_handle, str):
@@ -80,6 +92,10 @@ class VerifiedDataHandle:
         object.__setattr__(self, "price_basis", price_basis); object.__setattr__(self, "corporate_action_basis", corporate_action_basis)
         object.__setattr__(self, "verified_at", verified_at); object.__setattr__(self, "quote_date", quote_date)
         object.__setattr__(self, "quote_timestamp", quote_timestamp); object.__setattr__(self, "source_lineage", source_lineage)
+        object.__setattr__(self, "benchmark_handles", dict(benchmark_handles or {}))
+        object.__setattr__(self, "event_provenance", dict(event_provenance or {}))
+        object.__setattr__(self, "input_summary", dict(input_summary or {}))
+        object.__setattr__(self, "refresh_policy", str(refresh_policy))
         self.__post_init__()
     def __post_init__(self):
         required=(self.ticker,self.strategy_type,self.as_of,self.mode,
@@ -88,6 +104,13 @@ class VerifiedDataHandle:
             raise ValueError("INCOMPLETE_VERIFIED_DATA_HANDLE")
         if not self.underlying_handle or not self.options_handle:
             raise ValueError("INCOMPLETE_VERIFIED_DATA_HANDLE")
+        if not isinstance(self.underlying_handle, VerifiedDatasetHandle) or not isinstance(self.options_handle, VerifiedDatasetHandle):
+            raise ValueError("INVALID_VERIFIED_DATASET_HANDLE")
+        if self.refresh_policy not in {"REUSE_VERIFIED", "INCREMENTAL_IF_NEEDED"}:
+            raise ValueError("UNKNOWN_REFRESH_POLICY")
+        if any(not isinstance(value, VerifiedDatasetHandle) or value.verification_status != "VERIFIED"
+               for value in self.benchmark_handles.values()):
+            raise ValueError("INVALID_VERIFIED_BENCHMARK_HANDLE")
 
     @property
     def underlying_generation_id(self): return self.underlying_handle.generation_id
@@ -252,13 +275,27 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                     _ids(daily_receipt.get("partition_ids", daily_receipt.get("promoted_partitions", partitions)), partitions),
                     str(daily_receipt.get("checksum", "")), int(daily_receipt.get("row_count", len(daily)) or len(daily)),
                     tuple(str(daily_receipt.get("path") or p) for p in _sequence(daily_receipt.get("paths")) or paths[:1]), report.available_window,
-                    tuple(daily_receipt.get("source_lineage", lineage)))
+                    tuple(daily_receipt.get("source_lineage", lineage)),
+                    dataset_fingerprint=str(daily_receipt.get("dataset_fingerprint", "")),
+                    schema_version=str(daily_receipt.get("schema_version", "")),
+                    price_basis=str(daily_receipt.get("price_basis", strategy_requirements.price_basis)),
+                    corporate_action_version=str(daily_receipt.get("corporate_action_version", strategy_requirements.corporate_action_basis)),
+                    min_date=str(daily_receipt.get("min_date", report.available_window.get("min_date", ""))),
+                    max_date=str(daily_receipt.get("max_date", report.available_window.get("max_date", ""))),
+                    partition_count=len(_ids(daily_receipt.get("partition_ids", daily_receipt.get("promoted_partitions", partitions)), partitions)))
                 options = VerifiedDatasetHandle(
                     "options", s, str(options_receipt.get("promoted_generation_id", options_receipt.get("generation_id", gen))),
                     _ids(options_receipt.get("partition_ids", options_receipt.get("promoted_partitions", partitions)), partitions),
                     checksum, int(options_receipt.get("row_count", len(target)) or len(target)),
                     tuple(str(options_receipt.get("path") or p) for p in _sequence(options_receipt.get("paths")) or paths[:1]), report.available_window,
-                    tuple(options_receipt.get("source_lineage", lineage)))
+                    tuple(options_receipt.get("source_lineage", lineage)),
+                    dataset_fingerprint=str(options_receipt.get("dataset_fingerprint", "")),
+                    schema_version=str(options_receipt.get("schema_version", "")),
+                    price_basis=str(options_receipt.get("price_basis", strategy_requirements.price_basis)),
+                    corporate_action_version=str(options_receipt.get("corporate_action_version", strategy_requirements.corporate_action_basis)),
+                    min_date=str(options_receipt.get("min_date", report.available_window.get("min_date", ""))),
+                    max_date=str(options_receipt.get("max_date", report.available_window.get("max_date", ""))),
+                    partition_count=len(_ids(options_receipt.get("partition_ids", options_receipt.get("promoted_partitions", partitions)), partitions)))
                 handle = VerifiedDataHandle(
                     s, str(strategy_type), str(day.date()), str(mode).upper(), underlying, options,
                     strategy_requirements.price_basis, strategy_requirements.corporate_action_basis,

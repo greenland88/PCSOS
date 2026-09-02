@@ -87,13 +87,15 @@ def test_manifest_scalar_partition_is_not_split_into_characters():
     from pcs.data.strategy_readiness import VerifiedDatasetHandle
     handle = VerifiedDatasetHandle(
         "options", "ZZZ", "generation-1", ("year=2026/quarter=1",),
-        "checksum", 1, ("canonical.parquet",), {}, ())
+        "checksum", 1, ("canonical.parquet",), {"min_date":"2026-01-01"}, (),
+        dataset_fingerprint="fingerprint", min_date="2026-01-01", max_date="2026-01-01",
+        schema_version="1", price_basis="canonical_adjusted", corporate_action_version="canonical_identity")
     assert handle.partitions == ("year=2026/quarter=1",)
 
 def test_pinned_daily_read_has_no_legacy_fallback_and_checks_coverage(tmp_path):
     from pcs.data.strategy_readiness import VerifiedDatasetHandle
     a=access(tmp_path); r=a.promote_generation(daily_frame(),"daily","ZZZ","year=2024",source_version="fixture")
-    h=VerifiedDatasetHandle("daily","ZZZ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{},dataset_fingerprint="f" )
+    h=VerifiedDatasetHandle("daily","ZZZ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint="f",min_date="2024-01-02",max_date="2024-01-03",schema_version="1",price_basis="canonical_adjusted",corporate_action_version="canonical_identity" )
     out=a.read_prices("ZZZ","2024-01-02","2024-01-03",verified_handle=h)
     assert len(out)==2 and out.date.duplicated().sum()==0
     with pytest.raises(Exception, match="PINNED_GENERATION_COVERAGE_INSUFFICIENT"):
@@ -104,12 +106,12 @@ def test_daily_duplicate_canonical_key_fails_closed(tmp_path):
     a=access(tmp_path); x=daily_frame(dates=("2024-01-02","2024-01-02")); p=tmp_path/"dup.parquet"; x.to_parquet(p,index=False)
     digest=a.semantic_content_hash(x); gid=digest[:24]
     a.update_manifest("daily","ZZZ",x,p,"fixture","year=2024",replace_existing=True,active_generation=gid,content_hash=digest)
-    h=VerifiedDatasetHandle("daily","ZZZ",gid,("year=2024",),digest,len(x),(str(p),),{},dataset_fingerprint="f")
+    h=VerifiedDatasetHandle("daily","ZZZ",gid,("year=2024",),digest,len(x),(str(p),),{"min_date":"2024-01-02"},dataset_fingerprint="f",min_date="2024-01-02",max_date="2024-01-02",schema_version="1",price_basis="canonical_adjusted",corporate_action_version="canonical_identity")
     with pytest.raises(Exception, match="DUPLICATE_CANONICAL_PRICE_KEY"):
         a.read_prices("ZZZ","2024-01-02","2024-01-02",verified_handle=h)
 
 def test_non_nvda_ticker_uses_same_pinned_path(tmp_path):
     from pcs.data.strategy_readiness import VerifiedDatasetHandle
     a=access(tmp_path); r=a.promote_generation(daily_frame("QQQ"),"daily","QQQ","year=2024",source_version="fixture")
-    h=VerifiedDatasetHandle("daily","QQQ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{},dataset_fingerprint="f")
+    h=VerifiedDatasetHandle("daily","QQQ",r.generation_id,("year=2024",),r.checksum,r.row_count,(r.path,),{"min_date":"2024-01-02"},dataset_fingerprint="f",min_date="2024-01-02",max_date="2024-01-03",schema_version="1",price_basis="canonical_adjusted",corporate_action_version="canonical_identity")
     assert len(a.read_prices("QQQ","2024-01-02","2024-01-03",verified_handle=h))==2

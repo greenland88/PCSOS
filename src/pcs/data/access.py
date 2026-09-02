@@ -903,18 +903,7 @@ class PCSDataAccess:
     def read_prices(self, symbol: str, start_date=None, end_date=None, *, verified_handle=None) -> pd.DataFrame:
         if verified_handle is None:
             return self.read("daily", symbol, start_date, end_date)
-        if str(getattr(verified_handle, "dataset", "")) != "daily" or str(getattr(verified_handle, "ticker", "")).upper() != self._symbol(symbol):
-            raise DataAccessError("VERIFIED_HANDLE_MISMATCH")
-        if str(getattr(verified_handle, "verification_status", "")) != "VERIFIED" or not str(getattr(verified_handle, "generation_id", "")).strip() or not str(getattr(verified_handle, "dataset_fingerprint", "")).strip():
-            raise DataAccessError("PINNED_GENERATION_IDENTITY_MISSING")
-        frame=self.read_pinned_generation("daily", symbol, str(verified_handle.partitions[0]), str(verified_handle.generation_id))
-        frame["date"]=pd.to_datetime(frame["date"],errors="coerce").dt.normalize()
-        if start_date is not None: frame=frame[frame.date>=pd.Timestamp(start_date)]
-        if end_date is not None: frame=frame[frame.date<=pd.Timestamp(end_date)]
-        if start_date is not None and frame.date.min() > pd.Timestamp(start_date) or end_date is not None and frame.date.max() < pd.Timestamp(end_date): raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT")
-        if frame[["symbol","date"]].duplicated().any(): raise DataQualityError("DUPLICATE_CANONICAL_PRICE_KEY")
-        validate_price_input(frame, verified_handle, symbol, start_date, end_date)
-        return frame.sort_values(["symbol","date"]).reset_index(drop=True)
+        return self.read_verified_dataset(verified_handle, start_date, end_date)
 
     def read_daily(self, symbol: str, start_date=None, end_date=None) -> pd.DataFrame:
         """Backward-compatible alias for the canonical daily read API.
@@ -924,6 +913,45 @@ class PCSDataAccess:
         boundaries, price-basis handling, and provenance behavior.
         """
         return self.read_prices(symbol, start_date, end_date)
+
+    def read_verified_dataset(self, handle, start_date=None, end_date=None) -> pd.DataFrame:
+        """Read and validate every partition represented by a verified handle."""
+        from .correctness_gate import validate_price_input, DataCorrectnessError
+        if getattr(handle, "verification_status", None) != "VERIFIED":
+            raise DataCorrectnessError("GENERATION_NOT_VERIFIED")
+        if not getattr(handle, "dataset_fingerprint", "") or not getattr(handle, "checksum", ""):
+            raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
+        frames = [self.read_pinned_generation(handle.dataset, handle.ticker, partition, handle.generation_id)
+                  for partition in handle.partitions]
+        if not frames:
+            raise DataCorrectnessError("UNPINNED_INPUT")
+        frame = pd.concat(frames, ignore_index=True)
+        if len(frame) != int(handle.row_count):
+            raise DataCorrectnessError("DATASET_ROW_COUNT_MISMATCH")
+        actual_checksum = self.semantic_content_hash(frame)
+        if str(actual_checksum) != str(handle.checksum):
+            raise DataCorrectnessError("DATASET_CHECKSUM_MISMATCH")
+        if str(handle.dataset).lower() == "daily":
+            try:
+                validate_price_input(frame, handle, handle.ticker, start_date, end_date)
+            except DataCorrectnessError as exc:
+                if exc.reason_code == "INSUFFICIENT_DATE_COVERAGE":
+                    raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT") from exc
+                raise
+        else:
+            keys = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+            if not set(keys).issubset(frame.columns):
+                raise DataAccessError("SCHEMA_MISMATCH")
+            if frame[keys].duplicated().any():
+                raise DataQualityError("DUPLICATE_CANONICAL_OPTION_KEY")
+            dates = pd.to_datetime(frame["trade_date"], errors="coerce")
+            if dates.isna().any() or dates.max() > pd.Timestamp(end_date) if end_date is not None else dates.isna().any():
+                raise DataAccessError("PINNED_GENERATION_COVERAGE_INSUFFICIENT")
+        sort_columns = ["symbol", "date"] if str(handle.dataset).lower() == "daily" else ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
+        frame = frame.sort_values(sort_columns).reset_index(drop=True)
+        if start_date is not None: frame = frame[frame.date >= pd.Timestamp(start_date)]
+        if end_date is not None: frame = frame[frame.date <= pd.Timestamp(end_date)]
+        return frame.reset_index(drop=True)
 
     def write(self, frame: pd.DataFrame, dataset: str, symbol: str, partition: str, *, source_version: str, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False) -> Path:
         symbol = self._symbol(symbol)
