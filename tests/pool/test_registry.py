@@ -24,3 +24,10 @@ def test_registry_persistence(tmp_path: Path):
     persist_registry([evaluate_static_eligibility("NVDA")], path)
     assert path.exists()
     assert "NVDA" in path.read_text()
+
+
+def test_universe_spec_imports_explicit_csv_without_fixed_filename(tmp_path: Path):
+    path = tmp_path / "authorized-universe.csv"
+    path.write_text("symbol\n nvda \nMSFT\nNVDA\n", encoding="utf-8")
+    spec = UniverseSpec.from_file(path)
+    assert spec.symbols == ("NVDA", "MSFT")

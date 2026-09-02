@@ -5,6 +5,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 import json
+import pandas as pd
+import yaml
 
 from pcs.data.universe import load_market_universe, merge_symbols
 from .models import EligibilityStatus
@@ -26,6 +28,28 @@ class UniverseSpec:
     @classmethod
     def from_config(cls, path: str | Path, groups: Sequence[str] = ("pcs_universe",)):
         return cls.from_symbols(load_market_universe(groups=groups, path=Path(path)), universe_id=str(path))
+
+    @classmethod
+    def from_file(cls, path: str | Path, *, symbol_column: str = "symbol"):
+        """Import an explicit symbol list without assuming a repository filename."""
+        source = Path(path)
+        suffix = source.suffix.lower()
+        if suffix in {".yaml", ".yml"}:
+            payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+            values = payload.get(symbol_column, payload) if isinstance(payload, dict) else payload
+        elif suffix == ".json":
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            values = payload.get(symbol_column, payload) if isinstance(payload, dict) else payload
+        elif suffix in {".csv", ".tsv"}:
+            frame = pd.read_csv(source, sep="\t" if suffix == ".tsv" else ",")
+            if symbol_column not in frame.columns:
+                raise ValueError(f"universe file missing column: {symbol_column}")
+            values = frame[symbol_column].tolist()
+        else:
+            raise ValueError("universe file must be CSV, TSV, JSON, YAML, or YML")
+        if not isinstance(values, (list, tuple)):
+            raise ValueError("universe file must contain a symbol list")
+        return cls.from_symbols(values, universe_id=str(source.resolve()))
 
 
 @dataclass(frozen=True)
