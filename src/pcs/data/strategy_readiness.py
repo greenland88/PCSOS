@@ -371,8 +371,7 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
                 continue
             if left["_lo"] <= right["_hi"] and right["_lo"] <= left["_hi"]:
                 left_gid, right_gid = str(left.active_generation), str(right.active_generation)
-                if str(left.get("previous_generation", "")) != right_gid and str(right.get("previous_generation", "")) != left_gid:
-                    raise ValueError("ACTIVE_GENERATION_OVERLAP_CONFLICT")
+                raise ValueError("ACTIVE_GENERATION_OVERLAP_CONFLICT")
     candidates = rows[pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values(
         ["row_count", "max_date"], ascending=[False, False])
     if len(candidates) == 0:

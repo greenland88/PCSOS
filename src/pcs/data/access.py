@@ -428,10 +428,7 @@ class PCSDataAccess:
                             continue
                         if left["_lo"] <= right["_hi"] and right["_lo"] <= left["_hi"]:
                             left_gid, right_gid = str(left.active_generation), str(right.active_generation)
-                            declared = (str(left.get("previous_generation", "")) == right_gid or
-                                        str(right.get("previous_generation", "")) == left_gid)
-                            if not declared:
-                                overlap_pairs.append((left_gid, right_gid))
+                            overlap_pairs.append((left_gid, right_gid))
                 if overlap_pairs:
                     raise DataQualityError(f"ACTIVE_GENERATION_OVERLAP_CONFLICT:{symbol}:{overlap_pairs[:3]}")
                 rows = pd.concat([rows[~rows.index.isin(active_rows.index)], active_rows.drop(columns=["_lo", "_hi"])], ignore_index=True)

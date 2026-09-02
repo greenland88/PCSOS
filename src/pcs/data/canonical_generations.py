@@ -62,6 +62,10 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
                           current.active_generation.astype(str).eq(str(generation_id))]
         if len(matches) != 1: raise DataAccessError("ACTIVE_GENERATION_NOT_UNIQUE")
         row = matches.iloc[0]; path = Path(_strict_text(row.parquet_path, "ACTIVE_GENERATION_PATH_MISSING"))
+        for field in ("schema_version", "price_basis", "corporate_action_version"):
+            value = row.get(field)
+            if value is None or pd.isna(value) or not str(value).strip() or str(value).lower() == "nan":
+                raise DataAccessError("DATASET_PROVENANCE_INCOMPLETE")
         if not path.exists(): raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
         frame = pd.read_parquet(path); checksum = access.semantic_content_hash(frame)
         if str(row.get("content_hash", "")) != checksum: raise DataQualityError("CONTENT_HASH_MISMATCH")
@@ -78,8 +82,12 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
         current.loc[matches.index, "corporate_action_version"] = corporate_action_version
         current.loc[matches.index, "lifecycle_status"] = "ACTIVE"
         tmp = access.manifest_path.with_name(f".{access.manifest_path.name}.{uuid.uuid4().hex}.tmp")
-        current.to_csv(tmp, index=False)
-        os.replace(tmp, access.manifest_path)
+        try:
+            current.to_csv(tmp, index=False)
+            os.replace(tmp, access.manifest_path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        access._manifest = current
     return {"status": "REGISTERED", "generation_id": str(generation_id), "dataset_fingerprint": descriptor["dataset_fingerprint"], "snapshot_descriptor": descriptor}
 
 REPAIR_ACTION_POLICY = {

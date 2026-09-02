@@ -143,3 +143,11 @@ def test_overlapping_active_generations_fail_closed(tmp_path):
         a.update_manifest("daily","ZZZ",x,p,"fixture",f"year={year}",replace_existing=True,active_generation=gid,content_hash=digest)
     with pytest.raises(Exception, match="ACTIVE_GENERATION_OVERLAP_CONFLICT"):
         a.read_prices("ZZZ")
+
+def test_overlapping_active_generations_ignore_previous_generation_declaration(tmp_path):
+    a=access(tmp_path); x=daily_frame(); p1=tmp_path/"g1.parquet"; p2=tmp_path/"g2.parquet"; x.to_parquet(p1,index=False); x.to_parquet(p2,index=False)
+    digest=a.semantic_content_hash(x)
+    a.update_manifest("daily","ZZZ",x,p1,"fixture","year=2024",replace_existing=True,active_generation="generation-one",content_hash=digest,previous_generation="generation-two")
+    a.update_manifest("daily","ZZZ",x,p2,"fixture","year=2025",replace_existing=True,active_generation="generation-two",content_hash=digest,previous_generation="generation-one")
+    with pytest.raises(Exception, match="ACTIVE_GENERATION_OVERLAP_CONFLICT"):
+        a.read_prices("ZZZ")

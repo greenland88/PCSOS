@@ -55,6 +55,12 @@ def test_provenance_registration_checksum_error(tmp_path):
     with pytest.raises(DataQualityError, match="CONTENT_HASH_MISMATCH"):
         register_active_generation_provenance(dataset="daily", symbol="ZZZ", generation_id=r.generation_id, price_basis="x", corporate_action_version="y", data_access=a)
 
+@pytest.mark.parametrize("field,value", [("schema_version", float("nan")), ("price_basis", ""), ("corporate_action_version", "")])
+def test_provenance_registration_requires_complete_identity_fields(tmp_path, field, value):
+    a, r = _registered(tmp_path); m = pd.read_csv(a.manifest_path); m.loc[0, field] = value; m.to_csv(a.manifest_path, index=False)
+    with pytest.raises(DataAccessError, match="DATASET_PROVENANCE_INCOMPLETE"):
+        register_active_generation_provenance(dataset="daily", symbol="ZZZ", generation_id=r.generation_id, price_basis="x", corporate_action_version="y", data_access=a)
+
 
 def test_provenance_registration_atomic_write_failure_preserves_bytes(tmp_path, monkeypatch):
     a, r = _registered(tmp_path); before = a.manifest_path.read_bytes()
