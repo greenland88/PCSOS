@@ -60,6 +60,9 @@ def compose_final_action(*, timing_status, options_status, event_status, portfol
 
 def finalize_ticker_result(row, *, event_status: str, portfolio_status: str):
     """Apply final gates to one immutable ticker result."""
+    if row.final_action == FinalAction.DATA_FAILED:
+        return replace(row, event_status=event_status, portfolio_status=portfolio_status,
+                       reason_codes=tuple(dict.fromkeys((*row.reason_codes, "DATA_FAILURE_TERMINAL"))))
     action, reasons = compose_final_action(
         timing_status=row.timing_status, options_status=row.options_status,
         event_status=event_status, portfolio_status=portfolio_status,
