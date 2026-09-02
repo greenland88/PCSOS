@@ -5,6 +5,7 @@ from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
 import json
+import pandas as pd
 
 from .models import PoolScanResult
 
@@ -13,6 +14,14 @@ def _write_atomic(path: Path, payload: str) -> str:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(payload, encoding="utf-8")
     digest = sha256(payload.encode("utf-8")).hexdigest()
+    temporary.replace(path)
+    return digest
+
+
+def _write_parquet_atomic(path: Path, rows) -> str:
+    temporary = path.with_name(path.name + ".tmp")
+    pd.DataFrame(rows).to_parquet(temporary, index=False)
+    digest = sha256(temporary.read_bytes()).hexdigest()
     temporary.replace(path)
     return digest
 
@@ -27,6 +36,9 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     rows = json.dumps([asdict(row) for row in result.ticker_results], default=str, sort_keys=True, indent=2)
     files["static_eligibility.json"] = _write_atomic(root / "static_eligibility.json", rows)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
+    parquet_rows = [asdict(row) for row in result.ticker_results]
+    files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
+    files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
     summary = json.dumps(dict(result.summary), sort_keys=True, indent=2)
     files["aggregate_summary.json"] = _write_atomic(root / "aggregate_summary.json", summary)
     transitions = []
