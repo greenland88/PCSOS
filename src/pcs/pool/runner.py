@@ -10,6 +10,7 @@ import pandas as pd
 
 from pcs.data.access import PCSDataAccess
 from pcs.data.strategy_readiness import resolve_active_verified_daily_handle
+from pcs.data.control_plane import MarketDataRequirements, ensure_market_data
 from pcs.trend.snapshot import build_trend_snapshot
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
@@ -20,7 +21,8 @@ from .modes import completed_daily_cutoff
 
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
-                     daily_handle_resolver=None):
+                     daily_handle_resolver=None, auto_prepare_data=True,
+                     refresh_policy="INCREMENTAL_IF_NEEDED"):
     started = perf_counter()
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
@@ -30,7 +32,17 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             latency_ms=(perf_counter()-started)*1000)
     try:
         resolver = daily_handle_resolver or resolve_active_verified_daily_handle
-        handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
+        try:
+            handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
+        except Exception:
+            if not auto_prepare_data or daily_handle_resolver is not None:
+                raise
+            day = pd.Timestamp(daily_asof or asof).normalize()
+            prep = MarketDataRequirements(symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
+                                          required_end=str(day.date()), datasets=("daily",),
+                                          decision_as_of=str(day.date()), required_history_rows=200)
+            ensure_market_data(symbol, prep, access=access)
+            handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
         daily = access.read_verified_dataset(handle, end_date=daily_asof or asof,
                                              required_warmup_rows=200)
         if benchmark is None or daily.empty:
@@ -90,7 +102,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  benchmark_symbol: str = "QQQ", options_reader=None,
                  option_rules=None, event_status_reader=None,
                  portfolio_status_reader=None, static_metadata_reader=None,
-                 daily_handle_resolver=None) -> PoolScanResult:
+                 daily_handle_resolver=None, auto_prepare_data=True,
+                 refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
+                 max_scan_workers=None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
     Options, events, and portfolio stages intentionally remain not evaluated
@@ -131,7 +145,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             options_reader=options_reader, option_rules=option_rules,
             daily_asof=str(completed.date()) if completed is not None else None,
             static_metadata_reader=static_metadata_reader,
-            daily_handle_resolver=daily_handle_resolver), max_workers=max_workers)
+            daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
+            refresh_policy=refresh_policy), max_workers=(max_scan_workers or max_workers))
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)

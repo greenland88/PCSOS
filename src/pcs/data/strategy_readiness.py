@@ -362,6 +362,11 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
                     manifest.active_generation.notna() &
                     manifest.active_generation.astype(str).str.strip().ne("") &
                     manifest.active_generation.astype(str).str.lower().ne("nan")]
+    if rows.empty:
+        if manifest.empty or not ((manifest.dataset.astype(str) == "daily") &
+                                  (manifest.symbol.astype(str).str.upper() == s)).any():
+            raise ValueError("MANIFEST_ROUTE_MISSING")
+        raise ValueError("ACTIVE_GENERATION_MISSING")
     active = rows.copy()
     active["_lo"] = pd.to_datetime(active.min_date, errors="coerce")
     active["_hi"] = pd.to_datetime(active.max_date, errors="coerce")
