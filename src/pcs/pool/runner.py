@@ -72,7 +72,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  max_workers: int = 8, output_directory=None,
                  data_access: PCSDataAccess | None = None,
                  benchmark_symbol: str = "QQQ", options_reader=None,
-                 option_rules=None) -> PoolScanResult:
+                 option_rules=None, event_status_reader=None,
+                 portfolio_status_reader=None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
     Options, events, and portfolio stages intentionally remain not evaluated
@@ -108,6 +109,18 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                "pcs_eligible_count": sum(r.eligibility_status == EligibilityStatus.PCS_ELIGIBLE for r in results),
                "timing_entry_ready_count": sum(r.timing_status == TimingStatus.TIMING_ENTRY_READY for r in results),
                "options_check_count": 0, "missing_ticker_decisions": len(spec.symbols)-len(results)}
+    if options_reader is not None:
+        summary["options_check_count"] = sum(row.options_status != OptionsStatus.NOT_EVALUATED for row in results)
+    if event_status_reader is not None or portfolio_status_reader is not None:
+        from .final_gates import finalize_ticker_result
+        finalized = []
+        for row in results:
+            event_status = event_status_reader(row.symbol, row) if event_status_reader is not None else "EVENT_DATA_STALE"
+            portfolio_status = portfolio_status_reader(row.symbol, row) if portfolio_status_reader is not None else "PORTFOLIO_DATA_STALE"
+            finalized.append(finalize_ticker_result(row, event_status=event_status,
+                                                    portfolio_status=portfolio_status))
+        results = finalized
+        summary["pcs_trade_ready_count"] = sum(row.final_action == FinalAction.PCS_TRADE_READY for row in results)
     result = PoolScanResult(snapshot, tuple(results), summary)
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
