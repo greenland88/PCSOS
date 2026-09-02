@@ -119,9 +119,17 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
         for outcome in outcomes]
     summary = {"raw_count": len(spec.symbols),
+               "hard_excluded_count": sum(r.eligibility_status == EligibilityStatus.HARD_EXCLUDED for r in results),
+               "data_blocked_count": sum(r.eligibility_status == EligibilityStatus.DATA_BLOCKED for r in results),
                "pcs_eligible_count": sum(r.eligibility_status == EligibilityStatus.PCS_ELIGIBLE for r in results),
+               "dormant_count": sum(r.timing_status == TimingStatus.DORMANT for r in results),
+               "timing_watch_count": sum(r.timing_status == TimingStatus.WATCH for r in results),
                "timing_entry_ready_count": sum(r.timing_status == TimingStatus.TIMING_ENTRY_READY for r in results),
-               "options_check_count": 0, "missing_ticker_decisions": len(spec.symbols)-len(results)}
+               "options_check_count": 0,
+               "pcs_trade_ready_count": 0,
+               "temp_blocked_count": sum(r.final_action == FinalAction.TEMP_BLOCKED for r in results),
+               "rejected_count": sum(r.final_action == FinalAction.REJECTED for r in results),
+               "missing_ticker_decisions": len(spec.symbols)-len(results)}
     if options_reader is not None:
         summary["options_check_count"] = sum(row.options_status != OptionsStatus.NOT_EVALUATED for row in results)
     if event_status_reader is not None or portfolio_status_reader is not None:
