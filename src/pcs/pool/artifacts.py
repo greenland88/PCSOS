@@ -29,6 +29,21 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
     summary = json.dumps(dict(result.summary), sort_keys=True, indent=2)
     files["aggregate_summary.json"] = _write_atomic(root / "aggregate_summary.json", summary)
+    transitions = []
+    failures = []
+    for row in result.ticker_results:
+        transitions.append({"symbol": row.symbol, "previous_state": "RAW_UNIVERSE",
+                            "new_state": row.final_action.value, "reason_codes": list(row.reason_codes),
+                            "as_of": row.as_of, "run_id": row.run_id,
+                            "generation_id": row.generation_id, "dataset_fingerprint": row.dataset_fingerprint,
+                            "profile_version": row.profile_version, "engine_version": result.snapshot.engine_version})
+        if row.final_action.value in {"DATA_FAILED", "TEMP_BLOCKED", "REJECTED"}:
+            failures.append({"symbol": row.symbol, "run_id": row.run_id,
+                             "reason_codes": list(row.reason_codes), "final_action": row.final_action.value})
+    files["state_transitions.jsonl"] = _write_atomic(root / "state_transitions.jsonl",
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in transitions))
+    files["failures.jsonl"] = _write_atomic(root / "failures.jsonl",
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in failures))
     manifest = {
         "current": True, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,

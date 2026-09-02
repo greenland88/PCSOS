@@ -13,4 +13,5 @@ def test_artifacts_are_manifested_and_atomic(tmp_path: Path):
     manifest = json.loads((root / "run_manifest.json").read_text())
     assert manifest["current"] is True
     assert manifest["artifact_hashes"]["daily_timing.json"]
+    assert len((root / "state_transitions.jsonl").read_text().splitlines()) == 1
     assert not list(root.glob("*.tmp"))
