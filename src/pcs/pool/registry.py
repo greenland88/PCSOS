@@ -17,17 +17,37 @@ class UniverseSpec:
     universe_id: str
     symbols: tuple[str, ...]
     version: str = "1"
+    universe_role: str = "EXPLICIT"
+    fingerprint: str = ""
 
     @classmethod
     def from_symbols(cls, symbols: Sequence[str], universe_id: str = "explicit", version: str = "1"):
         normalized = merge_symbols(explicit_symbols=symbols)
         if not normalized:
             raise ValueError("universe must contain at least one symbol")
-        return cls(universe_id, tuple(normalized), version)
+        role = "CORE_WATCHLIST" if universe_id in {"pcs_universe", "core_watchlist"} else "EXPLICIT"
+        return cls(universe_id, tuple(normalized), version, role)
 
     @classmethod
     def from_config(cls, path: str | Path, groups: Sequence[str] = ("pcs_universe",)):
-        return cls.from_symbols(load_market_universe(groups=groups, path=Path(path)), universe_id=str(path))
+        role = "CORE_WATCHLIST" if tuple(groups) == ("pcs_universe",) else "CONFIGURED"
+        spec = cls.from_symbols(load_market_universe(groups=groups, path=Path(path)), universe_id=str(path))
+        return cls(spec.universe_id, spec.symbols, spec.version, role, spec.fingerprint)
+
+    @classmethod
+    def from_global_candidates(cls, path: str | Path = "data/manifests/daily_universe_migration.csv"):
+        source = Path(path)
+        if not source.exists():
+            raise ValueError("GLOBAL_UNIVERSE_SOURCE_MISSING")
+        frame = pd.read_csv(source, usecols=["symbol", "status"])
+        if "status" in frame:
+            frame = frame[frame.status.astype(str).str.upper().eq("SUCCESS")]
+        symbols = merge_symbols(explicit_symbols=frame["symbol"].tolist())
+        if not symbols:
+            raise ValueError("GLOBAL_UNIVERSE_SOURCE_MISSING")
+        import hashlib
+        fingerprint = hashlib.sha256("\n".join(symbols).encode()).hexdigest()
+        return cls("global_pcs_candidates", tuple(symbols), "daily-migration-v1", "GLOBAL_CANDIDATE_UNIVERSE", fingerprint)
 
     @classmethod
     def from_file(cls, path: str | Path, *, symbol_column: str = "symbol"):

@@ -31,3 +31,12 @@ def test_universe_spec_imports_explicit_csv_without_fixed_filename(tmp_path: Pat
     path.write_text("symbol\n nvda \nMSFT\nNVDA\n", encoding="utf-8")
     spec = UniverseSpec.from_file(path)
     assert spec.symbols == ("NVDA", "MSFT")
+
+
+def test_core_watchlist_is_not_global_candidate_universe():
+    spec = UniverseSpec.from_config("config/market_universe.yaml")
+    assert len(spec.symbols) == 25
+    assert spec.universe_role == "CORE_WATCHLIST"
+    global_spec = UniverseSpec.from_global_candidates()
+    assert global_spec.universe_role == "GLOBAL_CANDIDATE_UNIVERSE"
+    assert len(global_spec.symbols) != len(spec.symbols)

@@ -119,8 +119,13 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     if event_policy == "PLANNED_EARLY_EXIT" and (planned_exit_before_event_sessions is None or planned_exit_before_event_sessions < 1):
         raise ValueError("planned early exit requires positive exit buffer sessions")
     if symbols is None:
-        spec = (UniverseSpec.from_file(universe_id) if universe_id is not None
-                else UniverseSpec.from_config("config/market_universe.yaml"))
+        if universe_id in {"core_watchlist", "pcs_universe"}:
+            spec = UniverseSpec.from_config("config/market_universe.yaml")
+            spec = UniverseSpec(spec.universe_id, spec.symbols, spec.version, "CORE_WATCHLIST", spec.fingerprint)
+        elif universe_id in {None, "global_pcs_candidates"}:
+            spec = UniverseSpec.from_global_candidates()
+        else:
+            spec = UniverseSpec.from_file(universe_id)
     else:
         spec = UniverseSpec.from_symbols(symbols, universe_id=universe_id or "explicit")
     run_id = uuid.uuid4().hex
@@ -137,7 +142,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     completed = completed_daily_cutoff(benchmark, asof, mode) if benchmark is not None else None
     if benchmark is not None and completed is not None:
         benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
-    snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}",
+    snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
                                benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
     outcomes = run_symbol_workers(spec.symbols,
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,

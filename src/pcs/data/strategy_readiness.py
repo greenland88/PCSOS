@@ -197,7 +197,9 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                 target_handle = resolve_active_verified_daily_handle(s, str(day.date()), strategy_requirements.underlying_lookback, data_access=access)
                 daily = access.read_verified_dataset(target_handle, end_date=day)
             else:
-                daily=access.read_prices(s,end_date=day)
+                target_handle = resolve_active_verified_daily_handle(s, str(day.date()), strategy_requirements.underlying_lookback, data_access=access)
+                daily = access.read_verified_dataset(target_handle, end_date=day,
+                                                     required_warmup_rows=strategy_requirements.underlying_lookback)
             daily=daily.sort_values("date")
             if daily["date"].duplicated().any():
                 raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
@@ -206,7 +208,8 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                 options_handle = resolve_active_verified_options_handle(s, str(day.date()), data_access=access)
                 q = access.read_verified_dataset(options_handle, end_date=day)
             else:
-                q=access.read_quotes(s,daily.date.max().isoformat(),daily.date.max().isoformat())
+                options_handle = resolve_active_verified_options_handle(s, str(day.date()), data_access=access)
+                q = access.read_verified_dataset(options_handle, end_date=day)
             q=q[q.symbol.astype(str).str.upper().eq(s)]
             if str(mode).upper() == "LIVE":
                 live_reasons = []
