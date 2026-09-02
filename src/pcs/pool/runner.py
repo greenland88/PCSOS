@@ -29,7 +29,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  planned_exit_before_event_sessions: int | None = None,
                  max_workers: int = 8, output_directory=None,
                  data_access: PCSDataAccess | None = None,
-                 benchmark_symbol: str = "QQQ") -> PoolScanResult:
+                 benchmark_symbol: str = "QQQ", options_reader=None,
+                 option_rules=None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
     Options, events, and portfolio stages intentionally remain not evaluated
@@ -79,9 +80,21 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 timing = TimingStatus.WAIT
                 action = FinalAction.WAIT
             feature_date = getattr(engine, "feature_max_date", None)
+            options_status = OptionsStatus.NOT_EVALUATED
+            option_reasons = ()
+            if timing == TimingStatus.TIMING_ENTRY_READY and options_reader is not None:
+                from .options import shortlist_spreads
+                chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
+                close = float(daily.loc[pd.to_datetime(daily.date).idxmax(), "close"])
+                atr = float(getattr(trend.support, "current_atr", 0) or 0)
+                candidates = shortlist_spreads(symbol, feature_date, close, atr, chain,
+                                                rules=option_rules or {})
+                options_status = OptionsStatus.PASS if candidates else OptionsStatus.REJECT
+                option_reasons = ("OPTIONS_SHORTLIST_PASS" if candidates else "NO_QUALIFYING_SPREAD",)
+                action = FinalAction.WAIT
             results.append(TickerScanResult(symbol, run_id, asof, entry.status, timing,
-                OptionsStatus.NOT_EVALUATED, final_action=action,
-                reason_codes=tuple(getattr(engine, "reason_codes", ())) or ("TIMING_EVALUATED",),
+                options_status, final_action=action,
+                reason_codes=tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",),
                 feature_max_date=str(feature_date), latency_ms=(perf_counter()-started)*1000))
         except Exception as exc:
             results.append(TickerScanResult(symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
