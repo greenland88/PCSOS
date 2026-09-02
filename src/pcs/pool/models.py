@@ -67,6 +67,7 @@ class TickerScanResult:
     final_action: FinalAction = FinalAction.DATA_FAILED
     reason_codes: tuple[str, ...] = ()
     next_review_at: str | None = None
+    reentry_conditions: tuple[str, ...] = ()
     generation_id: str | None = None
     dataset_fingerprint: str | None = None
     profile_version: str | None = None
