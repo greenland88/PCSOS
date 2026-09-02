@@ -83,7 +83,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             timing, action = TimingStatus.WAIT, FinalAction.WAIT
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
         feature_date = getattr(engine, "feature_max_date", None)
-        if timing in {TimingStatus.TIMING_ENTRY_READY, TimingStatus.WATCH} and options_reader is not None:
+        if timing == TimingStatus.TIMING_ENTRY_READY and options_reader is not None:
             from .options import shortlist_spreads
             try:
                 chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
