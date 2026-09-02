@@ -91,7 +91,11 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                "pcs_eligible_count": sum(r.eligibility_status == EligibilityStatus.PCS_ELIGIBLE for r in results),
                "timing_entry_ready_count": sum(r.timing_status == TimingStatus.TIMING_ENTRY_READY for r in results),
                "options_check_count": 0, "missing_ticker_decisions": len(spec.symbols)-len(results)}
-    return PoolScanResult(snapshot, tuple(results), summary)
+    result = PoolScanResult(snapshot, tuple(results), summary)
+    if output_directory is not None:
+        from .artifacts import persist_pool_artifacts
+        persist_pool_artifacts(result, output_directory)
+    return result
 
 
 __all__ = ["run_pcs_pool"]
