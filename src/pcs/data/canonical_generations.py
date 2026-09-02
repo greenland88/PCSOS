@@ -142,7 +142,7 @@ def plan_generation_supersession(*, dataset: str, symbol: str, target_generation
     """Read-only ADMIN planning; never changes manifest or generation state."""
     access = data_access or PCSDataAccess(); s = str(symbol).upper(); m = access._read_manifest(access.manifest_path)
     rows = m[(m.dataset.astype(str) == str(dataset)) & m.symbol.astype(str).str.upper().eq(s) &
-             m.active_generation.astype(str).str.strip().ne("")]
+             m.active_generation.notna() & m.active_generation.astype(str).str.strip().ne("")]
     records = tuple(_generation_record(access, row) for _, row in rows.iterrows())
     if not records: raise DataAccessError("NO_ACTIVE_GENERATIONS")
     target = target_generation_id or max(records, key=lambda x: (x["max_date"], x["generation_id"]))["generation_id"]
@@ -154,8 +154,14 @@ def plan_generation_supersession(*, dataset: str, symbol: str, target_generation
     for rec in records:
         if rec["generation_id"] == target: continue
         overlap = rec["min_date"] <= target_rec["max_date"] and target_rec["min_date"] <= rec["max_date"]
-        rel.append({"left": target, "right": rec["generation_id"], "date_overlap": overlap,
-                    "relation": "EXACT_EQUAL" if rec["checksum"] == target_rec["checksum"] else "OVERLAP" if overlap else "DISJOINT"})
+        target_contains = target_rec["min_date"] <= rec["min_date"] and target_rec["max_date"] >= rec["max_date"] and target_rec["row_count"] >= rec["row_count"]
+        rec_contains = rec["min_date"] <= target_rec["min_date"] and rec["max_date"] >= target_rec["max_date"] and rec["row_count"] >= target_rec["row_count"]
+        relation = ("EXACT_EQUAL" if rec["checksum"] == target_rec["checksum"] else
+                    "STRICT_SUPERSET" if target_contains and overlap else
+                    "STRICT_SUBSET" if rec_contains and overlap else
+                    "OVERLAPPING_CONFLICT" if overlap else "DISJOINT")
+        rel.append({"left": target, "right": rec["generation_id"], "date_overlap": overlap, "relation": relation,
+                    "content_same": rec["checksum"] == target_rec["checksum"], "row_count_left": target_rec["row_count"], "row_count_right": rec["row_count"]})
     diff=[{"generation_id": x, "active_generation": "", "lifecycle_status": "SUPERSEDED", "superseded_by": target} for x in proposed]
     return GenerationSupersessionPlan(uuid.uuid4().hex, hashlib.sha256(access.manifest_path.read_bytes()).hexdigest(), str(dataset), s, target, proposed, records, tuple(rel), tuple(diff), datetime.now(timezone.utc).isoformat())
 
@@ -165,8 +171,11 @@ def apply_generation_supersession(plan_id: str, *, data_access: PCSDataAccess | 
     raw=json.loads(path.read_text(encoding="utf-8")); actual=hashlib.sha256(access.manifest_path.read_bytes()).hexdigest()
     if actual != raw.get("manifest_hash"): return {"status":"BLOCKED","reason_codes":["SUPERSESSION_PLAN_STALE"]}
     plan = plan_generation_supersession(dataset=raw["dataset"], symbol=raw["symbol"], target_generation_id=raw["target_generation_id"], proposed_superseded_generation_ids=raw.get("proposed_superseded_generation_ids", []), data_access=access)
-    if plan.to_dict() | {"plan_id": raw.get("plan_id")} != raw:
+    comparable = ("manifest_hash", "dataset", "symbol", "target_generation_id", "proposed_superseded_generation_ids", "generations", "relationships", "proposed_manifest_diff")
+    if any(plan.to_dict().get(k) != raw.get(k) for k in comparable):
         return {"status":"BLOCKED","reason_codes":["SUPERSESSION_PLAN_STALE"]}
+    undeclared = [r["right"] for r in raw.get("relationships", []) if r.get("date_overlap") and r["right"] not in raw.get("proposed_superseded_generation_ids", [])]
+    if undeclared: return {"status":"BLOCKED","reason_codes":["UNDECLARED_OVERLAPPING_ACTIVE_GENERATION"],"generation_ids":undeclared}
     with access._file_lock(access.manifest_path):
         manifest=access._read_manifest(access.manifest_path)
         for col in ("lifecycle_status", "superseded_by"):

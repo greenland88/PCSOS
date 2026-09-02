@@ -410,6 +410,8 @@ class PCSDataAccess:
             & (manifest.symbol.astype(str).str.upper() == symbol)
             & (manifest.status == "SUCCESS")
         ]
+        if "lifecycle_status" in rows.columns:
+            rows = rows[rows.lifecycle_status.astype(str).str.upper().ne("SUPERSEDED")]
         if resolved_dataset == "daily" and not rows.empty and "active_generation" in rows:
             # A promoted partition supersedes its legacy physical files.
             # Leaving both in the glob creates false duplicate-date failures.
@@ -1101,6 +1103,10 @@ class PCSDataAccess:
             merged = merged.drop_duplicates("date", keep="last").reset_index(drop=True)
         digest = self.semantic_content_hash(merged)
         generation = digest[:24]
+        if len(rows) and str(rows.iloc[-1].get("active_generation", "")).strip() not in ("", "nan"):
+            prior_digest = str(rows.iloc[-1].get("content_hash", "")).strip()
+            if prior_digest and prior_digest != digest:
+                raise DataAccessError("SUPERSESSION_REQUIRES_ADMIN_PLAN")
         generation_partition = f"{partition}/generations"
         path = self.parquet_root / dataset / f"symbol={symbol}" / generation_partition / f"{generation}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
