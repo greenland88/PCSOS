@@ -1,9 +1,12 @@
 """Point-in-time options shortlist adapter over caller-supplied chain data."""
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping
+
 import pandas as pd
+
+from .iv import IVFeatures, build_iv_features
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,12 @@ class SpreadCandidate:
     volume: int
     bid_ask_spread: float
     quote_as_of: str | None
+    # Keep the original terminal field position stable for positional callers.
+    reason_codes: tuple[str, ...] = ()
+    short_put_bid_iv: float | None = None
+    short_put_ask_iv: float | None = None
+    long_put_bid_iv: float | None = None
+    long_put_ask_iv: float | None = None
     short_put_iv: float | None = None
     long_put_iv: float | None = None
     atm_iv_30d: float | None = None
@@ -38,18 +47,116 @@ class SpreadCandidate:
     iv_gate_status: str = "NOT_EVALUATED"
     iv_reason_codes: tuple[str, ...] = ()
     options_generation_id: str | None = None
-    reason_codes: tuple[str, ...] = ()
+    iv_calculation_version: str = "pcs.pool.iv.v1"
+
+    @property
+    def short_iv(self) -> float | None:
+        return self.short_put_iv
+
+    @property
+    def long_iv(self) -> float | None:
+        return self.long_put_iv
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
+_IV_CONTEXT_KEYS = {
+    "iv_gate_enabled", "iv_estimate_method", "atm_iv_30d", "atm30d_iv",
+    "realized_vol_20d", "rv20", "realized_vol_60d", "rv60", "iv_rank_252",
+    "iv_rank", "iv_percentile_252", "iv_percentile", "put_skew",
+    "term_structure", "event_iv_distortion", "iv_history_252", "close_history",
+    "underlying_history", "data_timestamp", "iv_data_timestamp",
+    "options_data_timestamp", "options_generation_id", "generation_id",
+}
+
+
+def _value(row: Any, name: str) -> Any:
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _present(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        missing = pd.isna(value)
+        return not bool(missing) if not hasattr(missing, "__len__") else True
+    except (TypeError, ValueError):
+        return True
+
+
+def _generation(row: Any) -> str | None:
+    for name in ("options_generation_id", "generation_id"):
+        value = _value(row, name)
+        if _present(value):
+            return str(value).strip()
+    return None
+
+
+def _candidate_iv_context(rules: Mapping[str, Any], iv_context: Mapping[str, Any] | None,
+                         short: Any, long: Any, generation_id: Any) -> dict[str, Any]:
+    context = dict(rules)
+    if iv_context is not None:
+        context["iv_context"] = dict(iv_context)
+    short_generation, long_generation = _generation(short), _generation(long)
+    ordered_generations = []
+    for value in (generation_id, short_generation, long_generation):
+        if value is not None and str(value).strip() and str(value).strip() not in ordered_generations:
+            ordered_generations.append(str(value).strip())
+    if ordered_generations:
+        context["options_generation_id"] = ordered_generations[0]
+    if len(ordered_generations) > 1:
+        context["generation_id_mismatch"] = True
+    return context
+
+
+def _iv_is_requested(rules: Mapping[str, Any], iv_context: Mapping[str, Any] | None,
+                     short: Any, long: Any, generation_id: Any) -> bool:
+    if iv_context is not None or any(key in rules for key in _IV_CONTEXT_KEYS):
+        return True
+    if generation_id is not None:
+        return True
+    return any(_present(_value(row, name)) for row in (short, long)
+               for name in ("bid_iv", "ask_iv"))
+
+
+def _candidate_from_iv(symbol: str, entry: pd.Timestamp, expiry: pd.Timestamp,
+                       short: Any, long: Any, *, width: float, distance: float,
+                       bid_credit: float, mid_credit: float, spread: float,
+                       iv: IVFeatures) -> SpreadCandidate:
+    return SpreadCandidate(
+        str(symbol).upper(), str(entry.date()), str(expiry.date()), float(short.strike),
+        float(long.strike), width, distance, bid_credit, mid_credit, bid_credit / width,
+        float(short.delta) if "delta" in short and pd.notna(short.delta) else None,
+        int(short.open_interest), int(short.volume), spread,
+        str(short.quote_as_of) if "quote_as_of" in short and pd.notna(short.quote_as_of) else None,
+        reason_codes=tuple(dict.fromkeys(("PIT_CHAIN_SUPPLIED", *iv.reason_codes))),
+        short_put_bid_iv=iv.short_put_bid_iv, short_put_ask_iv=iv.short_put_ask_iv,
+        long_put_bid_iv=iv.long_put_bid_iv, long_put_ask_iv=iv.long_put_ask_iv,
+        short_put_iv=iv.short_put_iv, long_put_iv=iv.long_put_iv,
+        atm_iv_30d=iv.atm_iv_30d, realized_vol_20d=iv.realized_vol_20d,
+        realized_vol_60d=iv.realized_vol_60d, iv_minus_rv=iv.iv_minus_rv,
+        iv_to_rv_ratio=iv.iv_to_rv_ratio, iv_rank_252=iv.iv_rank_252,
+        iv_percentile_252=iv.iv_percentile_252, put_skew=iv.put_skew,
+        term_structure=iv.term_structure, event_iv_distortion=iv.event_iv_distortion,
+        iv_gate_status=iv.iv_gate_status, iv_reason_codes=iv.reason_codes,
+        options_generation_id=iv.options_generation_id,
+        iv_calculation_version=iv.calculation_version,
+    )
+
+
 def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: float,
-                      chain: pd.DataFrame, *, rules: Mapping[str, Any], limit: int = 3) -> tuple[SpreadCandidate, ...]:
+                      chain: pd.DataFrame, *, rules: Mapping[str, Any], limit: int = 3,
+                      iv_context: Mapping[str, Any] | None = None) -> tuple[SpreadCandidate, ...]:
     """Select exact put spreads from an already validated PIT chain.
 
-    The adapter does not read data and does not repair duplicate contract keys;
-    duplicate identities are rejected explicitly.
+    Ordinary strike, DTE, credit, and liquidity filters run first. IV is then
+    evaluated only for each pair that survived those filters. When IV input is
+    requested, a blocked IV gate excludes that pair from the production
+    shortlist; with no IV input the legacy shortlist remains NOT_EVALUATED.
     """
     if chain is None or chain.empty or atr <= 0 or limit < 1:
         return ()
@@ -68,41 +175,12 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
     entry = pd.Timestamp(entry_date).normalize()
     dte_min, dte_max = int(rules.get("dte_min", 30)), int(rules.get("dte_max", 45))
     min_ratio = float(rules.get("min_credit_width_ratio", .10))
-    min_volume = int(rules.get("min_option_volume", 0))
-    min_oi = int(rules.get("min_open_interest", 0))
+    min_volume, min_oi = int(rules.get("min_option_volume", 0)), int(rules.get("min_open_interest", 0))
     output: list[SpreadCandidate] = []
     generation_id = rules.get("options_generation_id")
-    def valid_iv(row: Any, side: str) -> tuple[float | None, str | None]:
-        name = f"{side}_iv"
-        if name not in row.index:
-            return None, "IV_MISSING"
-        value = row[name]
-        if not pd.notna(value) or not isinstance(value, (int, float)) or float(value) <= 0:
-            return None, "IV_INVALID"
-        return float(value), None
-    def iv_fields(short: Any, long: Any, expiry: pd.Timestamp) -> dict[str, Any]:
-        sb, se = valid_iv(short, "bid"); sa, ae = valid_iv(short, "ask")
-        lb, le = valid_iv(long, "bid"); la, lee = valid_iv(long, "ask")
-        reasons = tuple(x for x in (se, ae, le, lee) if x)
-        if sb is not None and sa is not None and sb > sa: reasons += ("IV_BID_ASK_INVERTED",)
-        if lb is not None and la is not None and lb > la: reasons += ("IV_BID_ASK_INVERTED",)
-        short_iv = (sb + sa) / 2 if sb is not None and sa is not None and sb <= sa else None
-        long_iv = (lb + la) / 2 if lb is not None and la is not None and lb <= la else None
-        atm = rules.get("atm_iv_30d")
-        rv20, rv60 = rules.get("realized_vol_20d"), rules.get("realized_vol_60d")
-        distortion = rules.get("event_iv_distortion")
-        rank, pct = rules.get("iv_rank_252"), rules.get("iv_percentile_252")
-        skew = (short_iv - atm) if short_iv is not None and atm is not None else None
-        term = rules.get("term_structure")
-        return {"short_put_iv": short_iv, "long_put_iv": long_iv, "atm_iv_30d": atm,
-                "realized_vol_20d": rv20, "realized_vol_60d": rv60,
-                "iv_minus_rv": short_iv - rv20 if short_iv is not None and rv20 is not None else None,
-                "iv_to_rv_ratio": short_iv / rv20 if short_iv is not None and rv20 not in (None, 0) else None,
-                "iv_rank_252": rank, "iv_percentile_252": pct, "put_skew": skew,
-                "term_structure": term, "event_iv_distortion": distortion,
-                "iv_gate_status": "BLOCKED" if reasons or not generation_id else "PASS",
-                "iv_reason_codes": reasons or (() if generation_id else ("OPTIONS_GENERATION_ID_MISSING",)),
-                "options_generation_id": generation_id}
+    if generation_id is None:
+        generation_id = chain.attrs.get("options_generation_id", chain.attrs.get("generation_id"))
+
     for expiry, rows in frame.groupby("expiration", sort=True):
         dte = (expiry - entry).days
         if not dte_min <= dte <= dte_max:
@@ -119,14 +197,23 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
                 if width <= 0:
                     continue
                 bid_credit = float(short.bid) - float(long.ask)
-                mid_credit = (float(short.bid) + float(short.ask)) / 2 - (float(long.bid) + float(long.ask)) / 2
+                mid_credit = ((float(short.bid) + float(short.ask)) / 2 -
+                              (float(long.bid) + float(long.ask)) / 2)
                 if bid_credit <= 0 or bid_credit / width < min_ratio:
                     continue
                 spread = float(short.ask) - float(short.bid)
-                output.append(SpreadCandidate(str(symbol).upper(), str(entry.date()), str(expiry.date()),
-                    float(short.strike), float(long.strike), width, distance, bid_credit, mid_credit,
-                    bid_credit / width, float(short.delta) if "delta" in short and pd.notna(short.delta) else None,
-                    int(short.open_interest), int(short.volume), spread,
-                    str(short.quote_as_of) if "quote_as_of" in short and pd.notna(short.quote_as_of) else None,
-                    reason_codes=("PIT_CHAIN_SUPPLIED",), **iv_fields(short, long, expiry)))
-    return tuple(sorted(output, key=lambda x: (-x.credit_efficiency, x.expiration, x.short_strike, x.long_strike))[:limit])
+                iv_requested = _iv_is_requested(rules, iv_context, short, long, generation_id)
+                iv = (build_iv_features(
+                    short, long, entry_date=entry,
+                    context=_candidate_iv_context(rules, iv_context, short, long, generation_id))
+                      if iv_requested else IVFeatures())
+                if iv_requested and iv.iv_gate_status != "PASS":
+                    continue
+                output.append(_candidate_from_iv(
+                    symbol, entry, expiry, short, long, width=width, distance=distance,
+                    bid_credit=bid_credit, mid_credit=mid_credit, spread=spread, iv=iv))
+    return tuple(sorted(output, key=lambda x: (-x.credit_efficiency, x.expiration,
+                                                x.short_strike, x.long_strike))[:limit])
+
+
+__all__ = ["SpreadCandidate", "shortlist_spreads"]
