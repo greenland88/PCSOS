@@ -104,6 +104,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         else:
             timing, action = TimingStatus.WAIT, FinalAction.WAIT
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
+        candidates = ()
         feature_date = getattr(engine, "feature_max_date", None)
         if options_enabled is None:
             options_enabled = options_reader is not None
@@ -146,7 +147,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         reasons = tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",)
         return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
-            latency_ms=(perf_counter()-started)*1000, spread_count=len(candidates) if timing == TimingStatus.TIMING_ENTRY_READY and options_status != OptionsStatus.NOT_EVALUATED else 0)
+            latency_ms=(perf_counter()-started)*1000,
+            spread_count=len(candidates) if options_status == OptionsStatus.PASS else 0)
     except Exception as exc:
         failure_code = str(exc).strip()
         reasons = (failure_code,) if failure_code in {

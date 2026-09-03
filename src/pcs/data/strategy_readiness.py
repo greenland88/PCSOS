@@ -421,21 +421,22 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
 def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
     """Resolve and validate the active canonical options generation for a session."""
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
-    try:
-        _, routed_manifest, _ = access._resolve_route("options", s)
-    except Exception:
-        routed_manifest = access.manifest_path
+    routed_dataset, routed_manifest, _ = access._resolve_route("options", s)
+    snapshot_compatible = (manifest_snapshot is not None and
+                           hasattr(manifest_snapshot, "path") and
+                           Path(str(manifest_snapshot.path)).resolve() == Path(routed_manifest).resolve())
     manifest = (manifest_snapshot.to_frame() if manifest_snapshot is not None and
-                hasattr(manifest_snapshot, "to_frame") else
+                snapshot_compatible and hasattr(manifest_snapshot, "to_frame") else
                 access._read_manifest(routed_manifest))
     if manifest.empty or not {"dataset", "symbol", "active_generation"}.issubset(manifest.columns):
         raise ValueError("MANIFEST_ROUTE_MISSING")
-    rows = manifest[(manifest.dataset.astype(str).isin({"options", "options_v2", "options_v3"})) &
+    rows = manifest[(manifest.dataset.astype(str) == str(routed_dataset)) &
                     (manifest.symbol.astype(str).str.upper() == s) &
                     manifest.active_generation.notna() &
                     manifest.active_generation.astype(str).str.strip().ne("") &
                     manifest.active_generation.astype(str).str.lower().ne("nan")]
-    rows = rows[pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values("max_date", ascending=False)
+    rows = rows[pd.to_datetime(rows.min_date, errors="coerce").le(day) &
+                pd.to_datetime(rows.max_date, errors="coerce").ge(day)].sort_values("max_date", ascending=False)
     if rows.empty: raise ValueError("OPTIONS_GENERATION_MISSING")
     row = rows.iloc[0]
     required = ["active_generation", "content_hash", "row_count", "min_date", "max_date", "schema_version", "parquet_path"]

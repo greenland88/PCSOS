@@ -229,6 +229,28 @@ class PoolRuntime:
         """Public compatibility alias for the pinned daily resolver."""
         return self.resolve_daily_handle(symbol, as_of, warmup, resolver=resolver)
 
+    def resolve_options(self, symbol: Any, as_of: Any, *, resolver: Callable[..., Any] | None = None) -> Any:
+        normalized = str(symbol).strip().upper()
+        day = pd.Timestamp(as_of).normalize()
+        resolver = resolver or self.options_handle_resolver
+        if resolver is None:
+            raise ValueError("OPTIONS_HANDLE_RESOLVER_MISSING")
+        key = ("options_handle", normalized, str(day.date()))
+
+        def produce() -> Any:
+            started = perf_counter()
+            with self._lock:
+                self.counters["handle_resolution_calls"] += 1
+            value = self._call_with_snapshot(resolver, normalized, str(day.date()),
+                                              data_access=self.access, snapshot=self.manifest_snapshot)
+            with self._lock:
+                self.stage_latency_ms["handle_resolution"] = (
+                    self.stage_latency_ms.get("handle_resolution", 0.0)
+                    + (perf_counter() - started) * 1000
+                )
+            return value
+        return self._single_flight(key, produce)
+
     def read_daily(self, handle: Any, *, end_date: Any = None,
                    required_warmup_rows: int = 0) -> pd.DataFrame:
         key = ("daily_frame",) + self._handle_key(handle)
