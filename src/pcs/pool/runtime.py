@@ -124,6 +124,11 @@ class PoolRuntime:
     def manifest_snapshot_id(self) -> str:
         return self.manifest_snapshot.identity if self.manifest_snapshot else ""
 
+    def refresh_manifest_snapshot(self) -> None:
+        """Refresh the pinned boundary after an authorized preparation write."""
+        with self._lock:
+            self.manifest_snapshot = ManifestSnapshot.capture(self.access)
+
     @staticmethod
     def _handle_key(handle: Any) -> tuple[Any, ...]:
         return (

@@ -53,6 +53,8 @@ class PoolRunSnapshot:
     code_revision: str = "unknown"
     refresh_policy: str = "FULL"
     manifest_snapshot_id: str = ""
+    requested_as_of: str = ""
+    effective_daily_session: str | None = None
 
 
 @dataclass(frozen=True)

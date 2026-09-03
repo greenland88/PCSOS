@@ -16,7 +16,7 @@ from pcs.trend.snapshot import build_trend_snapshot
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
 from .registry import UniverseSpec, evaluate_static_eligibility
-from .modes import completed_daily_cutoff
+from .modes import resolve_effective_market_session
 from .runtime import PoolRuntime
 
 
@@ -63,6 +63,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             prepared = ensure_market_data(symbol, prep, access=access)
             if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
                 _adopt_existing_daily_canonical(symbol, access)
+            if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
+                runtime.refresh_manifest_snapshot()
 
         runtime = runtime or PoolRuntime(access)
         handle = runtime.resolve_daily_handle(
@@ -135,6 +137,9 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             "DATASET_CHECKSUM_MISMATCH", "DATASET_FINGERPRINT_MISMATCH",
             "INSUFFICIENT_FEATURE_WARMUP", "DUPLICATE_CANONICAL_PRICE_KEY",
             "DATASET_PROVENANCE_INCOMPLETE", "GENERATION_NOT_VERIFIED",
+            "ACTIVE_GENERATION_MISSING", "MANIFEST_ROUTE_MISSING",
+            "DAILY_STALE", "BLOCKED_NO_AUTHORIZED_SOURCE",
+            "CANONICAL_DAILY_STALE", "SOURCE_UNAVAILABLE",
         } else ("DAILY_TIMING_FAILED", type(exc).__name__)
         return TickerScanResult(symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
             final_action=FinalAction.DATA_FAILED, reason_codes=reasons,
@@ -192,6 +197,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         spec = UniverseSpec.from_symbols(symbols, universe_id=universe_id or "explicit")
     run_id = uuid.uuid4().hex
     asof = _as_of(as_of)
+    effective = resolve_effective_market_session(asof, mode, "XNYS")
+    effective_asof = str(effective.date())
     access = data_access or PCSDataAccess()
     started = perf_counter()
     daily_resolver = daily_handle_resolver or resolve_active_verified_daily_handle
@@ -205,24 +212,26 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     benchmark = None
     benchmark_started = perf_counter()
     try:
-        benchmark_handle = runtime.resolve_daily(benchmark_symbol, asof, 200,
+        benchmark_handle = runtime.resolve_daily(benchmark_symbol, effective_asof, 200,
                                                  resolver=daily_resolver)
-        benchmark = runtime.read_daily(benchmark_handle, end_date=asof,
+        benchmark = runtime.read_daily(benchmark_handle, end_date=effective_asof,
                                        required_warmup_rows=200)
     except Exception:
         benchmark = None
     stage_latency["benchmark"] = (perf_counter() - benchmark_started) * 1000
-    completed = completed_daily_cutoff(benchmark, asof, mode) if benchmark is not None else None
+    completed = effective if benchmark is not None else None
     if benchmark is not None and completed is not None:
         benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
     snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}:manifest:{runtime.manifest_snapshot_id}",
                                benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
+    snapshot = PoolRunSnapshot(**{**snapshot.__dict__, "requested_as_of": asof,
+                                  "effective_daily_session": effective_asof})
     scan = runtime.run_stage(spec.symbols,
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             runtime=runtime,
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
             options_reader=options_reader, option_rules=option_rules,
-            daily_asof=str(completed.date()) if completed is not None else None,
+            daily_asof=effective_asof,
             static_metadata_reader=static_metadata_reader,
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
             refresh_policy=refresh_policy, options_prepare=None,
