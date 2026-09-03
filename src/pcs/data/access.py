@@ -895,15 +895,22 @@ class PCSDataAccess:
         normalized = [(pd.Timestamp(a).date(), pd.Timestamp(b).date()) for a, b in windows]
         spec = self.resolve_source("options", symbol, min(a for a, _ in normalized), max(b for _, b in normalized))
         selected = columns or list(OPTION_FIELDS)
-        predicates = " OR ".join(["(trade_date BETWEEN ? AND ?)"] * len(normalized))
-        params: list[Any] = [spec.path.split(";") if ";" in spec.path else spec.path, spec.symbol]
-        for a, b in normalized: params.extend([a, b])
-        con = duckdb.connect()
-        try:
-            out = con.execute(f"SELECT {', '.join(selected)} FROM read_parquet(?, hive_partitioning=true) WHERE symbol=? AND ({predicates})", params).fetchdf()
-        finally:
-            con.close()
+        # Reuse the active-manifest canonical reader.  Directly expanding
+        # spec.path here can include both active and superseded generations;
+        # that creates false same-key conflicts when windows overlap.
+        out = self.read(spec.dataset, symbol, min(a for a, _ in normalized), max(b for _, b in normalized))
+        out = out[[c for c in selected if c in out.columns]]
+        trade_dates = pd.to_datetime(out["trade_date"]).dt.date
+        mask = pd.Series(False, index=out.index)
+        for a, b in normalized:
+            mask |= trade_dates.between(a, b)
+        out = out.loc[mask].reset_index(drop=True)
         self.validate_coverage(out, spec.symbol, min(a for a, _ in normalized), max(b for _, b in normalized), "trade_date")
+        # OR-composed overlapping windows can return the same physical
+        # canonical row more than once.  Remove only exact full-row
+        # duplicates here; same-identity rows with different quote fields
+        # remain visible to validate_schema/audit_option_frame and fail closed.
+        out = out.drop_duplicates(keep="first").reset_index(drop=True)
         out = self.validate_schema(out, spec.dataset)
         out, _, quality = audit_option_frame(
             out, source_version=spec.source_version, partition="read_boundary"
