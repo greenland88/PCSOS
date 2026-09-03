@@ -7,6 +7,7 @@ from time import perf_counter
 from typing import Literal, Sequence
 import uuid
 from threading import RLock
+from pathlib import Path
 
 import pandas as pd
 
@@ -22,6 +23,40 @@ from .modes import resolve_effective_market_session
 from .runtime import PoolRuntime
 
 _PREPARATION_LOCK = RLock()
+
+
+def _daily_preflight(symbols, access, decision_date):
+    """Build one stable, read-only daily readiness index for this run."""
+    if not hasattr(access, "_resolve_route") or not hasattr(access, "_read_manifest"):
+        return {str(symbol).strip().upper(): None for symbol in symbols}
+    manifest_cache = {}
+    index = {}
+    for symbol in symbols:
+        s = str(symbol).strip().upper()
+        try:
+            _, manifest_path, _ = access._resolve_route("daily", s)
+            key = str(Path(manifest_path).resolve())
+            if key not in manifest_cache:
+                manifest_cache[key] = access._read_manifest(Path(manifest_path))
+            manifest = manifest_cache[key]
+            required = {"dataset", "symbol", "active_generation", "min_date", "max_date"}
+            if manifest.empty or not required.issubset(manifest.columns):
+                index[s] = "MANIFEST_ROUTE_MISSING"; continue
+            rows = manifest[(manifest.dataset.astype(str) == "daily") &
+                            manifest.symbol.astype(str).str.upper().eq(s)]
+            active = rows[rows.active_generation.notna() &
+                          rows.active_generation.astype(str).str.strip().ne("") &
+                          rows.active_generation.astype(str).str.lower().ne("nan")]
+            if active.empty:
+                index[s] = "ACTIVE_GENERATION_MISSING"; continue
+            covered = active[pd.to_datetime(active.min_date, errors="coerce").le(pd.Timestamp(decision_date)) &
+                            pd.to_datetime(active.max_date, errors="coerce").ge(pd.Timestamp(decision_date))]
+            if covered.empty:
+                index[s] = "INSUFFICIENT_FEATURE_WARMUP"; continue
+            index[s] = None
+        except Exception as exc:
+            index[s] = str(exc).strip() or "MANIFEST_ROUTE_MISSING"
+    return index
 
 
 def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
@@ -248,7 +283,18 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                                benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
     snapshot = PoolRunSnapshot(**{**snapshot.__dict__, "requested_as_of": asof,
                                   "effective_daily_session": effective_asof})
-    scan = runtime.run_stage(spec.symbols,
+    preflight = _daily_preflight(spec.symbols, access, effective_asof)
+    preflight_results = {}
+    queued_symbols = []
+    for symbol in spec.symbols:
+        reason = preflight.get(str(symbol).upper())
+        if reason:
+            preflight_results[str(symbol).upper()] = TickerScanResult(
+                str(symbol).upper(), run_id, asof, EligibilityStatus.DATA_BLOCKED,
+                final_action=FinalAction.DATA_FAILED, reason_codes=(reason,))
+        else:
+            queued_symbols.append(symbol)
+    scan = runtime.run_stage(tuple(queued_symbols),
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             runtime=runtime,
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
@@ -261,10 +307,15 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
     outcomes = scan.outcomes
-    results = [outcome.value if outcome.value is not None else TickerScanResult(
+    worker_results = {outcome.symbol: (outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
-        final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
-        for outcome in outcomes]
+        final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes))
+        for outcome in outcomes}
+    results = []
+    for symbol in spec.symbols:
+        normalized = str(symbol).upper()
+        results.append(preflight_results[normalized] if normalized in preflight_results
+                       else worker_results[normalized])
     summary = {"raw_count": len(spec.symbols),
                "hard_excluded_count": sum(r.eligibility_status == EligibilityStatus.HARD_EXCLUDED for r in results),
                "data_blocked_count": sum(r.eligibility_status == EligibilityStatus.DATA_BLOCKED for r in results),
@@ -311,6 +362,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     stage_latency["validation"] = 0.0
     from .validation import validate_pool_result
     validation_started = perf_counter()
+    summary["run_status"] = ("PARTIAL_TIMEOUT" if any("WORKER_TIMEOUT" in r.reason_codes or "STAGE_DEADLINE_NOT_STARTED" in r.reason_codes for r in results)
+                              else "COMPLETED_NO_EVALUABLE_TICKERS" if not any(r.timing_status != TimingStatus.NOT_EVALUATED for r in results)
+                              else "COMPLETED")
     result = PoolScanResult(snapshot, tuple(results), summary,
                             stage_latency_ms=stage_latency, counters=counters)
     validate_pool_result(result, spec.symbols)

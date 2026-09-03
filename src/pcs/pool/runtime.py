@@ -6,7 +6,7 @@ stage. It deliberately contains no market, strategy, or contract logic.
 """
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from hashlib import sha256
 import inspect
@@ -318,25 +318,37 @@ class PoolRuntime:
             raise ValueError("timeout_seconds must be positive")
         started = perf_counter()
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pcs-pool")
-        futures = {executor.submit(worker, symbol): symbol for symbol in normalized}
+        futures = {executor.submit(worker, symbol): symbol for symbol in normalized[:workers]}
+        pending = list(normalized[workers:])
+        started_symbols = set(normalized[:workers])
         outcomes: dict[str, WorkerOutcome] = {}
         try:
-            for future in as_completed(futures, timeout=timeout):
-                symbol = futures[future]
-                try:
-                    outcomes[symbol] = WorkerOutcome(symbol, future.result())
-                except Exception as exc:
-                    outcomes[symbol] = WorkerOutcome(
-                        symbol, reason_codes=("WORKER_FAILED", type(exc).__name__)
-                    )
-        except TimeoutError:
-            pass
+            deadline = None if timeout is None else started + timeout
+            while futures:
+                remaining = None if deadline is None else max(0.0, deadline - perf_counter())
+                done, _ = wait(tuple(futures), timeout=remaining, return_when=FIRST_COMPLETED)
+                if not done: break
+                for future in done:
+                    symbol = futures.pop(future)
+                    try:
+                        outcomes[symbol] = WorkerOutcome(symbol, future.result())
+                    except Exception as exc:
+                        outcomes[symbol] = WorkerOutcome(
+                            symbol, reason_codes=("WORKER_FAILED", type(exc).__name__, str(exc) or type(exc).__name__)
+                        )
+                    if pending and (deadline is None or perf_counter() < deadline):
+                        next_symbol = pending.pop(0)
+                        futures[executor.submit(worker, next_symbol)] = next_symbol
+                        started_symbols.add(next_symbol)
         finally:
             for future, symbol in futures.items():
                 if symbol in outcomes:
                     continue
                 future.cancel()
-                outcomes[symbol] = WorkerOutcome(symbol, reason_codes=("WORKER_TIMEOUT",))
+                reason = "WORKER_TIMEOUT" if symbol in started_symbols else "STAGE_DEADLINE_NOT_STARTED"
+                outcomes[symbol] = WorkerOutcome(symbol, reason_codes=(reason,))
+            for symbol in pending:
+                outcomes[symbol] = WorkerOutcome(symbol, reason_codes=("STAGE_DEADLINE_NOT_STARTED",))
             # A context manager would wait for a slow worker after the timeout.
             executor.shutdown(wait=False, cancel_futures=True)
         elapsed = (perf_counter() - started) * 1000
