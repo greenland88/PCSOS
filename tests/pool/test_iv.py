@@ -119,3 +119,13 @@ def test_iv_feature_aliases_are_stable():
     assert features.atm30d_iv == features.atm_iv_30d
     assert features.rv20 == features.realized_vol_20d
     assert features.rv60 == features.realized_vol_60d
+
+
+def test_iv_data_as_of_is_preserved_in_feature_bundle():
+    short, long = _rows()
+    features = build_iv_features(short, long, entry_date="2025-01-02", context={
+        "options_generation_id": "opt-g1",
+        "iv_data_as_of": "2025-01-02T15:30:00Z",
+    })
+    assert features.iv_data_as_of == "2025-01-02T15:30:00Z"
+    assert features.to_dict()["iv_data_as_of"] == "2025-01-02T15:30:00Z"
