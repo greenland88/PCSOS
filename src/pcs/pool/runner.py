@@ -94,7 +94,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         # Each worker receives an independent immutable snapshot boundary;
         # trend helpers may construct intermediate columns internally.
         trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
-                                     as_of_date=asof, symbol=symbol, benchmark=benchmark_symbol)
+                                     as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol)
         engine = trend.market_structure_engine
         phase = str(getattr(engine, "short_term_phase", ""))
         if phase in {"RECLAIM_CONFIRMED", "HEALTHY_PULLBACK", "BREAKOUT_CONFIRMED"}:
