@@ -60,6 +60,12 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             prep = MarketDataRequirements(symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
                                           required_end=str(day.date()), datasets=("daily",),
                                           decision_as_of=str(day.date()), required_history_rows=200)
+            # A verified canonical object with a missing pointer can be
+            # adopted locally before any provider path is considered.
+            try:
+                _adopt_existing_daily_canonical(symbol, access)
+            except (OSError, ValueError, KeyError):
+                pass
             prepared = ensure_market_data(symbol, prep, access=access)
             if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
                 _adopt_existing_daily_canonical(symbol, access)
