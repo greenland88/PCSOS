@@ -198,7 +198,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     options_resolver = (resolve_active_verified_options_handle
                         if options_reader is None and data_access is None and auto_prepare_data
                         else None)
-    runtime = PoolRuntime(access, stage_timeout_seconds=stage_timeout_seconds,
+    runtime = PoolRuntime(access=access, stage_timeout_seconds=stage_timeout_seconds,
                           daily_handle_resolver=daily_resolver,
                           options_handle_resolver=options_resolver)
     stage_latency: dict[str, float] = {}
