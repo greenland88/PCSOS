@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from time import perf_counter
 from typing import Literal, Sequence
 import uuid
@@ -163,7 +164,9 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
 
 def _as_of(value) -> str:
     if value == "latest":
-        return datetime.now(timezone.utc).isoformat()
+        # Market-session semantics are keyed to the exchange's local date;
+        # UTC after midnight must not advance an NYSE PREMARKET run early.
+        return datetime.now(ZoneInfo("America/New_York")).isoformat()
     return pd.Timestamp(value).isoformat()
 
 
