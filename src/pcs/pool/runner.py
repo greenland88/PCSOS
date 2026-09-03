@@ -26,8 +26,13 @@ def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
     manifest = access._read_manifest(access.manifest_path)
     rows = manifest[(manifest.dataset.astype(str) == "daily") &
                     manifest.symbol.astype(str).str.upper().eq(str(symbol).upper())]
-    if rows.empty or rows.active_generation.notna().any():
+    if rows.empty:
         return
+    # Adopt only rows without an active pointer.  A symbol may already have
+    # one active generation for a later, non-overlapping partition; its older
+    # canonical partition is still needed for warmup and may be adopted.
+    rows = rows[rows.active_generation.isna() |
+                rows.active_generation.astype(str).str.strip().isin(("", "nan"))]
     for _, row in rows.iterrows():
         path = str(row.get("parquet_path") or "").strip()
         if not path:
