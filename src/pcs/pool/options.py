@@ -23,6 +23,21 @@ class SpreadCandidate:
     volume: int
     bid_ask_spread: float
     quote_as_of: str | None
+    short_put_iv: float | None = None
+    long_put_iv: float | None = None
+    atm_iv_30d: float | None = None
+    realized_vol_20d: float | None = None
+    realized_vol_60d: float | None = None
+    iv_minus_rv: float | None = None
+    iv_to_rv_ratio: float | None = None
+    iv_rank_252: float | None = None
+    iv_percentile_252: float | None = None
+    put_skew: float | None = None
+    term_structure: float | None = None
+    event_iv_distortion: float | None = None
+    iv_gate_status: str = "NOT_EVALUATED"
+    iv_reason_codes: tuple[str, ...] = ()
+    options_generation_id: str | None = None
     reason_codes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +71,38 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
     min_volume = int(rules.get("min_option_volume", 0))
     min_oi = int(rules.get("min_open_interest", 0))
     output: list[SpreadCandidate] = []
+    generation_id = rules.get("options_generation_id")
+    def valid_iv(row: Any, side: str) -> tuple[float | None, str | None]:
+        name = f"{side}_iv"
+        if name not in row.index:
+            return None, "IV_MISSING"
+        value = row[name]
+        if not pd.notna(value) or not isinstance(value, (int, float)) or float(value) <= 0:
+            return None, "IV_INVALID"
+        return float(value), None
+    def iv_fields(short: Any, long: Any, expiry: pd.Timestamp) -> dict[str, Any]:
+        sb, se = valid_iv(short, "bid"); sa, ae = valid_iv(short, "ask")
+        lb, le = valid_iv(long, "bid"); la, lee = valid_iv(long, "ask")
+        reasons = tuple(x for x in (se, ae, le, lee) if x)
+        if sb is not None and sa is not None and sb > sa: reasons += ("IV_BID_ASK_INVERTED",)
+        if lb is not None and la is not None and lb > la: reasons += ("IV_BID_ASK_INVERTED",)
+        short_iv = (sb + sa) / 2 if sb is not None and sa is not None and sb <= sa else None
+        long_iv = (lb + la) / 2 if lb is not None and la is not None and lb <= la else None
+        atm = rules.get("atm_iv_30d")
+        rv20, rv60 = rules.get("realized_vol_20d"), rules.get("realized_vol_60d")
+        distortion = rules.get("event_iv_distortion")
+        rank, pct = rules.get("iv_rank_252"), rules.get("iv_percentile_252")
+        skew = (short_iv - atm) if short_iv is not None and atm is not None else None
+        term = rules.get("term_structure")
+        return {"short_put_iv": short_iv, "long_put_iv": long_iv, "atm_iv_30d": atm,
+                "realized_vol_20d": rv20, "realized_vol_60d": rv60,
+                "iv_minus_rv": short_iv - rv20 if short_iv is not None and rv20 is not None else None,
+                "iv_to_rv_ratio": short_iv / rv20 if short_iv is not None and rv20 not in (None, 0) else None,
+                "iv_rank_252": rank, "iv_percentile_252": pct, "put_skew": skew,
+                "term_structure": term, "event_iv_distortion": distortion,
+                "iv_gate_status": "BLOCKED" if reasons or not generation_id else "PASS",
+                "iv_reason_codes": reasons or (() if generation_id else ("OPTIONS_GENERATION_ID_MISSING",)),
+                "options_generation_id": generation_id}
     for expiry, rows in frame.groupby("expiration", sort=True):
         dte = (expiry - entry).days
         if not dte_min <= dte <= dte_max:
@@ -81,5 +128,5 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
                     bid_credit / width, float(short.delta) if "delta" in short and pd.notna(short.delta) else None,
                     int(short.open_interest), int(short.volume), spread,
                     str(short.quote_as_of) if "quote_as_of" in short and pd.notna(short.quote_as_of) else None,
-                    ("PIT_CHAIN_SUPPLIED",)))
+                    reason_codes=("PIT_CHAIN_SUPPLIED",), **iv_fields(short, long, expiry)))
     return tuple(sorted(output, key=lambda x: (-x.credit_efficiency, x.expiration, x.short_strike, x.long_strike))[:limit])
