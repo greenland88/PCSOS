@@ -192,6 +192,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     """
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
+    from pcs.data.massive_client import load_project_environment
+    load_project_environment()
     if max_workers < 1:
         raise ValueError("max_workers must be positive")
     if stage_timeout_seconds is not None and timeout_seconds is not None:

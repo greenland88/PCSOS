@@ -547,8 +547,6 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
         current_client = kwargs.get("clickhouse_client")
         if current_client is None:
             import os
-            from .massive_client import load_project_environment
-            load_project_environment()
             password = os.getenv("CLICKHOUSE_PASSWORD")
             if not password:
                 return {"status": "BLOCKED", "reason_codes": ["CLICKHOUSE_CREDENTIALS_MISSING"], "selected_source": "clickhouse_options"}
@@ -872,8 +870,6 @@ class MarketDataControlPlane:
             # It never uses adjacent dates/strikes or a legacy fallback.
             from .clickhouse import PCSClickHouseClient
             import os
-            from .massive_client import load_project_environment
-            load_project_environment()
             client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", ""), os.getenv("CLICKHOUSE_PASSWORD", ""))
             dates = sorted({str(x.get("quote_date", x.get("trade_date")))[:10] for x in req.exact_contract_quote_keys})
             source = client.fetch_options_dates(req.symbol, dates)
