@@ -16,7 +16,6 @@ from pcs.trend.snapshot import build_trend_snapshot
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
 from .registry import UniverseSpec, evaluate_static_eligibility
-from .concurrency import run_symbol_workers
 from .modes import completed_daily_cutoff
 from .runtime import PoolRuntime
 
@@ -54,22 +53,39 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             latency_ms=(perf_counter()-started)*1000)
     try:
         resolver = daily_handle_resolver or resolve_active_verified_daily_handle
-        try:
-            key = (str(symbol).upper(), str(daily_asof or asof), 200)
-            handle = runtime.resolve_handle(key, lambda: resolver(symbol, daily_asof or asof, 200, data_access=access)) if runtime else resolver(symbol, daily_asof or asof, 200, data_access=access)
-        except Exception:
-            if not auto_prepare_data or daily_handle_resolver is not None:
-                raise
-            day = pd.Timestamp(daily_asof or asof).normalize()
-            prep = MarketDataRequirements(symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
-                                          required_end=str(day.date()), datasets=("daily",),
-                                          decision_as_of=str(day.date()), required_history_rows=200)
+        day = pd.Timestamp(daily_asof or asof).normalize()
+
+        def prepare_daily() -> None:
+            prep = MarketDataRequirements(
+                symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
+                required_end=str(day.date()), datasets=("daily",),
+                decision_as_of=str(day.date()), required_history_rows=200,
+            )
             prepared = ensure_market_data(symbol, prep, access=access)
             if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
                 _adopt_existing_daily_canonical(symbol, access)
-            handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
-        daily = access.read_verified_dataset(handle, end_date=daily_asof or asof,
-                                             required_warmup_rows=200)
+
+        if runtime is not None:
+            handle = runtime.resolve_daily_handle(
+                symbol, daily_asof or asof, 200, resolver=resolver,
+                prepare=prepare_daily, auto_prepare=(
+                    auto_prepare_data and daily_handle_resolver is None
+                ),
+            )
+            daily = runtime.read_daily(
+                handle, end_date=daily_asof or asof, required_warmup_rows=200
+            )
+        else:
+            try:
+                handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
+            except Exception:
+                if not auto_prepare_data or daily_handle_resolver is not None:
+                    raise
+                prepare_daily()
+                handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
+            daily = access.read_verified_dataset(
+                handle, end_date=daily_asof or asof, required_warmup_rows=200
+            )
         if benchmark is None or daily.empty:
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
         # Each worker receives an independent immutable snapshot boundary;
@@ -89,7 +105,11 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         if timing == TimingStatus.TIMING_ENTRY_READY and options_reader is not None:
             from .options import shortlist_spreads
             try:
-                chain = options_reader(symbol, pd.Timestamp(feature_date).normalize())
+                chain = (runtime.read_options(
+                    symbol, pd.Timestamp(feature_date).normalize(), reader=options_reader
+                ) if runtime is not None else options_reader(
+                    symbol, pd.Timestamp(feature_date).normalize()
+                ))
                 close = float(daily.iloc[-1].close)
                 atr = float(getattr(trend.support, "current_atr", 0) or 0)
                 candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
@@ -133,7 +153,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  portfolio_status_reader=None, static_metadata_reader=None,
                  daily_handle_resolver=None, auto_prepare_data=True,
                  refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
-                 max_scan_workers=None) -> PoolScanResult:
+                 max_scan_workers=None, stage_timeout_seconds: float | None = 60.0,
+                 timeout_seconds: float | None = None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
     Options, events, and portfolio stages intentionally remain not evaluated
@@ -143,6 +164,12 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
     if max_workers < 1:
         raise ValueError("max_workers must be positive")
+    if stage_timeout_seconds is not None and stage_timeout_seconds <= 0:
+        raise ValueError("stage_timeout_seconds must be positive")
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if timeout_seconds is not None:
+        stage_timeout_seconds = timeout_seconds
     if event_policy not in {"HOLD_TO_EXPIRY", "PLANNED_EARLY_EXIT"}:
         raise ValueError("unsupported event policy")
     if event_policy == "PLANNED_EARLY_EXIT" and (planned_exit_before_event_sessions is None or planned_exit_before_event_sessions < 1):
@@ -160,11 +187,14 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     run_id = uuid.uuid4().hex
     asof = _as_of(as_of)
     access = data_access or PCSDataAccess()
-    runtime = PoolRuntime()
-    try:
-        runtime.manifest_snapshot = access._read_manifest(access.manifest_path).copy(deep=True)
-    except Exception:
-        runtime.manifest_snapshot = None
+    run_started = perf_counter()
+    runtime = PoolRuntime(
+        access=access, run_id=run_id, as_of=asof,
+        max_workers=(max_scan_workers or max_workers),
+        stage_timeout_seconds=stage_timeout_seconds,
+        daily_handle_resolver=daily_handle_resolver or resolve_active_verified_daily_handle,
+        options_handle_resolver=resolve_active_verified_options_handle,
+    )
     if options_reader is None and data_access is None and auto_prepare_data:
         def options_reader(symbol, trade_date):
             day = pd.Timestamp(trade_date).normalize()
@@ -182,26 +212,39 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             handle = resolve_active_verified_options_handle(symbol, str(day.date()), data_access=access)
             return access.read_verified_dataset(handle, end_date=str(day.date()))
     benchmark = None
+    benchmark_handle = None
+    benchmark_started = perf_counter()
     try:
         resolver = daily_handle_resolver or resolve_active_verified_daily_handle
-        benchmark_handle = resolver(benchmark_symbol, asof, 200, data_access=access)
-        benchmark = access.read_verified_dataset(benchmark_handle, end_date=asof,
-                                                 required_warmup_rows=200)
+        benchmark_handle = runtime.resolve_daily_handle(
+            benchmark_symbol, asof, 200, resolver=resolver
+        )
+        benchmark = runtime.read_daily(
+            benchmark_handle, end_date=asof, required_warmup_rows=200
+        )
     except Exception:
         benchmark = None
     completed = completed_daily_cutoff(benchmark, asof, mode) if benchmark is not None else None
     if benchmark is not None and completed is not None:
         benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
-    snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
-                               benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
-    outcomes = run_symbol_workers(spec.symbols,
+    snapshot = PoolRunSnapshot(
+        run_id, asof, mode,
+        str(completed.date()) if completed is not None else None,
+        f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
+        benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"},
+        manifest_snapshot_id=runtime.manifest_snapshot_id,
+    )
+    stage = runtime.run_stage(spec.symbols,
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
             options_reader=options_reader, option_rules=option_rules,
             daily_asof=str(completed.date()) if completed is not None else None,
             static_metadata_reader=static_metadata_reader,
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
-            refresh_policy=refresh_policy, runtime=runtime), max_workers=(max_scan_workers or max_workers))
+            refresh_policy=refresh_policy, runtime=runtime),
+        stage_name="daily_timing", max_workers=(max_scan_workers or max_workers),
+    )
+    outcomes = stage.outcomes
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
@@ -232,10 +275,18 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         summary["pcs_trade_ready_count"] = sum(row.final_action == FinalAction.PCS_TRADE_READY for row in results)
     counters = {
         "ordinary_reader_calls": 0,
-        "options_reader_calls": summary["options_check_count"],
+        "options_reader_calls": runtime.counters["options_frame_reads"],
         "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
+        "handle_resolution_calls": runtime.counters["handle_resolution_calls"],
+        "daily_frame_reads": runtime.counters["daily_frame_reads"],
+        "options_frame_reads": runtime.counters["options_frame_reads"],
     }
-    result = PoolScanResult(snapshot, tuple(results), summary, counters=counters)
+    benchmark_latency = (perf_counter() - benchmark_started) * 1000
+    stage_latency = dict(runtime.stage_latency_ms)
+    stage_latency["benchmark"] = benchmark_latency
+    stage_latency["total"] = (perf_counter() - run_started) * 1000
+    result = PoolScanResult(snapshot, tuple(results), summary,
+                            stage_latency_ms=stage_latency, counters=counters)
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory)

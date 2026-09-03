@@ -358,10 +358,12 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
             stages["READ-BACK VERIFY"]="FAILED"; last=exc
     return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.SOURCE_UNAVAILABLE.value,"DATA_BLOCKED","SOURCE_UNAVAILABLE",None,stages,None,max_attempts,{"detail":str(last)})
 
-def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None) -> VerifiedDatasetHandle:
+def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
     """Resolve one complete active daily generation without refresh or promotion."""
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
-    manifest = access._read_manifest(access.manifest_path)
+    manifest = (manifest_snapshot.to_frame() if manifest_snapshot is not None and
+                hasattr(manifest_snapshot, "to_frame") else
+                access._read_manifest(access.manifest_path))
     rows = manifest[(manifest.dataset.astype(str) == "daily") &
                     (manifest.symbol.astype(str).str.upper() == s) &
                     manifest.active_generation.notna() &
@@ -414,10 +416,12 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
         price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
         min_date=str(candidates.min_date.iloc[0]), max_date=str(candidates.max_date.max()), partition_count=len(partitions))
 
-def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_access=None) -> VerifiedDatasetHandle:
+def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
     """Resolve and validate the active canonical options generation for a session."""
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
-    manifest = access._read_manifest(access.manifest_path)
+    manifest = (manifest_snapshot.to_frame() if manifest_snapshot is not None and
+                hasattr(manifest_snapshot, "to_frame") else
+                access._read_manifest(access.manifest_path))
     rows = manifest[(manifest.dataset.astype(str).isin({"options", "options_v2", "options_v3"})) &
                     (manifest.symbol.astype(str).str.upper() == s) &
                     manifest.active_generation.notna() &

@@ -52,6 +52,7 @@ class PoolRunSnapshot:
     engine_version: str = "unknown"
     code_revision: str = "unknown"
     refresh_policy: str = "FULL"
+    manifest_snapshot_id: str = ""
 
 
 @dataclass(frozen=True)
