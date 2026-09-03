@@ -260,11 +260,11 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                                           portfolio_status=portfolio_status)
 
         final_stage = runtime.run_stage(
-            "finalize", tuple(by_symbol), finalize,
+            tuple(by_symbol), finalize, stage_name="finalize",
             max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
         stage_latency["finalize"] = runtime.stage_latency_ms.get("finalize", 0.0)
         results = [outcome.value if outcome.value is not None else by_symbol[outcome.symbol]
-                   for outcome in final_stage]
+                   for outcome in final_stage.outcomes]
         summary["pcs_trade_ready_count"] = sum(row.final_action == FinalAction.PCS_TRADE_READY for row in results)
     else:
         stage_latency["finalize"] = 0.0
