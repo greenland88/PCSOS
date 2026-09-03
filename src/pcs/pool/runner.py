@@ -217,7 +217,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
     snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}:manifest:{runtime.manifest_snapshot_id}",
                                benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
-    scan = runtime.run_stage("scan", spec.symbols,
+    scan = runtime.run_stage(spec.symbols,
         lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             runtime=runtime,
             benchmark=benchmark, benchmark_symbol=benchmark_symbol,
@@ -227,7 +227,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
             refresh_policy=refresh_policy, options_prepare=None,
             options_enabled=(options_reader is not None or options_resolver is not None)),
-        max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
+        stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
     outcomes = scan
     results = [outcome.value if outcome.value is not None else TickerScanResult(
