@@ -48,6 +48,7 @@ class SpreadCandidate:
     iv_reason_codes: tuple[str, ...] = ()
     options_generation_id: str | None = None
     iv_calculation_version: str = "pcs.pool.iv.v1"
+    iv_data_as_of: str | None = None
 
     @property
     def short_iv(self) -> float | None:
@@ -144,6 +145,7 @@ def _candidate_from_iv(symbol: str, entry: pd.Timestamp, expiry: pd.Timestamp,
         term_structure=iv.term_structure, event_iv_distortion=iv.event_iv_distortion,
         iv_gate_status=iv.iv_gate_status, iv_reason_codes=iv.reason_codes,
         options_generation_id=iv.options_generation_id,
+        iv_data_as_of=iv.iv_data_as_of,
         iv_calculation_version=iv.calculation_version,
     )
 

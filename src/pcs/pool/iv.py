@@ -48,6 +48,7 @@ class IVFeatures:
     reason_codes: tuple[str, ...] = ()
     options_generation_id: str | None = None
     calculation_version: str = IV_CALCULATION_VERSION
+    iv_data_as_of: str | None = None
 
     @property
     def iv_reason_codes(self) -> tuple[str, ...]:
@@ -371,10 +372,14 @@ def build_iv_features(short_row: Any, long_row: Any, *, entry_date: Any,
         for code in reasons) else (
         IVGateStatus.BLOCKED if any(code in blocking for code in reasons)
         else IVGateStatus.PASS))
+    iv_data_as_of = ctx.get("iv_data_as_of", ctx.get("iv_data_timestamp",
+                                                        ctx.get("options_data_timestamp")))
     return IVFeatures(short_bid, short_ask, long_bid, long_ask, short_iv, long_iv,
                       atm_iv, rv20, rv60, iv_minus_rv, iv_to_rv_ratio, rank,
                       percentile, skew, term, distortion, status,
-                      tuple(dict.fromkeys(reasons)), generation or None)
+                      tuple(dict.fromkeys(reasons)), generation or None,
+                      IV_CALCULATION_VERSION,
+                      str(iv_data_as_of) if iv_data_as_of is not None else None)
 
 
 calculate_iv_features = build_iv_features
