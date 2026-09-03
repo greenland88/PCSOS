@@ -273,7 +273,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         "options_reader_calls": summary["options_check_count"],
         "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
         "handle_resolution_calls": runtime.counters.get("handle_resolution_calls", 0),
-        "daily_frame_reads": runtime.counters.get("daily_frame_reads", 0) + (1 if benchmark is not None else 0),
+        "daily_frame_reads": runtime.counters.get("daily_frame_reads", 0),
         "options_frame_reads": runtime.counters.get("options_frame_reads", 0),
     }
     stage_latency["validation"] = 0.0
