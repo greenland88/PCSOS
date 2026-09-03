@@ -134,7 +134,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                         options_prepare()
                         option_handle = resolve_active_verified_options_handle(
                             symbol, str(option_day.date()), data_access=access)
-                    chain = runtime.read_options(option_handle, end_date=str(option_day.date()))
+                    chain = runtime.read_options_handle(option_handle, end_date=str(option_day.date()))
                 close = float(daily.iloc[-1].close)
                 atr = float(getattr(trend.support, "current_atr", 0) or 0)
                 candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
