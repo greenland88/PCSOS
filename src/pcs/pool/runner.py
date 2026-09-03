@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Literal, Sequence
 import uuid
+from threading import RLock
 
 import pandas as pd
 
@@ -18,6 +19,8 @@ from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnaps
 from .registry import UniverseSpec, evaluate_static_eligibility
 from .modes import resolve_effective_market_session
 from .runtime import PoolRuntime
+
+_PREPARATION_LOCK = RLock()
 
 
 def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
@@ -65,17 +68,18 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             prep = MarketDataRequirements(symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
                                           required_end=str(day.date()), datasets=("daily",),
                                           decision_as_of=str(day.date()), required_history_rows=200)
-            # A verified canonical object with a missing pointer can be
-            # adopted locally before any provider path is considered.
-            try:
-                _adopt_existing_daily_canonical(symbol, access)
-            except (OSError, ValueError, KeyError):
-                pass
-            prepared = ensure_market_data(symbol, prep, access=access)
-            if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
-                _adopt_existing_daily_canonical(symbol, access)
-            if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
-                runtime.refresh_manifest_snapshot()
+            with _PREPARATION_LOCK:
+                # A verified canonical object with a missing pointer can be
+                # adopted locally before any provider path is considered.
+                try:
+                    _adopt_existing_daily_canonical(symbol, access)
+                except (OSError, ValueError, KeyError):
+                    pass
+                prepared = ensure_market_data(symbol, prep, access=access)
+                if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
+                    _adopt_existing_daily_canonical(symbol, access)
+                if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
+                    runtime.refresh_manifest_snapshot()
 
         runtime = runtime or PoolRuntime(access)
         handle = runtime.resolve_daily_handle(
