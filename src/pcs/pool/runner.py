@@ -18,6 +18,7 @@ from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnaps
 from .registry import UniverseSpec, evaluate_static_eligibility
 from .concurrency import run_symbol_workers
 from .modes import completed_daily_cutoff
+from .runtime import PoolRuntime
 
 
 def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
@@ -43,7 +44,7 @@ def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
                      daily_handle_resolver=None, auto_prepare_data=True,
-                     refresh_policy="INCREMENTAL_IF_NEEDED"):
+                     refresh_policy="INCREMENTAL_IF_NEEDED", runtime=None):
     started = perf_counter()
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
@@ -54,7 +55,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
     try:
         resolver = daily_handle_resolver or resolve_active_verified_daily_handle
         try:
-            handle = resolver(symbol, daily_asof or asof, 200, data_access=access)
+            key = (str(symbol).upper(), str(daily_asof or asof), 200)
+            handle = runtime.resolve_handle(key, lambda: resolver(symbol, daily_asof or asof, 200, data_access=access)) if runtime else resolver(symbol, daily_asof or asof, 200, data_access=access)
         except Exception:
             if not auto_prepare_data or daily_handle_resolver is not None:
                 raise
@@ -158,6 +160,11 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     run_id = uuid.uuid4().hex
     asof = _as_of(as_of)
     access = data_access or PCSDataAccess()
+    runtime = PoolRuntime()
+    try:
+        runtime.manifest_snapshot = access._read_manifest(access.manifest_path).copy(deep=True)
+    except Exception:
+        runtime.manifest_snapshot = None
     if options_reader is None and data_access is None and auto_prepare_data:
         def options_reader(symbol, trade_date):
             day = pd.Timestamp(trade_date).normalize()
@@ -194,7 +201,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             daily_asof=str(completed.date()) if completed is not None else None,
             static_metadata_reader=static_metadata_reader,
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
-            refresh_policy=refresh_policy), max_workers=(max_scan_workers or max_workers))
+            refresh_policy=refresh_policy, runtime=runtime), max_workers=(max_scan_workers or max_workers))
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
