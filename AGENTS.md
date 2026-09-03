@@ -134,6 +134,88 @@ coverage and all authorized sources; source-unavailable and pre-listing states
 must retain machine-readable reason codes. Strategy, frozen artifacts, and
  FINAL OOS are outside the import system and must not be changed by it.
 
+## Pool Scan production contract
+
+The canonical Pool Scan implementation is
+`pcs.pool.runner.run_pcs_pool`, exposed through the `pool-scan` CLI.
+Agents must extend this path rather than creating an alternate scanner.
+
+### Execution requirements
+
+- Every scan must be bounded and observable.
+- The CLI must emit `POOL_SCAN_STARTED` immediately after argument validation.
+- Every execution stage must have a finite timeout and return one explicit
+  outcome per requested symbol.
+- A process that hangs, times out, or returns no ticker outcomes is not a
+  successful scan.
+- Preserve input symbol ordering in the final result.
+- Do not perform provider imports, promotion, recovery, or canonical writes
+  unless `auto_prepare_data` was explicitly enabled by the caller.
+- Read-only scans must not mutate canonical storage.
+
+### Canonical data requirements
+
+- Daily and options data must be read only through `PCSDataAccess` and
+  generation-pinned verified handles.
+- Passing an explicit `PCSDataAccess` instance must not disable the canonical
+  daily or options handle resolvers.
+- Options routing must begin with the logical request
+  `_resolve_route("options", symbol)`.
+- The routed physical dataset may be `options`, `options_v2`, or `options_v3`;
+  consumers must not guess the physical version.
+- A manifest snapshot may be reused only when its resolved path matches the
+  routed manifest path.
+- A daily/default manifest snapshot must never be used to resolve an options
+  generation routed to another manifest.
+- Options coverage for a decision session requires
+  `min_date <= decision_date <= max_date`.
+- Missing route, generation, provenance, checksum, schema, or date coverage
+  must fail closed with the most specific machine-readable reason code.
+- Do not fall back to an unrelated manifest or ordinary/raw data reader after
+  verified resolution fails.
+
+### Runtime and result correctness
+
+- Daily and options handle resolution must be single-flight and cached by the
+  complete decision identity, including symbol and trading session.
+- Worker-local result collections must be initialized before guarded execution
+  so an error path cannot raise `UnboundLocalError` and mask the original
+  failure.
+- `spread_count` is nonzero only when options status is `PASS` and real spread
+  candidates were produced.
+- An options data failure after timing succeeds must preserve the ticker's
+  eligibility/timing result, set options status to `DATA_BLOCKED`, return zero
+  spreads, and preserve the original options reason code.
+- Keep eligibility, timing readiness, options readiness, event readiness,
+  portfolio readiness, and final trade readiness as separate states.
+- Never report `PCS_TRADE_READY` when required event or portfolio adapters are
+  absent. Do not fabricate adapter results to make a smoke test pass.
+
+### Mandatory Pool Scan validation
+
+Any material change to Pool Scan, data routing used by Pool Scan, or its runtime
+must include focused regression tests for:
+
+1. bounded execution and immediate startup observability;
+2. one ordered result per requested symbol;
+3. daily-handle and options-handle single-flight behavior;
+4. logical-to-physical options routing;
+5. rejection of a manifest snapshot belonging to a different route;
+6. exact options date-window validation;
+7. preservation of the original reason code on options failure;
+8. a timing-ready positive fixture that traverses the verified options-handle
+   path and produces at least one real spread;
+9. a negative fixture that returns `DATA_BLOCKED`, zero spreads, and no masked
+   exception.
+
+A CLI smoke test returning valid JSON with `spread_count=0` proves only that the
+CLI completed. It does not prove that the options path works. Options-path
+acceptance requires the positive timing-ready regression test to produce a
+nonzero spread count.
+
+Agents must report exact test commands and results. Do not claim that the full
+repository suite is green unless it was actually run successfully.
+
 ## Completed implementation and acceptance record (2026-08-26)
 
 The unified market-data import path was implemented and pushed on branch
