@@ -68,6 +68,8 @@ class ClickHouseError(RuntimeError):
 class PCSClickHouseClient:
     """Thread-safe client; one instance should be created per worker process."""
     def __init__(self, url: str, user: str, password: str, *, config: ClickHouseConfig | None = None, session=None):
+        from .massive_client import load_project_environment
+        load_project_environment()
         self.url = url.rstrip("/") + "/"
         self.user, self.password = user, password
         self.config = config or ClickHouseConfig.from_env()

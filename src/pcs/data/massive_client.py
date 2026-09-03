@@ -26,6 +26,18 @@ REST_BASE_URL = "http://38.76.185.106:3000"
 WEBSOCKET_BASE_URL = "ws://38.76.185.106:3000/stocks"
 
 
+def load_project_environment(env_file: str | Path = ".env") -> None:
+    """Load missing project environment values without logging their contents."""
+    path = Path(env_file)
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        name, separator, value = raw_line.partition("=")
+        name = name.strip()
+        if separator and name and not name.startswith("#") and name not in os.environ:
+            os.environ[name] = value.strip().strip("'\"")
+
+
 class MarketGatewayError(RuntimeError):
     """Raised when the private market-data gateway cannot satisfy a request."""
 
@@ -41,6 +53,7 @@ class GatewayConfig:
 
     @classmethod
     def from_environment(cls, env_file: str | Path = ".env") -> "GatewayConfig":
+        load_project_environment(env_file)
         key = os.getenv("PCS_MARKET_DATA_API_KEY")
         if not key:
             path = Path(env_file)
