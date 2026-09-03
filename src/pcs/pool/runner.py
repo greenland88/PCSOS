@@ -229,7 +229,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             options_enabled=(options_reader is not None or options_resolver is not None)),
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
-    outcomes = scan
+    outcomes = scan.outcomes
     results = [outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
