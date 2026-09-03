@@ -364,6 +364,8 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     manifest = (manifest_snapshot.to_frame() if manifest_snapshot is not None and
                 hasattr(manifest_snapshot, "to_frame") else
                 access._read_manifest(access.manifest_path))
+    if manifest.empty or not {"dataset", "symbol", "active_generation"}.issubset(manifest.columns):
+        raise ValueError("MANIFEST_ROUTE_MISSING")
     rows = manifest[(manifest.dataset.astype(str) == "daily") &
                     (manifest.symbol.astype(str).str.upper() == s) &
                     manifest.active_generation.notna() &
@@ -419,9 +421,15 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
 def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
     """Resolve and validate the active canonical options generation for a session."""
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
+    try:
+        _, routed_manifest, _ = access._resolve_route("options", s)
+    except Exception:
+        routed_manifest = access.manifest_path
     manifest = (manifest_snapshot.to_frame() if manifest_snapshot is not None and
                 hasattr(manifest_snapshot, "to_frame") else
-                access._read_manifest(access.manifest_path))
+                access._read_manifest(routed_manifest))
+    if manifest.empty or not {"dataset", "symbol", "active_generation"}.issubset(manifest.columns):
+        raise ValueError("MANIFEST_ROUTE_MISSING")
     rows = manifest[(manifest.dataset.astype(str).isin({"options", "options_v2", "options_v3"})) &
                     (manifest.symbol.astype(str).str.upper() == s) &
                     manifest.active_generation.notna() &

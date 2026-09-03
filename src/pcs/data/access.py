@@ -245,7 +245,7 @@ class PCSDataAccess:
         # concern and are not part of normal caller behavior.
         route_dataset = dataset
         routes = self.source_routes.get(route_dataset, {}).get("by_symbol", {})
-        if not routes and dataset.startswith("options_v2"):
+        if not routes and dataset in {"options_v2", "options_v3"}:
             # Migration/repair compatibility for explicit physical callers.
             route_dataset = "options"
             routes = self.source_routes.get(route_dataset, {}).get("by_symbol", {})

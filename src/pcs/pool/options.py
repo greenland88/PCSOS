@@ -162,6 +162,10 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
     """
     if chain is None or chain.empty or atr <= 0 or limit < 1:
         return ()
+    chain = chain.copy()
+    aliases = {"expiration_date": "expiration", "call_put": "option_type", "trade_date": "quote_as_of"}
+    chain.rename(columns={source: target for source, target in aliases.items()
+                          if source in chain.columns and target not in chain.columns}, inplace=True)
     required = {"expiration", "strike", "option_type", "bid", "ask", "volume", "open_interest"}
     if not required.issubset(chain.columns):
         return ()

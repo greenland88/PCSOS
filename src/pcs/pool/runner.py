@@ -134,7 +134,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                         options_prepare()
                         option_handle = resolve_active_verified_options_handle(
                             symbol, str(option_day.date()), data_access=access)
-                    chain = runtime.read_options_handle(option_handle, end_date=str(option_day.date()))
+                    chain = runtime.read_options_handle(option_handle, start_date=str(option_day.date()), end_date=str(option_day.date()))
                 close = float(daily.iloc[-1].close)
                 atr = float(getattr(trend.support, "current_atr", 0) or 0)
                 candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
@@ -146,7 +146,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         reasons = tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",)
         return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
-            latency_ms=(perf_counter()-started)*1000)
+            latency_ms=(perf_counter()-started)*1000, spread_count=len(candidates) if timing == TimingStatus.TIMING_ENTRY_READY and options_status != OptionsStatus.NOT_EVALUATED else 0)
     except Exception as exc:
         failure_code = str(exc).strip()
         reasons = (failure_code,) if failure_code in {
@@ -181,9 +181,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  benchmark_symbol: str = "QQQ", options_reader=None,
                  option_rules=None, event_status_reader=None,
                  portfolio_status_reader=None, static_metadata_reader=None,
-                 daily_handle_resolver=None, auto_prepare_data=True,
+                 daily_handle_resolver=None, auto_prepare_data=False,
                  refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
-                 max_scan_workers=None, stage_timeout_seconds: float | None = None,
+                 max_scan_workers=None, stage_timeout_seconds: float | None = 60.0,
                  timeout_seconds: float | None = None) -> PoolScanResult:
     """Run the non-mutating U1 funnel.
 
@@ -223,7 +223,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     started = perf_counter()
     daily_resolver = daily_handle_resolver or resolve_active_verified_daily_handle
     options_resolver = (resolve_active_verified_options_handle
-                        if options_reader is None and data_access is None and auto_prepare_data
+                        if options_reader is None and daily_handle_resolver is None
                         else None)
     runtime = PoolRuntime(access=access, stage_timeout_seconds=stage_timeout_seconds,
                           daily_handle_resolver=daily_resolver,
@@ -271,6 +271,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                "timing_watch_count": sum(r.timing_status == TimingStatus.WATCH for r in results),
                "timing_entry_ready_count": sum(r.timing_status == TimingStatus.TIMING_ENTRY_READY for r in results),
                "options_check_count": 0,
+               "spread_count": sum(r.spread_count for r in results),
                "pcs_trade_ready_count": 0,
                "temp_blocked_count": sum(r.final_action == FinalAction.TEMP_BLOCKED for r in results),
                "rejected_count": sum(r.final_action == FinalAction.REJECTED for r in results),

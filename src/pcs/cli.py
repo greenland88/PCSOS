@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 import os
 import tempfile
 from pathlib import Path
@@ -206,12 +207,19 @@ def onboarding_status(args):
 def pool_scan(args):
     from pcs.pool.runner import run_pcs_pool
     from pcs.data.access import PCSDataAccess
+    print(json.dumps({"status": "POOL_SCAN_STARTED", "mode": args.mode,
+                      "as_of": args.as_of, "universe_id": args.universe_id,
+                      "explicit_symbol_count": len(args.symbols or []),
+                      "stage_timeout_seconds": args.stage_timeout_seconds}, sort_keys=True),
+          file=sys.stderr, flush=True)
     result = run_pcs_pool(
         symbols=args.symbols,
         universe_id=args.universe_id,
         as_of=args.as_of,
         mode=args.mode,
         max_workers=args.max_workers,
+        stage_timeout_seconds=args.stage_timeout_seconds,
+        auto_prepare_data=False,
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
     )
     print(result.to_json())
@@ -283,6 +291,7 @@ def main():
     pool.add_argument("--as-of", default="latest")
     pool.add_argument("--mode", choices=["PREMARKET", "INTRADAY", "EOD"], required=True)
     pool.add_argument("--max-workers", type=int, default=8)
+    pool.add_argument("--stage-timeout-seconds", type=float, default=60.0)
     pool.add_argument("--parquet-root", default="data/parquet")
     pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     pool.set_defaults(func=pool_scan)

@@ -269,13 +269,13 @@ class PoolRuntime:
         frame = self._single_flight(key, produce)
         return frame.copy(deep=True).reset_index(drop=True)
 
-    def read_options_handle(self, handle: Any, *, end_date: Any = None) -> pd.DataFrame:
+    def read_options_handle(self, handle: Any, *, start_date: Any = None, end_date: Any = None) -> pd.DataFrame:
         """Read one already-verified, generation-pinned options handle."""
-        key = ("options_handle_frame",) + self._handle_key(handle)
+        key = ("options_handle_frame",) + self._handle_key(handle) + (str(start_date), str(end_date))
         def produce() -> pd.DataFrame:
             with self._lock:
                 self.counters["options_frame_reads"] += 1
-            return self.access.read_verified_dataset(handle, end_date=end_date)
+            return self.access.read_verified_dataset(handle, start_date=start_date, end_date=end_date)
         return self._single_flight(key, produce).copy(deep=True).reset_index(drop=True)
 
     def run_stage(self, symbols: Sequence[str], worker: Callable[[str], T], *,

@@ -77,6 +77,7 @@ class TickerScanResult:
     feature_max_date: str | None = None
     timeframe: str = "daily"
     latency_ms: float = 0.0
+    spread_count: int = 0
 
 
 @dataclass(frozen=True)
