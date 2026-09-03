@@ -219,6 +219,11 @@ class PoolRuntime:
 
         return self._single_flight(key, produce)
 
+    def resolve_daily(self, symbol: str, as_of: Any, warmup: int, *,
+                      resolver: Callable[..., Any] | None = None) -> Any:
+        """Public compatibility alias for the pinned daily resolver."""
+        return self.resolve_daily_handle(symbol, as_of, warmup, resolver=resolver)
+
     def read_daily(self, handle: Any, *, end_date: Any = None,
                    required_warmup_rows: int = 0) -> pd.DataFrame:
         key = ("daily_frame",) + self._handle_key(handle)
