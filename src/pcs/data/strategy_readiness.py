@@ -453,8 +453,12 @@ def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_acce
     if frame["trade_date"].isna().any() or frame["trade_date"].max() < day: raise ValueError("OPTIONS_DATE_COVERAGE_INSUFFICIENT")
     if frame[["symbol", "trade_date", "expiration_date", "call_put", "strike"]].duplicated().any():
         raise ValueError("DUPLICATE_CANONICAL_OPTION_KEY")
+    raw_fingerprint = row.get("dataset_fingerprint", "")
+    fingerprint = "" if raw_fingerprint is None or pd.isna(raw_fingerprint) else str(raw_fingerprint).strip()
+    if not fingerprint or fingerprint.lower() == "nan":
+        raise ValueError("DATASET_FINGERPRINT_MISSING")
     return VerifiedDatasetHandle(dataset, s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (str(row.parquet_path),),
         {"min_date": str(row.min_date), "max_date": str(row.max_date)},
-        ({"source": str(row.source), "partition": partition},), dataset_fingerprint=str(row.get("dataset_fingerprint", "")),
+        ({"source": str(row.source), "partition": partition},), dataset_fingerprint=fingerprint,
         schema_version=str(row.schema_version), price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
         min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)

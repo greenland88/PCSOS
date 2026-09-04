@@ -127,6 +127,32 @@ def test_wrong_dataset_fingerprint_fails_closed(tmp_path):
     with pytest.raises(Exception, match="DATASET_FINGERPRINT_MISMATCH"):
         a.read_verified_dataset(h)
 
+
+def _options_manifest_with_fingerprint(tmp_path, fingerprint):
+    a = access(tmp_path)
+    receipt = a.promote_generation(frame(), "options", "ZZZ", "year=2026/quarter=1", source_version="fixture")
+    manifest = pd.read_csv(tmp_path / "manifest.csv")
+    manifest.loc[0, "dataset_fingerprint"] = fingerprint
+    manifest.to_csv(tmp_path / "manifest.csv", index=False)
+    return a, receipt
+
+
+def test_verified_options_handle_accepts_real_dataset_fingerprint(tmp_path):
+    from pcs.data.strategy_readiness import resolve_active_verified_options_handle
+
+    a, _ = _options_manifest_with_fingerprint(tmp_path, "exact-options-fingerprint")
+    handle = resolve_active_verified_options_handle("ZZZ", "2026-01-02", data_access=a)
+    assert handle.dataset_fingerprint == "exact-options-fingerprint"
+
+
+@pytest.mark.parametrize("fingerprint", [float("nan"), "", "   ", "nan", "NaN"])
+def test_verified_options_handle_rejects_missing_dataset_fingerprint(tmp_path, fingerprint):
+    from pcs.data.strategy_readiness import resolve_active_verified_options_handle
+
+    a, _ = _options_manifest_with_fingerprint(tmp_path, fingerprint)
+    with pytest.raises(ValueError, match="DATASET_FINGERPRINT_MISSING"):
+        resolve_active_verified_options_handle("ZZZ", "2026-01-02", data_access=a)
+
 def test_pit_warmup_uses_only_rows_at_or_before_as_of(tmp_path):
     from pcs.data.strategy_readiness import VerifiedDatasetHandle
     a=access(tmp_path); dates=pd.date_range("2024-01-02", periods=201, freq="B")
