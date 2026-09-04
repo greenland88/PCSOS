@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 import pandas as pd
 import pytest
@@ -126,3 +127,67 @@ def test_exact_option_quote_repair_uses_resolved_route(tmp_path):
     assert routed_manifest.exists()
     assert not default_manifest.exists()
     assert list((root / "options_v3" / "symbol=NVDA").rglob("*.parquet"))
+
+
+def test_routed_promotion_is_idempotent_without_receipt_or_file_loss(tmp_path):
+    access, default_manifest, routed_manifest, root = make_access(tmp_path, "NVDA", "options_v3")
+    engine = ImportEngine(access=access, staging_root=tmp_path / "staging",
+                          catalog=CanonicalDataCatalog(tmp_path / "catalog.parquet"),
+                          ledger=RequestLedger(tmp_path / "ledger.jsonl"))
+    first = engine.promote(engine.stage(option_frame("NVDA"), symbol="NVDA", dataset="options",
+                                        partition="year=2026/quarter=1", source_id="fixture"),
+                           source_version="fixture")
+    active_path = Path(first["path"])
+    parquet_bytes = active_path.read_bytes()
+    parquet_hash = hashlib.sha256(parquet_bytes).hexdigest()
+    manifest_bytes = routed_manifest.read_bytes()
+    active_generation = first["promoted_generation_id"]
+
+    second = engine.promote(engine.stage(option_frame("NVDA"), symbol="NVDA", dataset="options",
+                                         partition="year=2026/quarter=1", source_id="fixture"),
+                            source_version="fixture")
+
+    active = access.active_generation_record("options_v3", "NVDA", "year=2026/quarter=1",
+                                             manifest_identity=str(routed_manifest.resolve()))
+    assert second["status"] == "ALREADY_COMPLETE"
+    assert second["reason_codes"] == ["IDEMPOTENT_NO_OP"]
+    assert second["promotion_receipt"] is None
+    assert second["promoted_generation_id"] == active_generation
+    assert active["active_generation"] == active_generation
+    assert active_path.exists()
+    assert hashlib.sha256(active_path.read_bytes()).hexdigest() == parquet_hash
+    assert routed_manifest.read_bytes() == manifest_bytes
+    assert int(active["row_count"]) == len(pd.read_parquet(active_path))
+    assert access.semantic_content_hash(pd.read_parquet(active_path)) == str(active["content_hash"])
+    assert len(pd.read_csv(routed_manifest)) == 1
+    assert not default_manifest.exists()
+
+
+def test_route_identity_failure_cannot_delete_preexisting_active_file(tmp_path, monkeypatch):
+    access, default_manifest, routed_manifest, root = make_access(tmp_path, "NVDA", "options_v3")
+    engine = ImportEngine(access=access, staging_root=tmp_path / "staging",
+                          catalog=CanonicalDataCatalog(tmp_path / "catalog.parquet"),
+                          ledger=RequestLedger(tmp_path / "ledger.jsonl"))
+    first = engine.promote(engine.stage(option_frame("NVDA", bid=1.0), symbol="NVDA", dataset="options",
+                                        partition="year=2026/quarter=1", source_id="fixture"),
+                           source_version="fixture")
+    old_path = Path(first["path"])
+    old_bytes = old_path.read_bytes()
+    old_generation = first["promoted_generation_id"]
+
+    def fail_route_assertion(*_args):
+        raise DataAccessError("CANONICAL_ROUTE_IDENTITY_MISMATCH")
+
+    monkeypatch.setattr(engine, "_assert_route_identity", fail_route_assertion)
+    result = engine.promote(engine.stage(option_frame("NVDA", bid=2.0), symbol="NVDA", dataset="options",
+                                         partition="year=2026/quarter=1", source_id="fixture"),
+                            source_version="fixture")
+
+    assert result["status"] == "QUARANTINED"
+    assert result["reason_codes"] == ["DataAccessError"]
+    assert old_path.exists()
+    assert old_path.read_bytes() == old_bytes
+    active = access.active_generation_record("options_v3", "NVDA", "year=2026/quarter=1",
+                                             manifest_identity=str(routed_manifest.resolve()))
+    assert active["active_generation"] == old_generation
+    assert not default_manifest.exists()

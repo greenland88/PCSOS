@@ -15,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 import pandas as pd
-from .access import PCSDataAccess, DataAccessError, CanonicalFileAccessError
+from .access import PCSDataAccess, PromotionReceipt, DataAccessError, CanonicalFileAccessError
 
 class ImportStatus(StrEnum):
     READY = "READY"
@@ -271,13 +271,33 @@ class ImportEngine:
         path = Path(staged["path"]); frame = pd.read_parquet(path)
         route_access = self._bound_access(staged)
         written = None
+        created_path = None
+        canonical_symbol_root = (Path(staged["parquet_root"]) / staged["physical_dataset"] /
+                                  f"symbol={staged['symbol']}")
+        preexisting_canonical_paths = set(canonical_symbol_root.rglob("*.parquet")) if canonical_symbol_root.exists() else set()
         metadata_files = [Path(route_access.manifest_path), Path(route_access.provenance_manifest_path), Path(self.catalog.path), Path(self.ledger.path)]
         snapshots = {}
         for target in metadata_files:
             snapshots[target] = target.read_bytes() if target.exists() else None
         try:
             written = route_access.promote_generation(frame, staged["physical_dataset"], staged["symbol"], staged["partition"], source_version=source_version, logical_dataset=staged["logical_dataset"])
-            self._assert_route_identity(staged, written, route_access)
+            if isinstance(written, PromotionReceipt):
+                candidate_path = Path(written.path)
+                if candidate_path not in preexisting_canonical_paths:
+                    created_path = candidate_path
+                self._assert_route_identity(staged, written, route_access)
+            else:
+                if not isinstance(written, Path):
+                    raise DataAccessError("UNRECOGNIZED_PROMOTION_RESULT")
+                self._verify_idempotent_noop(staged, written, route_access)
+                return {"status": "ALREADY_COMPLETE", "path": str(written),
+                        "request_id": staged["request_id"],
+                        "promotion_receipt": None,
+                        "promoted_generation_id": str(route_access.active_generation_record(
+                            staged["physical_dataset"], staged["symbol"], staged["partition"],
+                            manifest_identity=route_access.normalized_path_identity(staged["manifest_path"])
+                        ).get("active_generation") or ""),
+                        "reason_codes": ["IDEMPOTENT_NO_OP"]}
             route_access.record_provenance({"dataset": staged["physical_dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(frame), "status": "PROMOTED"})
             self.catalog.rebuild(route_access)
             self.ledger.record(request_id=staged["request_id"], source_id=staged["source_id"], symbol=staged["symbol"], dataset=staged["dataset"], shard=staged["partition"], physical_row_count=len(frame), status="API_COMPLETE", completed_at=datetime.now(timezone.utc).isoformat())
@@ -314,8 +334,8 @@ class ImportEngine:
             # write_partition refuses overwrite by default; removing only the
             # path created in this transaction preserves any prior canonical
             # partition when metadata finalization fails.
-            if written is not None:
-                try: Path(written).unlink(missing_ok=True)
+            if created_path is not None:
+                try: created_path.unlink(missing_ok=True)
                 except OSError: pass
             for target, payload in snapshots.items():
                 try:
@@ -330,6 +350,29 @@ class ImportEngine:
             quarantine.parent.mkdir(parents=True, exist_ok=True)
             if path.exists(): path.replace(quarantine.with_suffix(".parquet"))
             return {"status": "QUARANTINED", "reason_codes": [type(exc).__name__], "detail": str(exc), "request_id": staged["request_id"]}
+
+    @staticmethod
+    def _verify_idempotent_noop(staged, existing, route_access):
+        expected_root = (Path(staged["parquet_root"]) / staged["physical_dataset"] /
+                         f"symbol={staged['symbol']}").resolve()
+        existing = Path(existing).resolve()
+        try:
+            existing.relative_to(expected_root)
+        except ValueError as exc:
+            raise DataAccessError("CANONICAL_ROUTE_IDENTITY_MISMATCH") from exc
+        active = route_access.active_generation_record(
+            staged["physical_dataset"], staged["symbol"], staged["partition"],
+            manifest_identity=route_access.normalized_path_identity(staged["manifest_path"]),
+        )
+        active_path = Path(str(active.get("parquet_path", ""))).resolve()
+        if active_path != existing:
+            raise DataAccessError("IDEMPOTENT_CANONICAL_STATE_INVALID")
+        if not existing.exists():
+            raise DataAccessError("IDEMPOTENT_CANONICAL_STATE_INVALID")
+        read_back = pd.read_parquet(existing)
+        if (len(read_back) != int(active.get("row_count") or 0) or
+                route_access.semantic_content_hash(read_back) != str(active.get("content_hash", ""))):
+            raise DataAccessError("IDEMPOTENT_CANONICAL_STATE_INVALID")
 
     @staticmethod
     def _assert_route_identity(staged, receipt, route_access):
