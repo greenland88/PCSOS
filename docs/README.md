@@ -22,6 +22,7 @@ promote a strategy.
 | Ticker research-readiness gate | [`architecture/pcs_ticker_readiness.md`](architecture/pcs_ticker_readiness.md) |
 | Agent-ready typed interfaces | [`architecture/agent_ready_interfaces.md`](architecture/agent_ready_interfaces.md) |
 | Validation run safety | [`architecture/validation_run_safety.md`](architecture/validation_run_safety.md) |
+| Pool Scan execution, routing, and acceptance | [`architecture/pool_scan_contract.md`](architecture/pool_scan_contract.md) |
 | Phase 0 integration boundary | [`phase0_data_integration.md`](phase0_data_integration.md) |
 | Stage 4A Entry Contract v2 | [`stage4a_entry_contract_canonicalization.md`](stage4a_entry_contract_canonicalization.md) |
 
@@ -41,6 +42,9 @@ Ticker cutover notes, research summaries, `ERRORS.md`, and dated audit reports
 describe the state at the time they were written. They remain useful evidence,
 but must be checked against `PROJECT_STATUS.md`, the canonical roadmap, active
 routes, manifests, and current artifact identities before being used.
+
+The dated unified-data acceptance record is
+[`history/2026-08-26_unified_data_acceptance.md`](history/2026-08-26_unified_data_acceptance.md).
 
 `docs/PCS/_CAPABILITY_ROADMAP.md` is a compatibility pointer only. It must not
 become a second capability registry.
