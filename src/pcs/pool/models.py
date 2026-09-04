@@ -56,6 +56,7 @@ class PoolRunSnapshot:
     manifest_snapshot_id: str = ""
     requested_as_of: str = ""
     effective_daily_session: str | None = None
+    benchmark_status: str = "NOT_EVALUATED"
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class TickerScanResult:
     prepared_dataset: str | None = None
     effective_daily_session: str | None = None
     discovered_contracts: tuple[Mapping[str, Any], ...] = ()
+    initial_daily_readiness: str = "READY"
 
 
 @dataclass(frozen=True)

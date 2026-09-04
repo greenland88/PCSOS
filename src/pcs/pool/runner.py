@@ -216,6 +216,28 @@ def _revalidate_daily(symbols, access, effective_daily_session, resolver):
     return states
 
 
+def _audit_verified_daily(states, symbols, access, effective_daily_session, resolver):
+    """Verify metadata-READY dependencies without fetching or writing."""
+    if not hasattr(access, "_resolve_route") or not hasattr(access, "_read_manifest"):
+        return states
+    hard_codes = {
+        "DATASET_CHECKSUM_MISMATCH", "READ_BACK_CHECKSUM_MISMATCH",
+        "DATASET_PROVENANCE_INCOMPLETE", "DUPLICATE_CANONICAL_PRICE_KEY",
+        "GENERATION_NOT_VERIFIED", "CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER",
+    }
+    for symbol in symbols:
+        state = states[symbol]
+        if state.status != "READY":
+            continue
+        try:
+            resolver(symbol, effective_daily_session, 200, data_access=access)
+        except Exception as exc:
+            code = str(exc).strip() or "DAILY_VERIFIED_READ_FAILED"
+            states[symbol] = DailyReadiness(
+                "HARD_BLOCKED" if code in hard_codes else "PREP_REQUIRED", (code,))
+    return states
+
+
 def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
     """Adopt only the exact complete canonical rows for one ticker."""
     from pcs.data.canonical_generations import adopt_legacy_canonical_generation
@@ -473,7 +495,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     audit_started = perf_counter()
     dependencies = tuple(dict.fromkeys((*[str(s).strip().upper() for s in spec.symbols],
                                         str(benchmark_symbol).strip().upper())))
-    initial = _daily_preflight(dependencies, access, effective_asof)
+    initial = _audit_verified_daily(
+        _daily_preflight(dependencies, access, effective_asof),
+        dependencies, access, effective_asof, daily_resolver)
     stage_latency["readiness_audit"] = (perf_counter() - audit_started) * 1000
     prep_required = tuple(symbol for symbol in dependencies
                           if initial[symbol].status == "PREP_REQUIRED")
@@ -557,7 +581,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         str(completed.date()) if completed is not None else None,
         f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
         benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"},
-        manifest_snapshot_id=runtime.manifest_snapshot_id)
+        manifest_snapshot_id=runtime.manifest_snapshot_id,
+        benchmark_status="READY" if benchmark is not None else (benchmark_blocker or "BLOCKED"))
     snapshot = PoolRunSnapshot(**{**snapshot.__dict__, "requested_as_of": asof,
                                   "effective_daily_session": effective_asof})
     preflight_results = {}
@@ -575,7 +600,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 preparation_attempted=evidence["attempted"],
                 preparation_result_status=evidence["result_status"],
                 prepared_dataset=evidence["dataset"],
-                effective_daily_session=effective_asof)
+                effective_daily_session=effective_asof,
+                initial_daily_readiness=initial[normalized].status)
         elif normalized not in scan_ready:
             preflight_results[str(symbol).upper()] = TickerScanResult(
                 normalized, run_id, asof, EligibilityStatus.DATA_BLOCKED,
@@ -586,7 +612,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 preparation_attempted=evidence["attempted"],
                 preparation_result_status=evidence["result_status"],
                 prepared_dataset=evidence["dataset"],
-                effective_daily_session=effective_asof)
+                effective_daily_session=effective_asof,
+                initial_daily_readiness=initial[normalized].status)
         else:
             queued_symbols.append(symbol)
     scan = runtime.run_stage(tuple(queued_symbols),
@@ -613,7 +640,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                         preparation_attempted=prep_evidence[symbol]["attempted"],
                         preparation_result_status=prep_evidence[symbol]["result_status"],
                         prepared_dataset=prep_evidence[symbol]["dataset"],
-                        effective_daily_session=effective_asof)
+                        effective_daily_session=effective_asof,
+                        initial_daily_readiness=initial[symbol].status)
         for symbol, row in worker_results.items()
     }
     results = []
