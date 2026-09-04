@@ -26,6 +26,7 @@ class TimingStatus(StrEnum):
 class OptionsStatus(StrEnum):
     NOT_EVALUATED = "NOT_EVALUATED"
     PASS = "PASS"
+    DISCOVERED = "DISCOVERED"
     REJECT = "REJECT"
     DATA_BLOCKED = "DATA_BLOCKED"
 

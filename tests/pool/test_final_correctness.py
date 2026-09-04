@@ -163,3 +163,26 @@ def test_explicit_intraday_reader_uses_current_quote_date(monkeypatch):
     assert quote_dates == [pd.Timestamp("2025-03-03")]
     assert row.feature_max_date == "2025-03-03"
     assert row.options_status == OptionsStatus.DATA_BLOCKED
+
+
+def test_stage_b_discovery_is_not_stage_c_approval(monkeypatch):
+    monkeypatch.setattr(runner, "build_trend_snapshot", lambda *args, **kwargs: _controlled_trend())
+    monkeypatch.setattr(runner, "interpret_trend", lambda *args, **kwargs: _controlled_interpretation())
+    monkeypatch.setattr(runner, "score_trend", lambda *args, **kwargs: _controlled_score())
+    monkeypatch.setattr(runner, "evaluate_trend_gate", lambda *args, **kwargs: SimpleNamespace(
+        available=True, trend_gate_result="PASS", reasons=(), warnings=()))
+    monkeypatch.setattr(runner, "evaluate_pullback_gate", lambda *args, **kwargs: SimpleNamespace(
+        available=True, pullback_gate_result="PASS", reasons=(), warnings=()))
+    candidate = SimpleNamespace()
+    monkeypatch.setattr(runner, "discover_spreads", lambda *args, **kwargs: (candidate,))
+    row = runner._evaluate_symbol(
+        "AAA", run_id="r", asof="2025-03-03", access=Access(_frame()),
+        benchmark=_frame(), benchmark_symbol="QQQ", options_reader=lambda *_: pd.DataFrame(),
+        option_rules=dict(runner.load_pool_option_rules()), daily_handle_resolver=resolve_handle,
+        auto_prepare_data=False, mode="EOD",
+        static_metadata_reader=lambda _: {"optionable": True},
+        runtime=PoolRuntime(access=Access(_frame()), daily_handle_resolver=resolve_handle))
+    assert row.options_status == OptionsStatus.DISCOVERED
+    assert row.spread_count == 1
+    assert row.final_action != FinalAction.PCS_TRADE_READY
+    assert "CONTRACT_CANDIDATES_DISCOVERED" in row.reason_codes

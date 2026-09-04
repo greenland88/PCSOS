@@ -13,7 +13,7 @@ from .runner import run_pcs_pool
 from .final_gates import (PoolEventResult, evaluate_pool_event, PoolPortfolioResult,
                           evaluate_pool_portfolio, compose_final_action)
 from .final_gates import finalize_ticker_result
-from .options import SpreadCandidate, shortlist_spreads
+from .options import SpreadCandidate, discover_spreads, shortlist_spreads
 from .iv import (IVGateStatus, IVFeatures, build_iv_features, calculate_iv_features,
                  evaluate_iv_gate)
 from .validation import validate_pool_result
@@ -28,7 +28,7 @@ __all__ = [
     "PoolEventResult", "evaluate_pool_event",
     "PoolPortfolioResult", "evaluate_pool_portfolio", "compose_final_action",
     "finalize_ticker_result",
-    "SpreadCandidate", "shortlist_spreads",
+    "SpreadCandidate", "discover_spreads", "shortlist_spreads",
     "IVGateStatus", "IVFeatures", "build_iv_features", "calculate_iv_features", "evaluate_iv_gate",
     "validate_pool_result",
     "WorkerOutcome", "run_symbol_workers",

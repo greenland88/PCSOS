@@ -47,6 +47,8 @@ def compose_final_action(*, timing_status, options_status, event_status, portfol
         action = FinalAction.WATCH if timing_status == TimingStatus.WATCH else FinalAction.WAIT
     elif options_status == OptionsStatus.DATA_BLOCKED:
         action, reasons = FinalAction.DATA_FAILED, reasons + ["OPTIONS_DATA_BLOCKED"]
+    elif options_status == OptionsStatus.DISCOVERED:
+        action, reasons = FinalAction.WAIT, reasons + ["CONTRACT_SELECTION_REQUIRED"]
     elif options_status != OptionsStatus.PASS:
         action, reasons = FinalAction.WAIT, reasons + ["OPTIONS_NOT_PASS"]
     elif event_status not in {"EVENT_PASS", "EVENT_MANAGED_CONDITIONAL"}:

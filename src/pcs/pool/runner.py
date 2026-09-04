@@ -25,7 +25,7 @@ from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnaps
 from .registry import UniverseSpec, evaluate_static_eligibility
 from .modes import resolve_effective_market_session
 from .runtime import PoolRuntime
-from .options import load_pool_option_rules
+from .options import discover_spreads, load_pool_option_rules
 
 _PREPARATION_LOCK = RLock()
 
@@ -183,7 +183,6 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 mode in {"PREMARKET", "INTRADAY"} and options_reader is None):
             option_reasons = ("LIVE_OPTIONS_SOURCE_REQUIRED",)
         elif timing == TimingStatus.TIMING_ENTRY_READY and options_enabled:
-            from .options import shortlist_spreads
             try:
                 if options_prepare is None and options_reader is None:
                     option_day = pd.Timestamp(feature_date).normalize()
@@ -213,9 +212,11 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                     chain = runtime.read_options_handle(option_handle, start_date=str(option_day.date()), end_date=str(option_day.date()))
                 close = float(daily.iloc[-1].close)
                 atr = float(getattr(trend.support, "current_atr", 0) or 0)
-                candidates = shortlist_spreads(symbol, feature_date, close, atr, chain, rules=option_rules or {})
-                options_status = OptionsStatus.PASS if candidates else OptionsStatus.REJECT
-                option_reasons = ("OPTIONS_SHORTLIST_PASS" if candidates else "NO_QUALIFYING_SPREAD",)
+                candidates = discover_spreads(symbol, feature_date, close, atr, chain,
+                                              rules=option_rules)
+                options_status = OptionsStatus.DISCOVERED if candidates else OptionsStatus.REJECT
+                option_reasons = ("CONTRACT_CANDIDATES_DISCOVERED" if candidates
+                                  else "NO_STRUCTURALLY_VALID_PCS",)
             except Exception as exc:
                 options_status = OptionsStatus.DATA_BLOCKED
                 option_reasons = (str(exc).strip() or "OPTIONS_DATA_BLOCKED",)
@@ -223,7 +224,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
             latency_ms=(perf_counter()-started)*1000,
-            spread_count=len(candidates) if options_status == OptionsStatus.PASS else 0,
+            spread_count=len(candidates),
             structural_trend=getattr(engine, "structural_trend", None),
             short_term_phase=getattr(engine, "short_term_phase", None),
             trend_gate_reasons=tuple(getattr(trend_gate, "reasons", ()) or ()),

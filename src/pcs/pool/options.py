@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
 from typing import Any, Mapping
 from types import MappingProxyType
@@ -26,8 +27,8 @@ class SpreadCandidate:
     mid_credit: float
     credit_efficiency: float
     short_delta_diagnostic: float | None
-    open_interest: int
-    volume: int
+    open_interest: int | None
+    volume: int | None
     bid_ask_spread: float
     quote_as_of: str | None
     # Keep the original terminal field position stable for positional callers.
@@ -53,6 +54,11 @@ class SpreadCandidate:
     options_generation_id: str | None = None
     iv_calculation_version: str = "pcs.pool.iv.v1"
     iv_data_as_of: str | None = None
+    dte: int = 0
+    short_bid_ask_pct: float | None = None
+    nearby_strike_count: int = 0
+    later_expiration_count: int = 0
+    reference_flags: tuple[str, ...] = ()
 
     @property
     def short_iv(self) -> float | None:
@@ -172,12 +178,20 @@ def _iv_is_requested(rules: Mapping[str, Any], iv_context: Mapping[str, Any] | N
 def _candidate_from_iv(symbol: str, entry: pd.Timestamp, expiry: pd.Timestamp,
                        short: Any, long: Any, *, width: float, distance: float,
                        bid_credit: float, mid_credit: float, spread: float,
-                       iv: IVFeatures) -> SpreadCandidate:
+                       dte: int, short_bid_ask_pct: float,
+                       nearby_count: int, later_count: int,
+                       reference_flags: tuple[str, ...], iv: IVFeatures) -> SpreadCandidate:
+    def optional_int(value):
+        try:
+            return int(value) if pd.notna(value) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     return SpreadCandidate(
         str(symbol).upper(), str(entry.date()), str(expiry.date()), float(short.strike),
         float(long.strike), width, distance, bid_credit, mid_credit, bid_credit / width,
         float(short.delta) if "delta" in short and pd.notna(short.delta) else None,
-        int(short.open_interest), int(short.volume), spread,
+        optional_int(short.open_interest), optional_int(short.volume), spread,
         str(short.quote_as_of) if "quote_as_of" in short and pd.notna(short.quote_as_of) else None,
         reason_codes=tuple(dict.fromkeys(("PIT_CHAIN_SUPPLIED", *iv.reason_codes))),
         short_put_bid_iv=iv.short_put_bid_iv, short_put_ask_iv=iv.short_put_ask_iv,
@@ -192,20 +206,26 @@ def _candidate_from_iv(symbol: str, entry: pd.Timestamp, expiry: pd.Timestamp,
         options_generation_id=iv.options_generation_id,
         iv_data_as_of=iv.iv_data_as_of,
         iv_calculation_version=iv.calculation_version,
+        dte=dte, short_bid_ask_pct=short_bid_ask_pct,
+        nearby_strike_count=nearby_count, later_expiration_count=later_count,
+        reference_flags=reference_flags,
     )
 
 
-def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: float,
-                      chain: pd.DataFrame, *, rules: Mapping[str, Any], limit: int = 3,
-                      iv_context: Mapping[str, Any] | None = None) -> tuple[SpreadCandidate, ...]:
-    """Select exact put spreads from an already validated PIT chain.
+def discover_spreads(symbol: str, entry_date, underlying_price: float, atr: float,
+                     chain: pd.DataFrame, *, rules: Mapping[str, Any], limit: int | None = None,
+                     iv_context: Mapping[str, Any] | None = None) -> tuple[SpreadCandidate, ...]:
+    """Discover every structurally valid positive-credit put spread.
 
-    Ordinary strike, DTE, credit, and liquidity filters run first. IV is then
-    evaluated only for each pair that survived those filters. When IV input is
-    requested, a blocked IV gate excludes that pair from the production
-    shortlist; with no IV input the legacy shortlist remains NOT_EVALUATED.
+    Configured PCS thresholds are reference evidence for later contract
+    decision, not Stage-B exclusion gates.
     """
-    if chain is None or chain.empty or atr <= 0 or limit < 1:
+    if chain is None or chain.empty or (limit is not None and limit < 1):
+        return ()
+    try:
+        if not math.isfinite(float(atr)) or float(atr) <= 0 or not math.isfinite(float(underlying_price)):
+            return ()
+    except (TypeError, ValueError):
         return ()
     chain = chain.copy()
     aliases = {"expiration_date": "expiration", "call_put": "option_type", "trade_date": "quote_as_of"}
@@ -216,8 +236,10 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
         return ()
     frame = chain.copy()
     frame["expiration"] = pd.to_datetime(frame["expiration"], errors="coerce").dt.normalize()
+    frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
     frame["option_type"] = frame["option_type"].astype(str).str.lower().replace({"put": "p"})
-    frame = frame[frame.option_type.isin({"p"})].copy()
+    frame = frame[frame.option_type.isin({"p"}) & frame.expiration.notna() &
+                  frame.strike.notna() & frame.strike.map(math.isfinite)].copy()
     if frame.empty:
         return ()
     keys = ["expiration", "strike", "option_type"]
@@ -230,7 +252,9 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
                 "long_leg_min_option_volume", "long_leg_min_open_interest")
     if any(name not in rules for name in required):
         raise ValueError("POOL_OPTION_RULES_INCOMPLETE")
-    dte_min, dte_max = int(rules["dte_min"]), int(rules["dte_max"])
+    hard_dte_min, hard_dte_max = int(rules["dte_min"]), int(rules["dte_max"])
+    preferred_dte_min = int(rules.get("preferred_dte_min", hard_dte_min))
+    preferred_dte_max = int(rules.get("preferred_dte_max", hard_dte_max))
     min_ratio = float(rules["min_credit_width_ratio"])
     min_volume, min_oi = int(rules["min_option_volume"]), int(rules["min_open_interest"])
     output: list[SpreadCandidate] = []
@@ -240,27 +264,17 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
 
     for expiry, rows in frame.groupby("expiration", sort=True):
         dte = (expiry - entry).days
-        if not dte_min <= dte <= dte_max:
+        if dte <= 0:
             continue
         rows = rows.sort_values("strike", ascending=False)
         for _, short in rows.iterrows():
             distance = (float(underlying_price) - float(short.strike)) / float(atr)
-            if distance < float(rules["safe_strike_atr"]):
-                continue
-            if any(pd.isna(float(short[name])) for name in ("volume", "open_interest", "strike")):
-                continue
-            if float(short.volume) < min_volume or float(short.open_interest) < min_oi:
-                continue
             if any(pd.isna(float(short[name])) for name in ("bid", "ask")):
                 continue
             if float(short.bid) <= 0 or float(short.ask) < float(short.bid):
                 continue
-            if (float(short.ask) - float(short.bid)) / float(short.bid) > float(rules["max_bid_ask_pct"]):
-                continue
-            if nearby_strikes(frame, expiry, "p", float(short.strike)) < int(rules["min_nearby_strikes"]):
-                continue
-            if later_expirations(frame, expiry, "p") < int(rules["min_later_expirations"]):
-                continue
+            nearby_count = nearby_strikes(frame, expiry, "p", float(short.strike))
+            later_count = later_expirations(frame, expiry, "p")
             for _, long in rows[rows.strike < short.strike].iterrows():
                 width = float(short.strike) - float(long.strike)
                 if width <= 0:
@@ -269,30 +283,55 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
                     continue
                 if float(long.bid) < 0 or float(long.ask) < 0 or float(long.ask) < float(long.bid):
                     continue
-                if (rules["long_leg_min_option_volume"] is not None and
-                        float(long.volume) < float(rules["long_leg_min_option_volume"] or 0)):
-                    continue
-                if (rules["long_leg_min_open_interest"] is not None and
-                        float(long.open_interest) < float(rules["long_leg_min_open_interest"] or 0)):
-                    continue
                 bid_credit = float(short.bid) - float(long.ask)
                 mid_credit = ((float(short.bid) + float(short.ask)) / 2 -
                               (float(long.bid) + float(long.ask)) / 2)
-                if bid_credit <= 0 or bid_credit / width < min_ratio:
+                if bid_credit <= 0:
                     continue
                 spread = float(short.ask) - float(short.bid)
+                short_bid_ask_pct = spread / float(short.bid)
+                flags = []
+                flags.append("DTE_PREFERRED" if preferred_dte_min <= dte <= preferred_dte_max
+                             else "DTE_REFERENCE_RANGE" if hard_dte_min <= dte <= hard_dte_max
+                             else "DTE_OUTSIDE_REFERENCE_RANGE")
+                flags.append("ATR_REFERENCE_MET" if distance >= float(rules["safe_strike_atr"])
+                             else "ATR_BELOW_REFERENCE")
+                flags.append("CREDIT_EFFICIENCY_REFERENCE_MET" if bid_credit / width >= min_ratio
+                             else "CREDIT_EFFICIENCY_BELOW_REFERENCE")
+                flags.append("VOLUME_UNAVAILABLE" if pd.isna(short.volume) else
+                             "VOLUME_REFERENCE_MET" if float(short.volume) >= min_volume else "VOLUME_BELOW_REFERENCE")
+                flags.append("OI_UNAVAILABLE" if pd.isna(short.open_interest) else
+                             "OI_REFERENCE_MET" if float(short.open_interest) >= min_oi else "OI_BELOW_REFERENCE")
+                flags.append("BID_ASK_REFERENCE_MET" if short_bid_ask_pct <= float(rules["max_bid_ask_pct"])
+                             else "BID_ASK_ABOVE_REFERENCE")
+                flags.append("NEARBY_STRIKES_REFERENCE_MET" if nearby_count >= int(rules["min_nearby_strikes"])
+                             else "NEARBY_STRIKES_BELOW_REFERENCE")
+                flags.append("LATER_EXPIRATIONS_REFERENCE_MET" if later_count >= int(rules["min_later_expirations"])
+                             else "LATER_EXPIRATIONS_BELOW_REFERENCE")
                 iv_requested = _iv_is_requested(rules, iv_context, short, long, generation_id)
                 iv = (build_iv_features(
                     short, long, entry_date=entry,
                     context=_candidate_iv_context(rules, iv_context, short, long, generation_id))
                       if iv_requested else IVFeatures())
-                if iv_requested and iv.iv_gate_status != "PASS":
+                if iv_requested and "OPTIONS_GENERATION_ID_MISMATCH" in iv.reason_codes:
                     continue
                 output.append(_candidate_from_iv(
                     symbol, entry, expiry, short, long, width=width, distance=distance,
-                    bid_credit=bid_credit, mid_credit=mid_credit, spread=spread, iv=iv))
-    return tuple(sorted(output, key=lambda x: (-x.credit_efficiency, x.expiration,
-                                                x.short_strike, x.long_strike))[:limit])
+                    bid_credit=bid_credit, mid_credit=mid_credit, spread=spread,
+                    dte=dte, short_bid_ask_pct=short_bid_ask_pct,
+                    nearby_count=nearby_count, later_count=later_count,
+                    reference_flags=tuple(flags), iv=iv))
+    ordered = tuple(sorted(output, key=lambda x: (x.expiration, x.short_strike, x.long_strike)))
+    return ordered if limit is None else ordered[:limit]
 
 
-__all__ = ["SpreadCandidate", "shortlist_spreads"]
+def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: float,
+                      chain: pd.DataFrame, *, rules: Mapping[str, Any], limit: int = 3,
+                      iv_context: Mapping[str, Any] | None = None) -> tuple[SpreadCandidate, ...]:
+    """Compatibility wrapper over the canonical discovery authority."""
+    return discover_spreads(symbol, entry_date, underlying_price, atr, chain,
+                            rules=rules, limit=limit, iv_context=iv_context)
+
+
+__all__ = ["SpreadCandidate", "discover_spreads", "shortlist_spreads",
+           "load_pool_option_rules", "normalize_pool_option_rules"]
