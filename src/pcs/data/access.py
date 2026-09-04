@@ -1144,8 +1144,16 @@ class PCSDataAccess:
         path.parent.mkdir(parents=True, exist_ok=True)
         if len(rows) and str(rows.iloc[-1].get("content_hash", "")) == digest:
             # No new promotion occurred; callers must not treat this as a
-            # fresh PromotionReceipt.
-            return Path(str(rows.iloc[-1].parquet_path))
+            # fresh PromotionReceipt, but only when the referenced object
+            # independently agrees with the manifest identity.
+            existing_path = Path(str(rows.iloc[-1].parquet_path))
+            try:
+                existing = pd.read_parquet(existing_path)
+                if (len(existing) == len(merged) and
+                        self.semantic_content_hash(existing) == digest):
+                    return existing_path
+            except (OSError, ValueError, DataQualityError):
+                pass
         previous_generation = str(rows.iloc[-1].get("active_generation", "")) if len(rows) else ""
         previous_path = str(rows.iloc[-1].get("parquet_path", "")) if len(rows) else ""
         created_at=datetime.now(timezone.utc).isoformat()
