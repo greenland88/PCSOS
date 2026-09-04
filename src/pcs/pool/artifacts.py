@@ -37,15 +37,27 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         {"symbol": row.symbol, "run_id": row.run_id, "as_of": row.as_of,
          "universe_snapshot_id": result.snapshot.universe_snapshot_id}
         for row in result.ticker_results])
-    rows = json.dumps([asdict(row) for row in result.ticker_results], default=str, sort_keys=True, indent=2)
+    flat_rows = [{key: value for key, value in asdict(row).items()
+                  if key != "discovered_contracts"}
+                 for row in result.ticker_results]
+    rows = json.dumps(flat_rows, default=str, sort_keys=True, indent=2)
     files["static_eligibility.json"] = _write_atomic(root / "static_eligibility.json", rows)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
-    parquet_rows = [asdict(row) for row in result.ticker_results]
+    parquet_rows = flat_rows
     files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
     files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
     empty_schema = {"symbol": [], "run_id": [], "as_of": [], "status": [], "reason_codes": []}
-    for name in ("intraday_overlay.parquet", "options_shortlist.parquet", "final_decisions.parquet"):
+    options_evaluated = any(row.options_status.value != "NOT_EVALUATED"
+                            for row in result.ticker_results)
+    option_rows = []
+    for candidate in result.discovered_contracts:
+        option_rows.append({"run_id": result.snapshot.run_id,
+                            "as_of": result.snapshot.as_of,
+                            **dict(candidate)})
+    for name in ("intraday_overlay.parquet", "final_decisions.parquet"):
         files[name] = _write_parquet_atomic(root / name, empty_schema)
+    files["options_shortlist.parquet"] = _write_parquet_atomic(
+        root / "options_shortlist.parquet", option_rows if option_rows else empty_schema)
     summary = json.dumps(dict(result.summary), sort_keys=True, indent=2)
     files["aggregate_summary.json"] = _write_atomic(root / "aggregate_summary.json", summary)
     transitions = []
@@ -66,8 +78,11 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     report = (f"# PCS pool scan {result.snapshot.run_id}\n\n"
               f"Mode: `{result.snapshot.mode}`  \nAs of: `{result.snapshot.as_of}`  \n"
               f"Symbols: **{len(result.ticker_results)}**  \n\n"
-              "This artifact contains the implemented U1 daily funnel. Options, event, "
-              "and portfolio stages are not implemented in this run.\n")
+              f"OPTIONS_EVALUATED_COUNT: **{int(options_evaluated)}**  \n"
+              f"OPTIONS_DISCOVERED_TICKER_COUNT: **{sum(bool(row.discovered_contracts) for row in result.ticker_results)}**  \n"
+              f"DISCOVERED_SPREAD_COUNT: **{len(result.discovered_contracts)}**  \n\n"
+              "Stage-B contract discovery is evidence only; Stage-C selection and "
+              "approval are not implemented in this run.\n")
     files["human_report.md"] = _write_atomic(root / "human_report.md", report)
     files["ai_decision_packets.jsonl"] = _write_atomic(root / "ai_decision_packets.jsonl",
         "".join(json.dumps({"symbol": row.symbol, "final_action": row.final_action.value,
@@ -78,7 +93,7 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,
         "stage_status": {"RAW_UNIVERSE": "COMPLETE", "STATIC_ELIGIBILITY": "COMPLETE",
                           "DAILY_TIMING": "COMPLETE",
-                          "OPTIONS_SHORTLIST": "COMPLETE" if result.summary.get("options_check_count", 0) else "NOT_RUN",
+                          "OPTIONS_SHORTLIST": "COMPLETE" if options_evaluated else "NOT_RUN",
                           "EVENT_GATE": "COMPLETE" if any(row.event_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN",
                           "PORTFOLIO_GATE": "COMPLETE" if any(row.portfolio_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN"},
         "input_symbol_count": len(result.ticker_results), "summary": dict(result.summary),

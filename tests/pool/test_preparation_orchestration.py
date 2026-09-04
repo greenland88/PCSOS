@@ -150,3 +150,55 @@ def test_preparation_worker_count_is_bounded(tmp_path, monkeypatch):
     runner._bounded_daily_preparation(
         ["A", "B", "C", "D"], access, "2025-09-17", max_workers=2, timeout_seconds=5)
     assert maximum <= 2
+
+
+def test_quarterly_warmup_uses_cumulative_active_rows(tmp_path):
+    access = RoutedFixtureAccess(tmp_path)
+    access.ready.add("AAA")
+    rows = []
+    for quarter, count, start, end, generation in (
+            ("2025Q4", 63, "2025-10-01", "2025-12-31", "g1"),
+            ("2026Q1", 62, "2026-01-01", "2026-03-31", "g2"),
+            ("2026Q2", 63, "2026-04-01", "2026-06-30", "g3"),
+            ("2026Q3", 45, "2026-07-01", "2026-09-03", "g4")):
+        rows.append({"dataset": "daily", "symbol": "AAA", "partition_ids": quarter,
+                     "active_generation": generation, "min_date": start, "max_date": end,
+                     "row_count": count, "status": "SUCCESS"})
+    access._read_manifest = lambda _path: pd.DataFrame(rows)
+    state = runner._daily_preflight(["AAA"], access, "2026-09-03")["AAA"]
+    assert state.status == "READY"
+
+
+def test_quarterly_warmup_below_threshold_requires_preparation(tmp_path):
+    access = RoutedFixtureAccess(tmp_path)
+    rows = [{"dataset": "daily", "symbol": "AAA", "partition_ids": "q",
+             "active_generation": "g", "min_date": "2026-01-01", "max_date": "2026-09-03",
+             "row_count": 199, "status": "SUCCESS"}]
+    access._read_manifest = lambda _path: pd.DataFrame(rows)
+    assert runner._daily_preflight(["AAA"], access, "2026-09-03")["AAA"].status == "PREP_REQUIRED"
+
+
+def test_stale_latest_session_is_separate_from_warmup(tmp_path):
+    access = RoutedFixtureAccess(tmp_path)
+    rows = [{"dataset": "daily", "symbol": "AAA", "partition_ids": "q",
+             "active_generation": "g", "min_date": "2025-01-01", "max_date": "2026-09-02",
+             "row_count": 400, "status": "SUCCESS"}]
+    access._read_manifest = lambda _path: pd.DataFrame(rows)
+    state = runner._daily_preflight(["AAA"], access, "2026-09-03")["AAA"]
+    assert state.status == "PREP_REQUIRED"
+    assert state.reason_codes == ("DAILY_STALE",)
+
+
+def test_superseded_generation_does_not_inflate_warmup(tmp_path):
+    access = RoutedFixtureAccess(tmp_path)
+    rows = [{"dataset": "daily", "symbol": "AAA", "partition_ids": "q1",
+             "active_generation": "g1", "min_date": "2025-01-01", "max_date": "2025-06-30",
+             "row_count": 120, "status": "SUCCESS"},
+            {"dataset": "daily", "symbol": "AAA", "partition_ids": "q1",
+             "active_generation": "", "min_date": "2025-01-01", "max_date": "2025-06-30",
+             "row_count": 120, "status": "SUPERSEDED"},
+            {"dataset": "daily", "symbol": "AAA", "partition_ids": "q2",
+             "active_generation": "g2", "min_date": "2025-07-01", "max_date": "2026-09-03",
+             "row_count": 79, "status": "SUCCESS"}]
+    access._read_manifest = lambda _path: pd.DataFrame(rows)
+    assert runner._daily_preflight(["AAA"], access, "2026-09-03")["AAA"].status == "PREP_REQUIRED"

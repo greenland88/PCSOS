@@ -177,7 +177,8 @@ def test_stage_b_discovery_is_not_stage_c_approval(monkeypatch):
     monkeypatch.setattr(runner, "discover_spreads", lambda *args, **kwargs: (candidate,))
     row = runner._evaluate_symbol(
         "AAA", run_id="r", asof="2025-03-03", access=Access(_frame()),
-        benchmark=_frame(), benchmark_symbol="QQQ", options_reader=lambda *_: pd.DataFrame(),
+        benchmark=_frame(), benchmark_symbol="QQQ",
+        options_reader=lambda *_: pd.DataFrame({"quote_as_of": ["2025-03-03"]}),
         option_rules=dict(runner.load_pool_option_rules()), daily_handle_resolver=resolve_handle,
         auto_prepare_data=False, mode="EOD",
         static_metadata_reader=lambda _: {"optionable": True},

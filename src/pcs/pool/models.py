@@ -90,6 +90,7 @@ class TickerScanResult:
     preparation_result_status: str = ""
     prepared_dataset: str | None = None
     effective_daily_session: str | None = None
+    discovered_contracts: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,7 @@ class PoolScanResult:
         "ordinary_reader_calls": 0, "options_reader_calls": 0,
         "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
     })
+    discovered_contracts: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

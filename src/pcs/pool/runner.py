@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Literal, Sequence
 import uuid
 from threading import RLock
@@ -36,6 +36,41 @@ _PREPARATION_LOCK = RLock()
 class DailyReadiness:
     status: str
     reason_codes: tuple[str, ...] = ()
+
+
+def _validate_options_quote_session(chain: pd.DataFrame, expected_session) -> pd.DataFrame:
+    """Require one verifiable quote session before Stage-B discovery."""
+    expected = pd.Timestamp(expected_session).normalize()
+    if chain is None or chain.empty:
+        raise ValueError("OPTIONS_QUOTE_SESSION_UNVERIFIED")
+    evidence = []
+    for field in ("trade_date", "quote_as_of", "as_of"):
+        if field not in chain.columns:
+            continue
+        values = pd.to_datetime(chain[field], errors="coerce")
+        values = values.dropna().map(lambda value: pd.Timestamp(value).normalize())
+        if not values.empty:
+            evidence.extend(values.tolist())
+    if not evidence:
+        raise ValueError("OPTIONS_QUOTE_SESSION_UNVERIFIED")
+    sessions = {value for value in evidence}
+    if len(sessions) != 1 or expected not in sessions:
+        raise ValueError("OPTIONS_QUOTE_SESSION_MISMATCH")
+    normalized = chain.copy()
+    for field in ("trade_date", "quote_as_of"):
+        if field in normalized.columns:
+            normalized[field] = pd.to_datetime(normalized[field], errors="coerce").dt.normalize()
+    return normalized
+
+
+def _candidate_record(candidate) -> dict:
+    """Serialize the canonical candidate without retaining a live object."""
+    if hasattr(candidate, "to_dict"):
+        return dict(candidate.to_dict())
+    try:
+        return dict(asdict(candidate))
+    except TypeError:
+        return dict(vars(candidate))
 
 
 def _daily_preflight(symbols, access, decision_date):
@@ -77,10 +112,20 @@ def _daily_preflight(symbols, access, decision_date):
                 max_date = pd.to_datetime(active.max_date, errors="coerce").max()
                 reason = "DAILY_STALE" if pd.notna(max_date) and max_date < decision else "INSUFFICIENT_FEATURE_WARMUP"
                 index[s] = DailyReadiness("PREP_REQUIRED", (reason,)); continue
-            if "row_count" in covered:
-                counts = pd.to_numeric(covered.row_count, errors="coerce")
-                if counts.isna().any() or counts.sum() < 200:
-                    index[s] = DailyReadiness("PREP_REQUIRED", ("INSUFFICIENT_FEATURE_WARMUP",)); continue
+            # Latest-session coverage and historical warmup are independent.
+            # A current quarter is normally much smaller than the 200-row
+            # indicator warmup, so count all active, non-future partitions.
+            history = active[pd.to_datetime(active.min_date, errors="coerce").le(decision) &
+                             pd.to_datetime(active.max_date, errors="coerce").le(decision)].copy()
+            identity_columns = [column for column in ("partition_ids", "parquet_path", "active_generation")
+                                if column in history.columns]
+            if identity_columns:
+                history = history.drop_duplicates(identity_columns, keep="last")
+            if "row_count" not in history:
+                index[s] = DailyReadiness("PREP_REQUIRED", ("INSUFFICIENT_FEATURE_WARMUP",)); continue
+            counts = pd.to_numeric(history.row_count, errors="coerce")
+            if counts.isna().any() or counts.sum() < 200:
+                index[s] = DailyReadiness("PREP_REQUIRED", ("INSUFFICIENT_FEATURE_WARMUP",)); continue
             index[s] = DailyReadiness("READY")
         except Exception as exc:
             index[s] = DailyReadiness("HARD_BLOCKED", (str(exc).strip() or "DAILY_READINESS_UNAVAILABLE",))
@@ -282,6 +327,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         timing_reasons = tuple(dict.fromkeys(timing_reasons))
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
         candidates = ()
+        discovered_contracts = ()
         engine = getattr(trend, "market_structure_engine", None)
         feature_date = getattr(engine, "feature_max_date", None)
         if options_enabled is None:
@@ -317,13 +363,16 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                         option_handle = resolve_active_verified_options_handle(
                             symbol, str(option_day.date()), data_access=access)
                     chain = runtime.read_options_handle(option_handle, start_date=str(option_day.date()), end_date=str(option_day.date()))
+                chain = _validate_options_quote_session(chain, option_day)
                 close = float(daily.iloc[-1].close)
                 atr = float(getattr(trend.support, "current_atr", 0) or 0)
-                candidates = discover_spreads(symbol, feature_date, close, atr, chain,
+                contract_entry_date = option_day
+                candidates = discover_spreads(symbol, contract_entry_date, close, atr, chain,
                                               rules=option_rules)
                 options_status = OptionsStatus.DISCOVERED if candidates else OptionsStatus.REJECT
                 option_reasons = ("CONTRACT_CANDIDATES_DISCOVERED" if candidates
                                   else "NO_STRUCTURALLY_VALID_PCS",)
+                discovered_contracts = tuple(_candidate_record(candidate) for candidate in candidates)
             except Exception as exc:
                 options_status = OptionsStatus.DATA_BLOCKED
                 option_reasons = (str(exc).strip() or "OPTIONS_DATA_BLOCKED",)
@@ -332,6 +381,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
             latency_ms=(perf_counter()-started)*1000,
             spread_count=len(candidates),
+            discovered_contracts=discovered_contracts,
             structural_trend=getattr(engine, "structural_trend", None),
             short_term_phase=getattr(engine, "short_term_phase", None),
             trend_gate_reasons=tuple(getattr(trend_gate, "reasons", ()) or ()),
@@ -633,12 +683,18 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                               else "COMPLETED_NO_EVALUABLE_TICKERS" if not any(r.timing_status != TimingStatus.NOT_EVALUATED for r in results)
                               else "COMPLETED")
     result = PoolScanResult(snapshot, tuple(results), summary,
-                            stage_latency_ms=stage_latency, counters=counters)
+                            stage_latency_ms=stage_latency, counters=counters,
+                            discovered_contracts=tuple(
+                                candidate for row in results
+                                for candidate in row.discovered_contracts))
     validate_pool_result(result, spec.symbols)
     stage_latency["validation"] = (perf_counter() - validation_started) * 1000
     stage_latency["total"] = (perf_counter() - started) * 1000
     result = PoolScanResult(snapshot, tuple(results), summary,
-                            stage_latency_ms=stage_latency, counters=counters)
+                            stage_latency_ms=stage_latency, counters=counters,
+                            discovered_contracts=tuple(
+                                candidate for row in results
+                                for candidate in row.discovered_contracts))
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory)
