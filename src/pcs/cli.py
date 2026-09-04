@@ -205,20 +205,36 @@ def onboarding_status(args):
 
 
 def pool_scan(args):
-    from pcs.pool.runner import run_pcs_pool
-    from pcs.data.access import PCSDataAccess
-    from pcs.pool.options import load_pool_option_rules
     print(json.dumps({"status": "POOL_SCAN_STARTED", "mode": args.mode,
                       "as_of": args.as_of, "universe_id": args.universe_id,
                       "explicit_symbol_count": len(args.symbols or []),
                       "stage_timeout_seconds": args.stage_timeout_seconds}, sort_keys=True),
           file=sys.stderr, flush=True)
+    if args.data_mode == "READ_ONLY":
+        from pcs.pool.process import ReadOnlyScanRequest, run_read_only_scan
+        request = ReadOnlyScanRequest(
+            symbols=tuple(args.symbols) if args.symbols is not None else None,
+            universe_id=args.universe_id, as_of=args.as_of, mode=args.mode,
+            max_workers=args.max_workers, stage_timeout_seconds=args.stage_timeout_seconds,
+            manifest_path=args.manifest_path, parquet_root=args.parquet_root, rules=args.rules,
+        )
+        result = run_read_only_scan(request, timeout_seconds=args.scan_timeout_seconds)
+        print(result.to_json(), flush=True)
+        if result.summary.get("run_status") in {"FAILED", "PARTIAL_TIMEOUT"}:
+            raise SystemExit(2)
+        return
+    # Authorized preparation remains in-process so a hard timeout cannot
+    # interrupt canonical promotion. Prefer the separate import command.
+    from pcs.pool.runner import run_pcs_pool
+    from pcs.data.access import PCSDataAccess
+    from pcs.pool.options import load_pool_option_rules
     result = run_pcs_pool(
         symbols=args.symbols,
         universe_id=args.universe_id,
         as_of=args.as_of,
         mode=args.mode,
         data_mode=args.data_mode,
+        auto_prepare_data=args.auto_prepare_data,
         max_workers=args.max_workers,
         stage_timeout_seconds=args.stage_timeout_seconds,
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
@@ -292,10 +308,14 @@ def main():
     pool.add_argument("--universe-id")
     pool.add_argument("--as-of", default="latest")
     pool.add_argument("--mode", choices=["PREMARKET", "INTRADAY", "EOD"], required=True)
-    pool.add_argument("--data-mode", choices=["PREPARE_THEN_SCAN", "READ_ONLY"], default="PREPARE_THEN_SCAN")
+    pool.add_argument("--data-mode", choices=["PREPARE_THEN_SCAN", "READ_ONLY"], default="READ_ONLY")
+    pool.add_argument("--auto-prepare-data", action="store_true",
+                      help="authorize preparation writes with --data-mode PREPARE_THEN_SCAN")
     pool.add_argument("--rules", default="config/pcs_rules.yaml")
     pool.add_argument("--max-workers", type=int, default=8)
     pool.add_argument("--stage-timeout-seconds", type=float, default=60.0)
+    pool.add_argument("--scan-timeout-seconds", type=float, default=300.0,
+                      help="hard process deadline for READ_ONLY scans (default: 300 seconds)")
     pool.add_argument("--parquet-root", default="data/parquet")
     pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     pool.set_defaults(func=pool_scan)
@@ -354,6 +374,16 @@ def main():
     cc.set_defaults(func=covered_call_status_executor)
 
     args = parser.parse_args()
+    if args.func is pool_scan:
+        from math import isfinite
+        if args.max_workers < 1:
+            parser.error("--max-workers must be positive")
+        for name in ("stage_timeout_seconds", "scan_timeout_seconds"):
+            value = getattr(args, name)
+            if not isfinite(value) or value <= 0:
+                parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+        if (args.data_mode == "PREPARE_THEN_SCAN") != args.auto_prepare_data:
+            parser.error("data preparation requires both --data-mode PREPARE_THEN_SCAN and --auto-prepare-data")
     args.func(args)
 
 

@@ -1,26 +1,61 @@
 # New ticker onboarding
 
-New historical option tickers use `pcs.data.onboarding.onboard_ticker`.
+All new data-readiness and import requests use `pcs.data.control_plane`:
 
-Onboarding is data infrastructure only. It does not establish a PCS edge,
-change a route automatically, authorize research execution, or promote a
-strategy.
+1. `get_market_data_status(symbol, requirements)` inspects canonical coverage
+   and authorized sources without importing data.
+2. `ensure_market_data(symbol, requirements)` executes authorized remediation
+   for missing or invalid state. Reuse valid partitions and generations.
+3. Registered adapters obtain source data; consumers must not bind a provider,
+   load historical option archives, or write canonical Parquet themselves.
+4. Writes pass through isolated staging, schema/quality/ticker validation, and
+   transactional promotion, including manifest, provenance, catalog, and ledger.
+5. Replay the promoted data through `PCSDataAccess` and resolve verified handles
+   for the actual decision session before reporting readiness.
 
-1. `HistoricalTxtZipAdapter` reads the approved `K:\BaiduNetdiskDownload\USDailyOptions` TXT/ZIP source and records archive/member hashes.
-2. Vendor conflicts use the frozen `VENDOR_CONFLICT_RESOLVED_BY_FIRST_RAW_ROW` policy: exact full-row duplicates are removed and conflicting keys retain the first row in the immutable vendor file. `validate_txt_clickhouse_overlap` then requires exact-contract-key overlap with ClickHouse; quote differences are counted as an audit field, not treated as missing overlap.
-3. Only a `READY` overlap result may call `PCSDataAccess.write_partition`; the onboarding module has no direct Parquet writer.
-4. Each written partition updates the PCSDataAccess manifest and records provenance with source/member, hashes, period, row count, dataset, and status.
-5. Every written partition is replayed through `PCSDataAccess` and checked for
-   row-count and exact-key uniqueness before onboarding can complete.
-6. Onboarding completion is followed by the independent ticker-readiness gate;
-   `READY` ingestion is not the same as `PCS_RESEARCH_READY=YES`.
+The source allowlist is `config/market_data_source_registry.yaml`; remediation
+is configured in `config/data_remediation_registry.yaml`. Batch source authority,
+exact fractional strikes, and full contract identity must remain intact.
 
-The pipeline does not rebuild or cut over existing tickers. It is an onboarding
-boundary for future tickers and preserves existing strategy/data route
-semantics. Repeated work must validate and reuse existing state, returning
-`ALREADY_COMPLETE` or resuming only missing/invalid periods rather than
-creating parallel stores.
+`pcs import-market-data` is the CLI import entrypoint. `pcs.cli.onboard()` is a
+compatibility wrapper over the same control plane. Historical functions such as
+`pcs.data.onboarding.onboard_ticker()` are not alternate consumer entrypoints.
+`HistoricalTxtZipAdapter` remains an adapter named in the source registry, not
+authorization to restore a CLI ZIP fallback.
 
-Required evidence includes source/member identity, conflict-policy counts,
-overlap result, manifest/provenance rows, canonical replay validation, and
-machine-readable reason codes for every blocked period.
+## Quote conflicts
+
+The current executable quality boundary is `audit_option_frame()` in
+`pcs.data.storage_schema`. It quarantines every eligible row participating in
+a duplicate or conflicting full contract identity with
+`OPTION_DUPLICATE_IDENTITY` or `OPTION_CONFLICTING_IDENTITY`. It never repairs a
+quote or chooses a conflicting row by file order. `apply_conflict_policy()` in
+the historical onboarding module delegates to that boundary.
+
+`canonicalize_option_frame()` is a distinct normalization helper: it may remove
+identical duplicates but raises on conflicting payloads. Its exact-duplicate
+behavior does not authorize selecting one conflicting quote for execution.
+
+Older first-raw-row policy descriptions are historical records, not current
+executable instructions. This documentation update does not change the conflict
+implementation or rewrite existing data or frozen research artifacts.
+
+## Preparation and acceptance
+
+Requirements must identify the symbol, date range, datasets, decision session,
+and required history. Daily warmup, options readiness, event readiness, and
+portfolio readiness are separate. An import's success alone does not establish
+`PCS_RESEARCH_READY`, a valid trading opportunity, or production approval.
+
+Repeated preparation must reuse validated state or resume the missing/invalid
+portion. Report source, partition, coverage, validation and promotion outcomes,
+with the original machine-readable blocker. Never turn an unavailable source
+or missing event calendar into evidence that no data/event exists.
+
+Pool Scan defaults to `READ_ONLY`. Its optional daily preparation requires both
+`data_mode="PREPARE_THEN_SCAN"` and `auto_prepare_data=True`. Prepare options
+through the control plane with explicit requirements; the scan's daily
+preparation mode does not promise full options/event/portfolio readiness.
+
+See [system onboarding](system_onboarding.md) for the operating sequence and
+the difference between read-only scan deadlines and write transaction safety.

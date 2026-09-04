@@ -62,6 +62,19 @@ def test_daily_frame_is_read_once_and_callers_get_defensive_copies():
     assert len(second) == 3
 
 
+def test_daily_handle_cache_does_not_reuse_other_decision_session():
+    calls = []
+    def resolver(symbol, as_of, warmup, *, data_access):
+        calls.append((symbol, as_of, warmup))
+        return handle(symbol)
+
+    runtime = PoolRuntime(daily_handle_resolver=resolver)
+    runtime.resolve_daily("aaa", "2025-01-02", 200)
+    runtime.resolve_daily("AAA", "2025-01-02", 200)
+    runtime.resolve_daily("AAA", "2025-01-03", 200)
+    assert calls == [("AAA", "2025-01-02", 200), ("AAA", "2025-01-03", 200)]
+
+
 def test_stage_timeout_is_bounded_and_ordered():
     runtime = PoolRuntime(stage_timeout_seconds=0.01)
     started = time.perf_counter()

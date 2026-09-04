@@ -284,54 +284,11 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
                     expected_row_count=int(options_receipt.get("manifest_row_count", options_receipt.get("row_count", 0)) or 0), read_back_row_count=int(options_receipt.get("read_back_row_count", 0) or 0))
                 if evidence_reason:
                     return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.CORRUPTED.value,"DATA_BLOCKED",evidence_reason,report,stages,None,attempt,{"control_plane":payload})
-                paths=tuple(str(x.get("parquet_path") or x.get("path") or "") for x in rows if isinstance(x,dict))
-                partitions=tuple(str(x.get("partition") or x.get("promoted_partitions") or "") for x in rows if isinstance(x,dict))
-                lineage=tuple(x.get("source_lineage", {"source": x.get("source")}) for x in rows if isinstance(x,dict))
-                checksum = str(options_receipt.get("checksum", options_receipt.get("manifest_content_hash", "")))
-                # The two datasets are deliberately represented independently.
-                # A provider may promote them in one request today, but runners
-                # must never infer that they are the same physical generation.
-                def _sequence(item):
-                    """Normalize manifest fields without iterating strings by character."""
-                    if item is None or item == "":
-                        return ()
-                    if isinstance(item, str):
-                        # Manifest/catalog serializers may emit one partition
-                        # as a scalar or several partitions joined by a
-                        # delimiter.  A scalar must remain one identifier.
-                        return tuple(x for x in item.split(";") if x)
-                    return tuple(item)
-
-                def _ids(item, fallback):
-                    values = _sequence(item) or _sequence(fallback)
-                    return tuple(str(x.get("partition") or x) if isinstance(x, dict) else str(x)
-                                 for x in values)
-                underlying = VerifiedDatasetHandle(
-                    "daily", s, str(daily_receipt.get("promoted_generation_id", daily_receipt.get("generation_id", gen))),
-                    _ids(daily_receipt.get("partition_ids", daily_receipt.get("promoted_partitions", partitions)), partitions),
-                    str(daily_receipt.get("checksum", "")), int(daily_receipt.get("row_count", len(daily)) or len(daily)),
-                    tuple(str(daily_receipt.get("path") or p) for p in _sequence(daily_receipt.get("paths")) or paths[:1]), report.available_window,
-                    tuple(daily_receipt.get("source_lineage", lineage)),
-                    dataset_fingerprint=str(daily_receipt.get("dataset_fingerprint", "")),
-                    schema_version=str(daily_receipt.get("schema_version", "")),
-                    price_basis=str(daily_receipt.get("price_basis", strategy_requirements.price_basis)),
-                    corporate_action_version=str(daily_receipt.get("corporate_action_version", strategy_requirements.corporate_action_basis)),
-                    min_date=str(daily_receipt.get("min_date", report.available_window.get("min_date", ""))),
-                    max_date=str(daily_receipt.get("max_date", report.available_window.get("max_date", ""))),
-                    partition_count=len(_ids(daily_receipt.get("partition_ids", daily_receipt.get("promoted_partitions", partitions)), partitions)))
-                options = VerifiedDatasetHandle(
-                    "options", s, str(options_receipt.get("promoted_generation_id", options_receipt.get("generation_id", gen))),
-                    _ids(options_receipt.get("partition_ids", options_receipt.get("promoted_partitions", partitions)), partitions),
-                    checksum, int(options_receipt.get("row_count", len(target)) or len(target)),
-                    tuple(str(options_receipt.get("path") or p) for p in _sequence(options_receipt.get("paths")) or paths[:1]), report.available_window,
-                    tuple(options_receipt.get("source_lineage", lineage)),
-                    dataset_fingerprint=str(options_receipt.get("dataset_fingerprint", "")),
-                    schema_version=str(options_receipt.get("schema_version", "")),
-                    price_basis=str(options_receipt.get("price_basis", strategy_requirements.price_basis)),
-                    corporate_action_version=str(options_receipt.get("corporate_action_version", strategy_requirements.corporate_action_basis)),
-                    min_date=str(options_receipt.get("min_date", report.available_window.get("min_date", ""))),
-                    max_date=str(options_receipt.get("max_date", report.available_window.get("max_date", ""))),
-                    partition_count=len(_ids(options_receipt.get("partition_ids", options_receipt.get("promoted_partitions", partitions)), partitions)))
+                # Preserve the exact handles already resolved and read above.
+                # Rebuilding them from receipts loses routed manifest identity,
+                # physical options version, and multi-partition daily evidence.
+                underlying = target_handle
+                options = options_handle
                 benchmark_handles = {}
                 if require_benchmarks:
                     for benchmark in ("QQQ", "SPY", "SOXX"):

@@ -20,9 +20,19 @@ Read these files before changing the system:
 ## Install and verify
 
 ```powershell
-pip install -e .[dev]
-pytest
+uv sync --locked --extra dev
+uv run --locked python -m pytest
 ```
+
+`uv.lock` pins the runtime and test dependencies used by CI. To deliberately
+refresh dependencies, run `uv lock --upgrade`, review the lock diff, and rerun
+the contract tests. `pip install -e ".[dev]"` remains supported when a locked
+environment is not required.
+
+Pool Scan defaults to read-only execution. Prepare missing data through
+`market-data-status` and `import-market-data`; scan-integrated daily preparation
+requires both `--data-mode PREPARE_THEN_SCAN` and `--auto-prepare-data`.
+See [data preparation and timeout boundaries](docs/architecture/system_onboarding.md).
 
 The current branch does not ship the former Streamlit dashboard. Use the CLI,
 typed Python APIs, and persisted JSON/CSV/Parquet artifacts described below.

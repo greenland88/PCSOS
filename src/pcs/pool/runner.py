@@ -4,12 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from time import perf_counter
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import asdict, dataclass, replace
 from typing import Literal, Sequence
 import uuid
 from threading import RLock
 from pathlib import Path
+from math import isfinite
 
 import pandas as pd
 
@@ -25,9 +25,10 @@ from pcs.entry.trend_gate import evaluate_trend_gate
 from pcs.entry.pullback_gate import evaluate_pullback_gate
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
-from .registry import UniverseSpec, evaluate_static_eligibility
+from .registry import UniverseSpec, evaluate_static_eligibility, resolve_pool_universe
 from .modes import resolve_effective_market_session
 from .runtime import PoolRuntime
+from .concurrency import run_symbol_workers
 from .options import discover_spreads, load_pool_option_rules
 
 _PREPARATION_LOCK = RLock()
@@ -177,38 +178,25 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
 
 
 def _bounded_daily_preparation(symbols, access, effective_daily_session, *, max_workers, timeout_seconds):
-    normalized = tuple(str(s).strip().upper() for s in symbols)
-    if not normalized:
-        return {}, {"attempted": 0, "provider_calls": 0, "promotion_calls": 0}
-    workers = min(max(1, int(max_workers)), len(normalized))
-    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pcs-daily-prep")
-    futures = {executor.submit(_prepare_daily_symbol, symbol, access, effective_daily_session): symbol
-               for symbol in normalized}
+    outcomes = run_symbol_workers(
+        symbols, lambda symbol: _prepare_daily_symbol(symbol, access, effective_daily_session),
+        max_workers=max_workers, timeout_seconds=timeout_seconds, include_error_details=True,
+    )
     results = {}
-    deadline = None if timeout_seconds is None else perf_counter() + timeout_seconds
-    try:
-        while futures:
-            remaining = None if deadline is None else max(0.0, deadline - perf_counter())
-            done, _ = wait(tuple(futures), timeout=remaining, return_when=FIRST_COMPLETED)
-            if not done:
-                break
-            for future in done:
-                symbol = futures.pop(future)
-                try:
-                    results[symbol] = future.result()
-                except Exception as exc:
-                    results[symbol] = {"symbol": symbol, "attempted": True,
-                                       "result_status": "FAILED",
-                                       "reason_codes": (type(exc).__name__, str(exc)),
-                                       "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0}
-    finally:
-        for future, symbol in futures.items():
-            future.cancel()
-            results[symbol] = {"symbol": symbol, "attempted": True,
-                               "result_status": "TIMEOUT", "reason_codes": ("DAILY_PREPARATION_TIMEOUT",),
-                               "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0}
-        executor.shutdown(wait=False, cancel_futures=True)
-    counters = {"attempted": len(results),
+    for outcome in outcomes:
+        if outcome.value is not None:
+            results[outcome.symbol] = outcome.value
+            continue
+        not_started = "STAGE_DEADLINE_NOT_STARTED" in outcome.reason_codes
+        timed_out = not_started or "WORKER_TIMEOUT" in outcome.reason_codes
+        results[outcome.symbol] = {
+            "symbol": outcome.symbol, "attempted": not not_started,
+            "result_status": "TIMEOUT" if timed_out else "FAILED",
+            "reason_codes": (("DAILY_PREPARATION_NOT_STARTED",) if not_started else
+                             ("DAILY_PREPARATION_TIMEOUT",) if timed_out else outcome.reason_codes),
+            "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0,
+        }
+    counters = {"attempted": sum(bool(x.get("attempted")) for x in results.values()),
                 "provider_calls": sum(x.get("provider_calls", 0) for x in results.values()),
                 "provider_coverage_count": sum(x.get("provider_coverage_count", 0) for x in results.values()),
                 "promotion_calls": sum(x.get("promotion_calls", 0) for x in results.values())}
@@ -427,7 +415,7 @@ def _as_of(value) -> str:
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
                  as_of: datetime | str = "latest",
                  mode: Literal["PREMARKET", "INTRADAY", "EOD"],
-                 data_mode: Literal["PREPARE_THEN_SCAN", "READ_ONLY"] = "PREPARE_THEN_SCAN",
+                 data_mode: Literal["PREPARE_THEN_SCAN", "READ_ONLY"] = "READ_ONLY",
                  strategies: Sequence[str] | None = None,
                  event_policy: Literal["HOLD_TO_EXPIRY", "PLANNED_EARLY_EXIT"] = "HOLD_TO_EXPIRY",
                  planned_exit_before_event_sessions: int | None = None,
@@ -440,15 +428,15 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
                  max_scan_workers=None, stage_timeout_seconds: float | None = 60.0,
                  timeout_seconds: float | None = None) -> PoolScanResult:
-    """Run the non-mutating U1 funnel.
-
-    Options, events, and portfolio stages intentionally remain not evaluated
-    until their adapters are integrated; no options chain is read here.
-    """
+    """Scan pinned daily/options inputs; preparation requires explicit opt-in."""
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
     if data_mode not in {"PREPARE_THEN_SCAN", "READ_ONLY"}:
         raise ValueError("data_mode must be PREPARE_THEN_SCAN or READ_ONLY")
+    if data_mode == "PREPARE_THEN_SCAN" and not auto_prepare_data:
+        raise ValueError("AUTO_PREPARE_DATA_REQUIRED")
+    if data_mode == "READ_ONLY" and auto_prepare_data:
+        raise ValueError("AUTO_PREPARE_DATA_REQUIRES_PREPARE_THEN_SCAN")
     from pcs.data.massive_client import load_project_environment
     load_project_environment()
     if max_workers < 1:
@@ -458,22 +446,15 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     if stage_timeout_seconds is not None and timeout_seconds is not None:
         raise ValueError("specify only one timeout")
     stage_timeout_seconds = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
-    if stage_timeout_seconds is not None and stage_timeout_seconds <= 0:
-        raise ValueError("stage_timeout_seconds must be positive")
+    if stage_timeout_seconds is None:
+        stage_timeout_seconds = 60.0
+    if not isfinite(stage_timeout_seconds) or stage_timeout_seconds <= 0:
+        raise ValueError("stage_timeout_seconds must be finite and positive")
     if event_policy not in {"HOLD_TO_EXPIRY", "PLANNED_EARLY_EXIT"}:
         raise ValueError("unsupported event policy")
     if event_policy == "PLANNED_EARLY_EXIT" and (planned_exit_before_event_sessions is None or planned_exit_before_event_sessions < 1):
         raise ValueError("planned early exit requires positive exit buffer sessions")
-    if symbols is None:
-        if universe_id in {"core_watchlist", "pcs_universe"}:
-            spec = UniverseSpec.from_config("config/market_universe.yaml")
-            spec = UniverseSpec(spec.universe_id, spec.symbols, spec.version, "CORE_WATCHLIST", spec.fingerprint)
-        elif universe_id in {None, "global_pcs_candidates"}:
-            spec = UniverseSpec.from_global_candidates()
-        else:
-            spec = UniverseSpec.from_file(universe_id)
-    else:
-        spec = UniverseSpec.from_symbols(symbols, universe_id=universe_id or "explicit")
+    spec = resolve_pool_universe(symbols, universe_id)
     run_id = uuid.uuid4().hex
     asof = _as_of(as_of)
     effective = resolve_effective_market_session(asof, mode, "XNYS")
@@ -505,7 +486,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         stage_latency["daily_preparation"] = (perf_counter() - prep_started) * 1000
     else:
         stage_latency["daily_preparation"] = 0.0
-    revalidation_symbols = prep_required if data_mode == "PREPARE_THEN_SCAN" else ()
+    # Never revalidate a timed-out writer while it may still be completing a transaction.
+    revalidation_symbols = tuple(symbol for symbol in prep_required
+                                 if prep_results.get(symbol, {}).get("result_status") != "TIMEOUT") \
+        if data_mode == "PREPARE_THEN_SCAN" else ()
     revalidated = (_revalidate_daily(revalidation_symbols, access, effective_asof, daily_resolver)
                    if revalidation_symbols else {})
     prepared_ready = {symbol for symbol in revalidation_symbols

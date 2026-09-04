@@ -23,3 +23,10 @@ def test_validation_rejects_options_before_timing():
                            timing_status=TimingStatus.WATCH, options_status=OptionsStatus.PASS)
     with pytest.raises(ValueError, match="OPTIONS_EVALUATED_BEFORE_TIMING_READY"):
         validate_pool_result(_result([row]), ["AAA"])
+
+
+def test_validation_rejects_reordered_results():
+    rows = [TickerScanResult(symbol, "r", "2025-01-01", EligibilityStatus.DATA_BLOCKED)
+            for symbol in ("BBB", "AAA")]
+    with pytest.raises(ValueError, match="TICKER_DECISION_ORDER_MISMATCH"):
+        validate_pool_result(_result(rows), ["AAA", "BBB"])

@@ -6,18 +6,19 @@ stage. It deliberately contains no market, strategy, or contract logic.
 """
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import Future
 from dataclasses import dataclass
 from hashlib import sha256
 import inspect
 import json
+from math import isfinite
 from threading import RLock
 from time import perf_counter
 from typing import Any, Callable, Sequence, TypeVar
 
 import pandas as pd
 
-from .concurrency import WorkerOutcome
+from .concurrency import WorkerOutcome, run_symbol_workers
 
 
 T = TypeVar("T")
@@ -96,13 +97,13 @@ class PoolRuntime:
                  options_handle_resolver: Callable[..., Any] | None = None):
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
-        if stage_timeout_seconds is not None and stage_timeout_seconds <= 0:
-            raise ValueError("stage_timeout_seconds must be positive")
+        if stage_timeout_seconds is not None and (not isfinite(stage_timeout_seconds) or stage_timeout_seconds <= 0):
+            raise ValueError("stage_timeout_seconds must be finite and positive")
         self.access = access
         self.run_id = str(run_id)
         self.as_of = str(as_of)
         self.max_workers = int(max_workers)
-        self.stage_timeout_seconds = stage_timeout_seconds
+        self.stage_timeout_seconds = 60.0 if stage_timeout_seconds is None else stage_timeout_seconds
         self.daily_handle_resolver = daily_handle_resolver
         self.options_handle_resolver = options_handle_resolver
         self.manifest_snapshot = ManifestSnapshot.capture(access) if access is not None else None
@@ -191,9 +192,8 @@ class PoolRuntime:
                              prepare: Callable[[], Any] | None = None,
                              auto_prepare: bool = False) -> Any:
         normalized = str(symbol).strip().upper()
-        # A pinned handle is complete for the run; end_date is applied when a
-        # frame is read. Omitting it here coalesces benchmark and ticker asks.
-        key = ("daily_handle", normalized, int(warmup))
+        # Readiness is decision-specific even when the physical generation is shared.
+        key = ("daily_handle", normalized, pd.Timestamp(as_of).isoformat(), int(warmup))
         resolver = resolver or self.daily_handle_resolver
         if resolver is None:
             raise ValueError("DAILY_HANDLE_RESOLVER_MISSING")
@@ -303,57 +303,17 @@ class PoolRuntime:
     def run_stage(self, symbols: Sequence[str], worker: Callable[[str], T], *,
                   stage_name: str = "stage", max_workers: int | None = None,
                   timeout_seconds: float | None = None) -> StageRun:
-        """Run one ordered stage with one executor and a bounded deadline."""
-        normalized = tuple(str(symbol).strip().upper() for symbol in symbols)
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("DUPLICATE_WORKER_SYMBOL")
-        if not normalized:
-            self.stage_latency_ms[stage_name] = 0.0
-            return StageRun((), 0.0)
-        workers = min(int(max_workers or self.max_workers), len(normalized))
-        if workers < 1:
-            raise ValueError("max_workers must be positive")
+        """Collect an ordered stage through the shared bounded worker runner."""
         timeout = self.stage_timeout_seconds if timeout_seconds is None else timeout_seconds
-        if timeout is not None and timeout <= 0:
-            raise ValueError("timeout_seconds must be positive")
         started = perf_counter()
-        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pcs-pool")
-        futures = {executor.submit(worker, symbol): symbol for symbol in normalized[:workers]}
-        pending = list(normalized[workers:])
-        started_symbols = set(normalized[:workers])
-        outcomes: dict[str, WorkerOutcome] = {}
-        try:
-            deadline = None if timeout is None else started + timeout
-            while futures:
-                remaining = None if deadline is None else max(0.0, deadline - perf_counter())
-                done, _ = wait(tuple(futures), timeout=remaining, return_when=FIRST_COMPLETED)
-                if not done: break
-                for future in done:
-                    symbol = futures.pop(future)
-                    try:
-                        outcomes[symbol] = WorkerOutcome(symbol, future.result())
-                    except Exception as exc:
-                        outcomes[symbol] = WorkerOutcome(
-                            symbol, reason_codes=("WORKER_FAILED", type(exc).__name__, str(exc) or type(exc).__name__)
-                        )
-                    if pending and (deadline is None or perf_counter() < deadline):
-                        next_symbol = pending.pop(0)
-                        futures[executor.submit(worker, next_symbol)] = next_symbol
-                        started_symbols.add(next_symbol)
-        finally:
-            for future, symbol in futures.items():
-                if symbol in outcomes:
-                    continue
-                future.cancel()
-                reason = "WORKER_TIMEOUT" if symbol in started_symbols else "STAGE_DEADLINE_NOT_STARTED"
-                outcomes[symbol] = WorkerOutcome(symbol, reason_codes=(reason,))
-            for symbol in pending:
-                outcomes[symbol] = WorkerOutcome(symbol, reason_codes=("STAGE_DEADLINE_NOT_STARTED",))
-            # A context manager would wait for a slow worker after the timeout.
-            executor.shutdown(wait=False, cancel_futures=True)
+        outcomes = run_symbol_workers(
+            symbols, worker,
+            max_workers=self.max_workers if max_workers is None else max_workers,
+            timeout_seconds=timeout, include_error_details=True,
+        )
         elapsed = (perf_counter() - started) * 1000
         self.stage_latency_ms[stage_name] = elapsed
-        return StageRun(tuple(outcomes[symbol] for symbol in normalized), elapsed)
+        return StageRun(outcomes, elapsed)
 
 
 __all__ = ["ManifestSnapshot", "PoolRuntime", "StageRun"]

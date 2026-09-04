@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pcs.pool.runner as runner
 from pcs.pool.models import EligibilityStatus
@@ -85,7 +86,7 @@ def test_prepare_then_scan_revalidates_and_freezes_after_preparation(tmp_path, m
     _patch_timing(monkeypatch)
     result = runner.run_pcs_pool(
         symbols=["AAA"], benchmark_symbol="QQQ", as_of="2025-09-18",
-        mode="PREMARKET", data_mode="PREPARE_THEN_SCAN", data_access=access,
+        mode="PREMARKET", data_mode="PREPARE_THEN_SCAN", auto_prepare_data=True, data_access=access,
         daily_handle_resolver=_resolver, static_metadata_reader=lambda _: {"optionable": True},
         max_data_workers=1)
     row = result.ticker_results[0]
@@ -115,6 +116,38 @@ def test_read_only_reports_preparation_required_without_writes(tmp_path, monkeyp
     assert result.summary["daily_prepare_attempted_count"] == 0
 
 
+def test_default_scan_never_prepares_data(tmp_path, monkeypatch):
+    access = RoutedFixtureAccess(tmp_path)
+    def forbidden(*args, **kwargs):
+        pytest.fail("default scan attempted canonical preparation")
+    monkeypatch.setattr(runner, "_prepare_daily_symbol", forbidden)
+    result = runner.run_pcs_pool(symbols=["AAA"], mode="PREMARKET", as_of="2025-09-18",
+                                 data_access=access, daily_handle_resolver=_resolver)
+    assert result.ticker_results[0].preparation_status == "READ_ONLY_NOT_PREPARED"
+    assert result.summary["daily_prepare_attempted_count"] == 0
+
+
+def test_preparation_deadline_does_not_start_queued_writes(tmp_path, monkeypatch):
+    release = Event()
+    calls = []
+    def prepare(symbol, *args):
+        calls.append(symbol)
+        release.wait(timeout=2)
+        return {"symbol": symbol, "attempted": True, "result_status": "READY"}
+    monkeypatch.setattr(runner, "_prepare_daily_symbol", prepare)
+    try:
+        results, counters = runner._bounded_daily_preparation(
+            ["AAA", "BBB"], RoutedFixtureAccess(tmp_path), "2025-09-17",
+            max_workers=1, timeout_seconds=.02)
+        assert calls == ["AAA"]
+        assert results["AAA"]["reason_codes"] == ("DAILY_PREPARATION_TIMEOUT",)
+        assert results["BBB"]["reason_codes"] == ("DAILY_PREPARATION_NOT_STARTED",)
+        assert not results["BBB"]["attempted"]
+        assert counters["attempted"] == 1
+    finally:
+        release.set()
+
+
 def test_preparation_failure_isolated_from_ready_ticker(tmp_path, monkeypatch):
     access = RoutedFixtureAccess(tmp_path, ready=("GOOD", "QQQ"))
 
@@ -127,7 +160,7 @@ def test_preparation_failure_isolated_from_ready_ticker(tmp_path, monkeypatch):
     _patch_timing(monkeypatch)
     result = runner.run_pcs_pool(
         symbols=["GOOD", "BAD"], benchmark_symbol="QQQ", as_of="2025-09-18",
-        mode="PREMARKET", data_mode="PREPARE_THEN_SCAN", data_access=access,
+        mode="PREMARKET", data_mode="PREPARE_THEN_SCAN", auto_prepare_data=True, data_access=access,
         daily_handle_resolver=_resolver, static_metadata_reader=lambda _: {"optionable": True},
         max_data_workers=2)
     rows = {row.symbol: row for row in result.ticker_results}
@@ -158,7 +191,7 @@ def test_preparation_worker_count_is_bounded(tmp_path, monkeypatch):
 
 
 def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
-    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     frame = _frame()
     path = access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "AAA_2025.parquet"
     path.parent.mkdir(parents=True)
@@ -194,7 +227,7 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
 
 
 def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
-    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     frame = _frame()
     frame.loc[0, "high"] = frame.loc[0, "low"] - 1
     path = access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "AAA_2025.parquet"
@@ -211,7 +244,7 @@ def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
 
 
 def test_concurrent_migrated_admission_preserves_all_manifest_rows(tmp_path):
-    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     catalog = []
     for symbol in ("AAA", "BBB"):
         frame = _frame().assign(symbol=symbol)

@@ -126,6 +126,18 @@ def build_global_pcs_universe(*, source: str | Path = "data/manifests/daily_univ
     return UniverseSpec("global_pcs_candidates", tuple(symbols), version,
                         "GLOBAL_CANDIDATE_UNIVERSE", inventory_fingerprint)
 
+def resolve_pool_universe(symbols=None, universe_id=None) -> UniverseSpec:
+    """Resolve the same explicit or configured population for every pool entrypoint."""
+    if symbols is not None:
+        return UniverseSpec.from_symbols(symbols, universe_id=universe_id or "explicit")
+    if universe_id in {"core_watchlist", "pcs_universe"}:
+        spec = UniverseSpec.from_config("config/market_universe.yaml")
+        return UniverseSpec(spec.universe_id, spec.symbols, spec.version, "CORE_WATCHLIST", spec.fingerprint)
+    if universe_id in {None, "global_pcs_candidates"}:
+        return UniverseSpec.from_global_candidates()
+    return UniverseSpec.from_file(universe_id)
+
+
 @dataclass(frozen=True)
 class RegistryEntry:
     symbol: str

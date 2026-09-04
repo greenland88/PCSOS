@@ -6,13 +6,32 @@ on:
 
 jobs:
   test:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: pip install -r requirements.txt
-      - run: python -m compileall -q src
-      - run: python -m pytest -q tests/research tests/data
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.0'
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked python -m compileall -q src
+      - name: Pool, production, and risk contracts
+        run: uv run --locked python -m pytest -q tests/pool tests/production tests/test_hard_rules.py tests/test_safety_regression.py
+      # These contracts use isolated fixtures. Canonical-history/artifact
+      # acceptance is run locally; those ignored datasets are not in a clone.
+      - name: Data and research contracts (isolated fixtures)
+        run: >-
+          uv run --locked python -m pytest -q
+          tests/data/test_control_plane.py
+          tests/data/test_control_plane_boundary.py
+          tests/data/test_clickhouse.py
+          tests/data/test_pcs_data_access.py
+          tests/data/test_routed_options_identity.py
+          tests/data/test_readiness.py::test_logical_options_does_not_fallback_to_legacy
+          tests/research/test_integrity_contract.py
+          tests/research/test_pit_cache_identity.py
       - run: git diff --check

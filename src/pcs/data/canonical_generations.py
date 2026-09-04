@@ -158,7 +158,8 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                                 manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(s) &
                                 pd.to_numeric(manifest.get("year", pd.Series(dtype=float)), errors="coerce").eq(year)]
                 active_values = rows.get("active_generation", pd.Series(dtype=str)).astype(str).str.strip()
-                active = rows[active_values.ne("") & active_values.str.lower().ne("nan") & active_values.str.lower().ne("none")] if not rows.empty else rows
+                active = rows[active_values.notna() & active_values.ne("") &
+                              ~active_values.str.lower().isin({"nan", "none", "<na>"})] if not rows.empty else rows
                 if not active.empty:
                     current = active.iloc[-1]
                     current_path = Path(str(current.get("parquet_path", "")))
