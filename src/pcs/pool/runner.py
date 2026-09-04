@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from time import perf_counter
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from dataclasses import dataclass, replace
 from typing import Literal, Sequence
 import uuid
 from threading import RLock
@@ -30,38 +32,141 @@ from .options import discover_spreads, load_pool_option_rules
 _PREPARATION_LOCK = RLock()
 
 
+@dataclass(frozen=True)
+class DailyReadiness:
+    status: str
+    reason_codes: tuple[str, ...] = ()
+
+
 def _daily_preflight(symbols, access, decision_date):
     """Build one stable, read-only daily readiness index for this run."""
     if not hasattr(access, "_resolve_route") or not hasattr(access, "_read_manifest"):
-        return {str(symbol).strip().upper(): None for symbol in symbols}
+        return {str(symbol).strip().upper(): DailyReadiness("READY") for symbol in symbols}
     manifest_cache = {}
     index = {}
+    decision = pd.Timestamp(decision_date).normalize()
     for symbol in symbols:
         s = str(symbol).strip().upper()
         try:
-            _, manifest_path, _ = access._resolve_route("daily", s)
+            try:
+                _, manifest_path, _ = access._resolve_route("daily", s)
+            except Exception:
+                from pcs.data.control_plane import SourceResolver
+                if SourceResolver().resolve("daily"):
+                    index[s] = DailyReadiness("PREP_REQUIRED", ("MANIFEST_ROUTE_MISSING",))
+                else:
+                    index[s] = DailyReadiness("HARD_BLOCKED", ("BLOCKED_NO_AUTHORIZED_SOURCE",))
+                continue
             key = str(Path(manifest_path).resolve())
             if key not in manifest_cache:
                 manifest_cache[key] = access._read_manifest(Path(manifest_path))
             manifest = manifest_cache[key]
             required = {"dataset", "symbol", "active_generation", "min_date", "max_date"}
             if manifest.empty or not required.issubset(manifest.columns):
-                index[s] = "MANIFEST_ROUTE_MISSING"; continue
+                index[s] = DailyReadiness("PREP_REQUIRED", ("MANIFEST_ROUTE_MISSING",)); continue
             rows = manifest[(manifest.dataset.astype(str) == "daily") &
                             manifest.symbol.astype(str).str.upper().eq(s)]
             active = rows[rows.active_generation.notna() &
                           rows.active_generation.astype(str).str.strip().ne("") &
                           rows.active_generation.astype(str).str.lower().ne("nan")]
             if active.empty:
-                index[s] = "ACTIVE_GENERATION_MISSING"; continue
-            covered = active[pd.to_datetime(active.min_date, errors="coerce").le(pd.Timestamp(decision_date)) &
-                            pd.to_datetime(active.max_date, errors="coerce").ge(pd.Timestamp(decision_date))]
+                index[s] = DailyReadiness("PREP_REQUIRED", ("ACTIVE_GENERATION_MISSING",)); continue
+            covered = active[pd.to_datetime(active.min_date, errors="coerce").le(decision) &
+                            pd.to_datetime(active.max_date, errors="coerce").ge(decision)]
             if covered.empty:
-                index[s] = "INSUFFICIENT_FEATURE_WARMUP"; continue
-            index[s] = None
+                max_date = pd.to_datetime(active.max_date, errors="coerce").max()
+                reason = "DAILY_STALE" if pd.notna(max_date) and max_date < decision else "INSUFFICIENT_FEATURE_WARMUP"
+                index[s] = DailyReadiness("PREP_REQUIRED", (reason,)); continue
+            if "row_count" in covered and (pd.to_numeric(covered.row_count, errors="coerce") < 200).all():
+                index[s] = DailyReadiness("PREP_REQUIRED", ("INSUFFICIENT_FEATURE_WARMUP",)); continue
+            index[s] = DailyReadiness("READY")
         except Exception as exc:
-            index[s] = str(exc).strip() or "MANIFEST_ROUTE_MISSING"
+            index[s] = DailyReadiness("HARD_BLOCKED", (str(exc).strip() or "DAILY_READINESS_UNAVAILABLE",))
     return index
+
+
+def _daily_requirements(symbol: str, effective_daily_session: str) -> MarketDataRequirements:
+    day = pd.Timestamp(effective_daily_session).normalize()
+    return MarketDataRequirements(
+        symbol=symbol,
+        required_start=str((day - pd.Timedelta(days=420)).date()),
+        required_end=str(day.date()),
+        datasets=("daily",),
+        decision_as_of=str(day.date()),
+        required_history_rows=200,
+    )
+
+
+def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_session: str) -> dict:
+    """Prepare one daily dependency through the canonical control plane."""
+    req = _daily_requirements(symbol, effective_daily_session)
+    try:
+        result = ensure_market_data(symbol, req, access=access)
+        status = str(getattr(result, "status", ""))
+        reasons = tuple(getattr(result, "reason_codes", ()) or ())
+        return {"symbol": str(symbol).upper(), "attempted": True, "result": result,
+                "result_status": status, "reason_codes": reasons,
+                "provider_calls": 0,
+                "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
+                "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ())}
+    except Exception as exc:
+        return {"symbol": str(symbol).upper(), "attempted": True, "result": None,
+                "result_status": "FAILED", "reason_codes": (str(exc).strip() or type(exc).__name__,),
+                "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0}
+
+
+def _bounded_daily_preparation(symbols, access, effective_daily_session, *, max_workers, timeout_seconds):
+    normalized = tuple(str(s).strip().upper() for s in symbols)
+    if not normalized:
+        return {}, {"attempted": 0, "provider_calls": 0, "promotion_calls": 0}
+    workers = min(max(1, int(max_workers)), len(normalized))
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pcs-daily-prep")
+    futures = {executor.submit(_prepare_daily_symbol, symbol, access, effective_daily_session): symbol
+               for symbol in normalized}
+    results = {}
+    deadline = None if timeout_seconds is None else perf_counter() + timeout_seconds
+    try:
+        while futures:
+            remaining = None if deadline is None else max(0.0, deadline - perf_counter())
+            done, _ = wait(tuple(futures), timeout=remaining, return_when=FIRST_COMPLETED)
+            if not done:
+                break
+            for future in done:
+                symbol = futures.pop(future)
+                try:
+                    results[symbol] = future.result()
+                except Exception as exc:
+                    results[symbol] = {"symbol": symbol, "attempted": True,
+                                       "result_status": "FAILED",
+                                       "reason_codes": (type(exc).__name__, str(exc)),
+                                       "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0}
+    finally:
+        for future, symbol in futures.items():
+            future.cancel()
+            results[symbol] = {"symbol": symbol, "attempted": True,
+                               "result_status": "TIMEOUT", "reason_codes": ("DAILY_PREPARATION_TIMEOUT",),
+                               "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0}
+        executor.shutdown(wait=False, cancel_futures=True)
+    counters = {"attempted": len(results),
+                "provider_calls": sum(x.get("provider_calls", 0) for x in results.values()),
+                "provider_coverage_count": sum(x.get("provider_coverage_count", 0) for x in results.values()),
+                "promotion_calls": sum(x.get("promotion_calls", 0) for x in results.values())}
+    return results, counters
+
+
+def _revalidate_daily(symbols, access, effective_daily_session, resolver):
+    """Re-read readiness and pin-test each prepared daily dependency."""
+    states = _daily_preflight(symbols, access, effective_daily_session)
+    for symbol in symbols:
+        state = states[symbol]
+        if state.status != "READY":
+            continue
+        try:
+            resolver(symbol, effective_daily_session, 200, data_access=access)
+        except Exception as exc:
+            states[symbol] = DailyReadiness(
+                "PREP_REQUIRED", (str(exc).strip() or "DAILY_VERIFIED_READ_FAILED",))
+    return states
 
 
 def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
@@ -256,6 +361,7 @@ def _as_of(value) -> str:
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
                  as_of: datetime | str = "latest",
                  mode: Literal["PREMARKET", "INTRADAY", "EOD"],
+                 data_mode: Literal["PREPARE_THEN_SCAN", "READ_ONLY"] = "PREPARE_THEN_SCAN",
                  strategies: Sequence[str] | None = None,
                  event_policy: Literal["HOLD_TO_EXPIRY", "PLANNED_EARLY_EXIT"] = "HOLD_TO_EXPIRY",
                  planned_exit_before_event_sessions: int | None = None,
@@ -275,6 +381,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     """
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
+    if data_mode not in {"PREPARE_THEN_SCAN", "READ_ONLY"}:
+        raise ValueError("data_mode must be PREPARE_THEN_SCAN or READ_ONLY")
     from pcs.data.massive_client import load_project_environment
     load_project_environment()
     if max_workers < 1:
@@ -307,39 +415,124 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     daily_resolver = daily_handle_resolver or resolve_active_verified_daily_handle
     if option_rules is None:
         option_rules = load_pool_option_rules()
+    stage_latency: dict[str, float] = {}
+    audit_started = perf_counter()
+    dependencies = tuple(dict.fromkeys((*[str(s).strip().upper() for s in spec.symbols],
+                                        str(benchmark_symbol).strip().upper())))
+    initial = _daily_preflight(dependencies, access, effective_asof)
+    stage_latency["readiness_audit"] = (perf_counter() - audit_started) * 1000
+    prep_required = tuple(symbol for symbol in dependencies
+                          if initial[symbol].status == "PREP_REQUIRED")
+    hard_blocked = {symbol: initial[symbol] for symbol in dependencies
+                    if initial[symbol].status == "HARD_BLOCKED"}
+    prep_results = {}
+    prep_counters = {"attempted": 0, "provider_calls": 0, "promotion_calls": 0}
+    if data_mode == "PREPARE_THEN_SCAN" and prep_required:
+        prep_started = perf_counter()
+        prep_results, prep_counters = _bounded_daily_preparation(
+            prep_required, access, effective_asof,
+            max_workers=max_data_workers, timeout_seconds=stage_timeout_seconds)
+        stage_latency["daily_preparation"] = (perf_counter() - prep_started) * 1000
+    else:
+        stage_latency["daily_preparation"] = 0.0
+    revalidation_symbols = prep_required if data_mode == "PREPARE_THEN_SCAN" else ()
+    revalidated = (_revalidate_daily(revalidation_symbols, access, effective_asof, daily_resolver)
+                   if revalidation_symbols else {})
+    prepared_ready = {symbol for symbol in revalidation_symbols
+                      if revalidated.get(symbol, DailyReadiness("HARD_BLOCKED")).status == "READY"}
+    stage_latency["readiness_revalidation"] = 0.0
+    prep_evidence = {}
+    for symbol in dependencies:
+        initial_state = initial[symbol]
+        result = prep_results.get(symbol)
+        if initial_state.status == "READY":
+            prep_evidence[symbol] = {"status": "NOT_NEEDED", "reasons": (), "attempted": False,
+                                     "result_status": "ALREADY_COMPLETE", "dataset": "daily"}
+        elif initial_state.status == "HARD_BLOCKED":
+            prep_evidence[symbol] = {"status": "HARD_BLOCKED",
+                                     "reasons": initial_state.reason_codes, "attempted": False,
+                                     "result_status": "NOT_RUN", "dataset": "daily"}
+        elif data_mode == "READ_ONLY":
+            prep_evidence[symbol] = {"status": "READ_ONLY_NOT_PREPARED",
+                                     "reasons": initial_state.reason_codes, "attempted": False,
+                                     "result_status": "NOT_RUN", "dataset": "daily"}
+        elif symbol in prepared_ready:
+            prep_evidence[symbol] = {"status": "PREPARED_READY",
+                                     "reasons": tuple(result.get("reason_codes", ()) if result else ()),
+                                     "attempted": True,
+                                     "result_status": result.get("result_status", "READY") if result else "READY",
+                                     "dataset": "daily"}
+        else:
+            reasons = tuple(dict.fromkeys((*((result or {}).get("reason_codes", ())),
+                                           *(revalidated.get(symbol, initial_state).reason_codes))))
+            prep_evidence[symbol] = {"status": "HARD_BLOCKED" if symbol in hard_blocked else "PREPARATION_FAILED",
+                                     "reasons": reasons or ("DAILY_PREPARATION_FAILED",),
+                                     "attempted": True,
+                                     "result_status": (result or {}).get("result_status", "FAILED"),
+                                     "dataset": "daily"}
+
+    scan_ready = {symbol for symbol in dependencies
+                  if (initial[symbol].status == "READY" or symbol in prepared_ready)}
+    benchmark_blocker = None
+    if benchmark_symbol.upper() in hard_blocked:
+        benchmark_blocker = "BENCHMARK_HARD_BLOCKED"
+    elif benchmark_symbol.upper() not in scan_ready:
+        benchmark_blocker = "BENCHMARK_PREPARATION_FAILED" if data_mode == "PREPARE_THEN_SCAN" else "BENCHMARK_PREP_REQUIRED"
+
     options_resolver = (resolve_active_verified_options_handle
-                        if mode == "EOD" and options_reader is None
-                        else None)
+                        if mode == "EOD" and options_reader is None else None)
     runtime = PoolRuntime(access=access, stage_timeout_seconds=stage_timeout_seconds,
                           daily_handle_resolver=daily_resolver,
                           options_handle_resolver=options_resolver)
-    stage_latency: dict[str, float] = {}
     benchmark = None
     benchmark_started = perf_counter()
-    try:
-        benchmark_handle = runtime.resolve_daily(benchmark_symbol, effective_asof, 200,
-                                                 resolver=daily_resolver)
-        benchmark = runtime.read_daily(benchmark_handle, end_date=effective_asof,
-                                       required_warmup_rows=200)
-    except Exception:
-        benchmark = None
+    if benchmark_blocker is None:
+        try:
+            benchmark_handle = runtime.resolve_daily(benchmark_symbol, effective_asof, 200,
+                                                     resolver=daily_resolver)
+            benchmark = runtime.read_daily(benchmark_handle, end_date=effective_asof,
+                                           required_warmup_rows=200)
+        except Exception:
+            benchmark_blocker = "BENCHMARK_VERIFIED_READ_FAILED"
     stage_latency["benchmark"] = (perf_counter() - benchmark_started) * 1000
     completed = effective if benchmark is not None else None
     if benchmark is not None and completed is not None:
         benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
-    snapshot = PoolRunSnapshot(run_id, asof, mode, str(completed.date()) if completed is not None else None, f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}:manifest:{runtime.manifest_snapshot_id}",
-                               benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"})
+    snapshot = PoolRunSnapshot(
+        run_id, asof, mode,
+        str(completed.date()) if completed is not None else None,
+        f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
+        benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"},
+        manifest_snapshot_id=runtime.manifest_snapshot_id)
     snapshot = PoolRunSnapshot(**{**snapshot.__dict__, "requested_as_of": asof,
                                   "effective_daily_session": effective_asof})
-    preflight = _daily_preflight(spec.symbols, access, effective_asof)
     preflight_results = {}
     queued_symbols = []
     for symbol in spec.symbols:
-        reason = preflight.get(str(symbol).upper())
-        if reason:
+        normalized = str(symbol).strip().upper()
+        evidence = prep_evidence[normalized]
+        if benchmark_blocker is not None:
+            preflight_results[normalized] = TickerScanResult(
+                normalized, run_id, asof, EligibilityStatus.DATA_BLOCKED,
+                final_action=FinalAction.DATA_FAILED,
+                reason_codes=(benchmark_blocker,),
+                preparation_status=evidence["status"],
+                preparation_reason_codes=tuple(evidence["reasons"]),
+                preparation_attempted=evidence["attempted"],
+                preparation_result_status=evidence["result_status"],
+                prepared_dataset=evidence["dataset"],
+                effective_daily_session=effective_asof)
+        elif normalized not in scan_ready:
             preflight_results[str(symbol).upper()] = TickerScanResult(
-                str(symbol).upper(), run_id, asof, EligibilityStatus.DATA_BLOCKED,
-                final_action=FinalAction.DATA_FAILED, reason_codes=(reason,))
+                normalized, run_id, asof, EligibilityStatus.DATA_BLOCKED,
+                final_action=FinalAction.TEMP_BLOCKED if evidence["status"] != "HARD_BLOCKED" else FinalAction.DATA_FAILED,
+                reason_codes=tuple(evidence["reasons"]),
+                preparation_status=evidence["status"],
+                preparation_reason_codes=tuple(evidence["reasons"]),
+                preparation_attempted=evidence["attempted"],
+                preparation_result_status=evidence["result_status"],
+                prepared_dataset=evidence["dataset"],
+                effective_daily_session=effective_asof)
         else:
             queued_symbols.append(symbol)
     scan = runtime.run_stage(tuple(queued_symbols),
@@ -349,7 +542,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             options_reader=options_reader, option_rules=option_rules,
             daily_asof=effective_asof,
             static_metadata_reader=static_metadata_reader,
-            daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
+            daily_handle_resolver=daily_handle_resolver, auto_prepare_data=False,
             refresh_policy=refresh_policy, options_prepare=None,
             options_enabled=(options_reader is not None or options_resolver is not None), mode=mode),
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
@@ -359,6 +552,16 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes))
         for outcome in outcomes}
+    worker_results = {
+        symbol: replace(row,
+                        preparation_status=prep_evidence[symbol]["status"],
+                        preparation_reason_codes=tuple(prep_evidence[symbol]["reasons"]),
+                        preparation_attempted=prep_evidence[symbol]["attempted"],
+                        preparation_result_status=prep_evidence[symbol]["result_status"],
+                        prepared_dataset=prep_evidence[symbol]["dataset"],
+                        effective_daily_session=effective_asof)
+        for symbol, row in worker_results.items()
+    }
     results = []
     for symbol in spec.symbols:
         normalized = str(symbol).upper()
@@ -376,7 +579,17 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                "pcs_trade_ready_count": 0,
                "temp_blocked_count": sum(r.final_action == FinalAction.TEMP_BLOCKED for r in results),
                "rejected_count": sum(r.final_action == FinalAction.REJECTED for r in results),
-               "missing_ticker_decisions": len(spec.symbols)-len(results)}
+               "missing_ticker_decisions": len(spec.symbols)-len(results),
+               "daily_ready_initial_count": sum(initial[s].status == "READY" for s in dependencies),
+               "daily_prep_required_count": sum(initial[s].status == "PREP_REQUIRED" for s in dependencies),
+               "daily_hard_blocked_initial_count": sum(initial[s].status == "HARD_BLOCKED" for s in dependencies),
+               "daily_prepare_attempted_count": prep_counters["attempted"],
+               "daily_provider_coverage_count": prep_counters.get("provider_coverage_count", 0),
+               "daily_prepared_ready_count": sum(prep_evidence[s]["status"] == "PREPARED_READY" for s in dependencies),
+               "daily_prepare_failed_count": sum(prep_evidence[s]["status"] == "PREPARATION_FAILED" for s in dependencies),
+               "daily_scan_ready_count": sum(s in scan_ready for s in spec.symbols),
+               "benchmark_daily_prepare_attempted": int(prep_evidence[benchmark_symbol.upper()]["attempted"]),
+               "benchmark_blocked": int(benchmark_blocker is not None)}
     if options_reader is not None or options_resolver is not None:
         summary["options_check_count"] = sum(row.options_status != OptionsStatus.NOT_EVALUATED for row in results)
     if event_status_reader is not None or portfolio_status_reader is not None:
@@ -402,7 +615,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     counters = {
         "ordinary_reader_calls": 0,
         "options_reader_calls": summary["options_check_count"],
-        "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
+        "provider_calls": prep_counters["provider_calls"],
+        "promotion_calls": prep_counters["promotion_calls"],
+        "recovery_calls": prep_counters["attempted"],
         "handle_resolution_calls": runtime.counters.get("handle_resolution_calls", 0),
         "daily_frame_reads": runtime.counters.get("daily_frame_reads", 0),
         "options_frame_reads": runtime.counters.get("options_frame_reads", 0),

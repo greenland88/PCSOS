@@ -218,9 +218,9 @@ def pool_scan(args):
         universe_id=args.universe_id,
         as_of=args.as_of,
         mode=args.mode,
+        data_mode=args.data_mode,
         max_workers=args.max_workers,
         stage_timeout_seconds=args.stage_timeout_seconds,
-        auto_prepare_data=False,
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
         option_rules=load_pool_option_rules(args.rules),
     )
@@ -292,6 +292,7 @@ def main():
     pool.add_argument("--universe-id")
     pool.add_argument("--as-of", default="latest")
     pool.add_argument("--mode", choices=["PREMARKET", "INTRADAY", "EOD"], required=True)
+    pool.add_argument("--data-mode", choices=["PREPARE_THEN_SCAN", "READ_ONLY"], default="PREPARE_THEN_SCAN")
     pool.add_argument("--rules", default="config/pcs_rules.yaml")
     pool.add_argument("--max-workers", type=int, default=8)
     pool.add_argument("--stage-timeout-seconds", type=float, default=60.0)

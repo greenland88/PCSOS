@@ -84,6 +84,12 @@ class TickerScanResult:
     trend_gate_reasons: tuple[str, ...] = ()
     pullback_gate_reasons: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    preparation_status: str = "NOT_NEEDED"
+    preparation_reason_codes: tuple[str, ...] = ()
+    preparation_attempted: bool = False
+    preparation_result_status: str = ""
+    prepared_dataset: str | None = None
+    effective_daily_session: str | None = None
 
 
 @dataclass(frozen=True)
