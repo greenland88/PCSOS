@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Mapping
+from types import MappingProxyType
 
 import pandas as pd
 
+from pcs.engine.decision_engine import load_rules
+from pcs.entry.contract_v2 import later_expirations, nearby_strikes
 from .iv import IVFeatures, build_iv_features
 
 
@@ -70,6 +74,47 @@ _IV_CONTEXT_KEYS = {
     "underlying_history", "data_timestamp", "iv_data_timestamp",
     "options_data_timestamp", "options_generation_id", "generation_id",
 }
+
+
+_REQUIRED_OPTION_RULES = {
+    "hard_dte_min": ("entry", "hard_dte_min"),
+    "hard_dte_max": ("entry", "hard_dte_max"),
+    "preferred_dte_min": ("entry", "preferred_dte_min"),
+    "preferred_dte_max": ("entry", "preferred_dte_max"),
+    "safe_strike_atr": ("entry", "safe_strike_atr"),
+    "min_credit_width_ratio": ("entry", "min_credit_width_ratio"),
+    "min_option_volume": ("liquidity", "min_option_volume"),
+    "min_open_interest": ("liquidity", "min_open_interest"),
+    "max_bid_ask_pct": ("liquidity", "max_bid_ask_pct"),
+    "min_nearby_strikes": ("liquidity", "min_nearby_strikes"),
+    "min_later_expirations": ("liquidity", "min_later_expirations"),
+    "long_leg_min_option_volume": ("liquidity", "long_leg_min_option_volume"),
+    "long_leg_min_open_interest": ("liquidity", "long_leg_min_open_interest"),
+}
+
+
+def normalize_pool_option_rules(rules: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Flatten the canonical PCS rules for the pool shortlist."""
+    missing = []
+    values = {}
+    for name, (section, key) in _REQUIRED_OPTION_RULES.items():
+        if section in rules and isinstance(rules[section], Mapping) and key in rules[section]:
+            values[name] = rules[section][key]
+        elif name in rules:
+            values[name] = rules[name]
+        else:
+            missing.append(name)
+    if missing:
+        raise ValueError("POOL_OPTION_RULES_INCOMPLETE:" + ",".join(missing))
+    values.update({
+        "dte_min": values["hard_dte_min"],
+        "dte_max": values["hard_dte_max"],
+    })
+    return MappingProxyType(values)
+
+
+def load_pool_option_rules(path: str | Path = "config/pcs_rules.yaml") -> Mapping[str, Any]:
+    return normalize_pool_option_rules(load_rules(path))
 
 
 def _value(row: Any, name: str) -> Any:
@@ -179,9 +224,15 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
     if frame.duplicated(keys).any():
         raise ValueError("DUPLICATE_OPTION_CONTRACT_KEY")
     entry = pd.Timestamp(entry_date).normalize()
-    dte_min, dte_max = int(rules.get("dte_min", 30)), int(rules.get("dte_max", 45))
-    min_ratio = float(rules.get("min_credit_width_ratio", .10))
-    min_volume, min_oi = int(rules.get("min_option_volume", 0)), int(rules.get("min_open_interest", 0))
+    required = ("dte_min", "dte_max", "safe_strike_atr", "min_credit_width_ratio",
+                "min_option_volume", "min_open_interest", "max_bid_ask_pct",
+                "min_nearby_strikes", "min_later_expirations",
+                "long_leg_min_option_volume", "long_leg_min_open_interest")
+    if any(name not in rules for name in required):
+        raise ValueError("POOL_OPTION_RULES_INCOMPLETE")
+    dte_min, dte_max = int(rules["dte_min"]), int(rules["dte_max"])
+    min_ratio = float(rules["min_credit_width_ratio"])
+    min_volume, min_oi = int(rules["min_option_volume"]), int(rules["min_open_interest"])
     output: list[SpreadCandidate] = []
     generation_id = rules.get("options_generation_id")
     if generation_id is None:
@@ -194,13 +245,35 @@ def shortlist_spreads(symbol: str, entry_date, underlying_price: float, atr: flo
         rows = rows.sort_values("strike", ascending=False)
         for _, short in rows.iterrows():
             distance = (float(underlying_price) - float(short.strike)) / float(atr)
-            if distance < float(rules.get("safe_strike_atr", 2.3)):
+            if distance < float(rules["safe_strike_atr"]):
+                continue
+            if any(pd.isna(float(short[name])) for name in ("volume", "open_interest", "strike")):
                 continue
             if float(short.volume) < min_volume or float(short.open_interest) < min_oi:
+                continue
+            if any(pd.isna(float(short[name])) for name in ("bid", "ask")):
+                continue
+            if float(short.bid) <= 0 or float(short.ask) < float(short.bid):
+                continue
+            if (float(short.ask) - float(short.bid)) / float(short.bid) > float(rules["max_bid_ask_pct"]):
+                continue
+            if nearby_strikes(frame, expiry, "p", float(short.strike)) < int(rules["min_nearby_strikes"]):
+                continue
+            if later_expirations(frame, expiry, "p") < int(rules["min_later_expirations"]):
                 continue
             for _, long in rows[rows.strike < short.strike].iterrows():
                 width = float(short.strike) - float(long.strike)
                 if width <= 0:
+                    continue
+                if any(pd.isna(float(long[name])) for name in ("bid", "ask")):
+                    continue
+                if float(long.bid) < 0 or float(long.ask) < 0 or float(long.ask) < float(long.bid):
+                    continue
+                if (rules["long_leg_min_option_volume"] is not None and
+                        float(long.volume) < float(rules["long_leg_min_option_volume"] or 0)):
+                    continue
+                if (rules["long_leg_min_open_interest"] is not None and
+                        float(long.open_interest) < float(rules["long_leg_min_open_interest"] or 0)):
                     continue
                 bid_credit = float(short.bid) - float(long.ask)
                 mid_credit = ((float(short.bid) + float(short.ask)) / 2 -

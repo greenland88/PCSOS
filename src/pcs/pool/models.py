@@ -78,6 +78,11 @@ class TickerScanResult:
     timeframe: str = "daily"
     latency_ms: float = 0.0
     spread_count: int = 0
+    structural_trend: str | None = None
+    short_term_phase: str | None = None
+    trend_gate_reasons: tuple[str, ...] = ()
+    pullback_gate_reasons: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

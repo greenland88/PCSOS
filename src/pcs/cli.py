@@ -207,6 +207,7 @@ def onboarding_status(args):
 def pool_scan(args):
     from pcs.pool.runner import run_pcs_pool
     from pcs.data.access import PCSDataAccess
+    from pcs.pool.options import load_pool_option_rules
     print(json.dumps({"status": "POOL_SCAN_STARTED", "mode": args.mode,
                       "as_of": args.as_of, "universe_id": args.universe_id,
                       "explicit_symbol_count": len(args.symbols or []),
@@ -221,6 +222,7 @@ def pool_scan(args):
         stage_timeout_seconds=args.stage_timeout_seconds,
         auto_prepare_data=False,
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
+        option_rules=load_pool_option_rules(args.rules),
     )
     print(result.to_json())
 
@@ -290,6 +292,7 @@ def main():
     pool.add_argument("--universe-id")
     pool.add_argument("--as-of", default="latest")
     pool.add_argument("--mode", choices=["PREMARKET", "INTRADAY", "EOD"], required=True)
+    pool.add_argument("--rules", default="config/pcs_rules.yaml")
     pool.add_argument("--max-workers", type=int, default=8)
     pool.add_argument("--stage-timeout-seconds", type=float, default=60.0)
     pool.add_argument("--parquet-root", default="data/parquet")

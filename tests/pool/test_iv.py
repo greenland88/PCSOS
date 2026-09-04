@@ -7,6 +7,15 @@ from pcs.pool.iv import IV_CALCULATION_VERSION, build_iv_features, calculate_iv_
 from pcs.pool.options import shortlist_spreads
 
 
+IV_RULES = {
+    "dte_min": 30, "dte_max": 45, "safe_strike_atr": 2.3,
+    "min_credit_width_ratio": .1, "min_option_volume": 0,
+    "min_open_interest": 0, "max_bid_ask_pct": 1.0,
+    "min_nearby_strikes": 0, "min_later_expirations": 0,
+    "long_leg_min_option_volume": None, "long_leg_min_open_interest": None,
+}
+
+
 def _rows():
     return ({"bid_iv": .40, "ask_iv": .50, "quote_as_of": "2025-01-01"},
             {"bid_iv": .30, "ask_iv": .34, "quote_as_of": "2025-01-01"})
@@ -66,9 +75,8 @@ def test_shortlist_does_not_read_iv_from_non_shortlisted_rows():
         {"expiration": "2025-03-10", "strike": 80, "option_type": "p", "bid": .1,
          "ask": .2, "volume": 0, "open_interest": 0, "bid_iv": "invalid", "ask_iv": "invalid"},
     ])
-    result = shortlist_spreads("AAA", "2025-01-01", 100, 2, chain, rules={
-        "dte_min": 30, "dte_max": 45, "safe_strike_atr": 2.3,
-        "min_credit_width_ratio": .1, "options_generation_id": "opt-g1"})
+    result = shortlist_spreads("AAA", "2025-01-01", 100, 2, chain,
+                               rules={**IV_RULES, "options_generation_id": "opt-g1"})
     assert len(result) == 1
     assert result[0].iv_gate_status == "PASS"
 
@@ -104,9 +112,8 @@ def test_invalid_iv_and_generation_mismatch_exclude_shortlist_pair():
          "ask": .7, "volume": 10, "open_interest": 20, "bid_iv": .30, "ask_iv": .34,
          "generation_id": "g2"},
     ])
-    assert shortlist_spreads("AAA", "2025-01-01", 100, 2, chain, rules={
-        "dte_min": 30, "dte_max": 45, "safe_strike_atr": 2.3,
-        "min_credit_width_ratio": .1}) == ()
+    assert shortlist_spreads("AAA", "2025-01-01", 100, 2, chain,
+                             rules=IV_RULES) == ()
 
 
 def test_iv_feature_aliases_are_stable():

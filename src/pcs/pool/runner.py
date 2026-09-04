@@ -16,11 +16,16 @@ from pcs.data.strategy_readiness import (resolve_active_verified_daily_handle,
                                           resolve_active_verified_options_handle)
 from pcs.data.control_plane import MarketDataRequirements, ensure_market_data
 from pcs.trend.snapshot import build_trend_snapshot
+from pcs.trend.interpretation import interpret_trend
+from pcs.trend.scoring import score_trend
+from pcs.entry.trend_gate import evaluate_trend_gate
+from pcs.entry.pullback_gate import evaluate_pullback_gate
 from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
                      PoolScanResult, TickerScanResult, TimingStatus)
 from .registry import UniverseSpec, evaluate_static_eligibility
 from .modes import resolve_effective_market_session
 from .runtime import PoolRuntime
+from .options import load_pool_option_rules
 
 _PREPARATION_LOCK = RLock()
 
@@ -88,7 +93,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
                      daily_handle_resolver=None, auto_prepare_data=True,
                      refresh_policy="INCREMENTAL_IF_NEEDED", runtime=None,
-                     options_prepare=None, options_enabled=None):
+                     options_prepare=None, options_enabled=None, mode="EOD"):
     started = perf_counter()
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
@@ -128,22 +133,56 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
         # Each worker receives an independent immutable snapshot boundary;
         # trend helpers may construct intermediate columns internally.
-        trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
-                                     as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol)
-        engine = trend.market_structure_engine
-        phase = str(getattr(engine, "short_term_phase", ""))
-        if phase in {"RECLAIM_CONFIRMED", "HEALTHY_PULLBACK", "BREAKOUT_CONFIRMED"}:
-            timing, action = TimingStatus.TIMING_ENTRY_READY, FinalAction.WAIT
-        elif phase:
-            timing, action = TimingStatus.WATCH, FinalAction.WATCH
-        else:
+        timing_reasons = []
+        timing_warnings = []
+        trend_gate = pullback_gate = interpretation = trend_score = trend = None
+        try:
+            trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
+                                         as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol)
+            interpretation = interpret_trend(trend)
+            trend_score = score_trend(trend, interpretation)
+            trend_gate = evaluate_trend_gate(trend_score, interpretation, trend)
+            pullback_gate = evaluate_pullback_gate(trend_gate, trend, interpretation)
+            timing_warnings = list(getattr(trend, "warnings", ()) or ())
+            for result in (interpretation, trend_score, trend_gate, pullback_gate):
+                timing_warnings.extend(getattr(result, "warnings", ()) or ())
+            timing_warnings = list(dict.fromkeys(timing_warnings))
+            timing_reasons.extend(getattr(interpretation, "reasons", ()) or ())
+            timing_reasons.extend(getattr(trend_score, "reasons", ()) or ())
+            timing_reasons.extend(getattr(trend_gate, "reasons", ()) or ())
+            timing_reasons.extend(getattr(pullback_gate, "reasons", ()) or ())
+            if not all(getattr(result, "available", False) for result in
+                       (trend, interpretation, trend_score, trend_gate, pullback_gate)):
+                timing, action = TimingStatus.WAIT, FinalAction.WAIT
+                timing_reasons.insert(0, "TIMING_EVIDENCE_UNAVAILABLE")
+            elif trend_gate.trend_gate_result == "REJECT" or pullback_gate.pullback_gate_result == "REJECT":
+                timing, action = TimingStatus.WAIT, FinalAction.REJECTED
+                timing_reasons.insert(0, "UNDERLYING_STRUCTURAL_REJECT")
+            elif trend_gate.trend_gate_result == "WATCH":
+                timing, action = TimingStatus.WATCH, FinalAction.WATCH
+            elif (trend_gate.trend_gate_result == "PASS" and
+                  pullback_gate.pullback_gate_result == "WAIT"):
+                timing, action = TimingStatus.WAIT, FinalAction.WAIT
+            elif (trend_gate.trend_gate_result == "PASS" and
+                  pullback_gate.pullback_gate_result == "PASS"):
+                timing, action = TimingStatus.TIMING_ENTRY_READY, FinalAction.WAIT
+            else:
+                timing, action = TimingStatus.WAIT, FinalAction.WAIT
+        except Exception:
             timing, action = TimingStatus.WAIT, FinalAction.WAIT
+            timing_reasons = ["TIMING_EVIDENCE_UNAVAILABLE"]
+        timing_reasons.extend(timing_warnings)
+        timing_reasons = tuple(dict.fromkeys(timing_reasons))
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
         candidates = ()
+        engine = getattr(trend, "market_structure_engine", None)
         feature_date = getattr(engine, "feature_max_date", None)
         if options_enabled is None:
             options_enabled = options_reader is not None
-        if timing == TimingStatus.TIMING_ENTRY_READY and options_enabled:
+        if (timing == TimingStatus.TIMING_ENTRY_READY and
+                mode in {"PREMARKET", "INTRADAY"} and options_reader is None):
+            option_reasons = ("LIVE_OPTIONS_SOURCE_REQUIRED",)
+        elif timing == TimingStatus.TIMING_ENTRY_READY and options_enabled:
             from .options import shortlist_spreads
             try:
                 if options_prepare is None and options_reader is None:
@@ -157,7 +196,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                             min_dte=30, max_dte=45, required_history_rows=0)
                         ensure_market_data(symbol, req, access=access)
 
-                option_day = pd.Timestamp(feature_date).normalize()
+                option_day = (pd.Timestamp(asof).normalize() if options_reader is not None and
+                              mode in {"PREMARKET", "INTRADAY"} else pd.Timestamp(feature_date).normalize())
                 if options_reader is not None:
                     chain = runtime.read_options(
                         symbol=symbol, trade_date=option_day, reader=options_reader)
@@ -179,11 +219,16 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             except Exception as exc:
                 options_status = OptionsStatus.DATA_BLOCKED
                 option_reasons = (str(exc).strip() or "OPTIONS_DATA_BLOCKED",)
-        reasons = tuple(getattr(engine, "reason_codes", ())) + option_reasons or ("TIMING_EVALUATED",)
+        reasons = timing_reasons + option_reasons or ("TIMING_EVALUATED",)
         return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
             latency_ms=(perf_counter()-started)*1000,
-            spread_count=len(candidates) if options_status == OptionsStatus.PASS else 0)
+            spread_count=len(candidates) if options_status == OptionsStatus.PASS else 0,
+            structural_trend=getattr(engine, "structural_trend", None),
+            short_term_phase=getattr(engine, "short_term_phase", None),
+            trend_gate_reasons=tuple(getattr(trend_gate, "reasons", ()) or ()),
+            pullback_gate_reasons=tuple(getattr(pullback_gate, "reasons", ()) or ()),
+            warnings=tuple(timing_warnings))
     except Exception as exc:
         failure_code = str(exc).strip()
         reasons = (failure_code,) if failure_code in {
@@ -259,8 +304,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     access = data_access or PCSDataAccess()
     started = perf_counter()
     daily_resolver = daily_handle_resolver or resolve_active_verified_daily_handle
+    if option_rules is None:
+        option_rules = load_pool_option_rules()
     options_resolver = (resolve_active_verified_options_handle
-                        if options_reader is None and daily_handle_resolver is None
+                        if mode == "EOD" and options_reader is None
                         else None)
     runtime = PoolRuntime(access=access, stage_timeout_seconds=stage_timeout_seconds,
                           daily_handle_resolver=daily_resolver,
@@ -303,7 +350,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             static_metadata_reader=static_metadata_reader,
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=auto_prepare_data,
             refresh_policy=refresh_policy, options_prepare=None,
-            options_enabled=(options_reader is not None or options_resolver is not None)),
+            options_enabled=(options_reader is not None or options_resolver is not None), mode=mode),
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
     outcomes = scan.outcomes
