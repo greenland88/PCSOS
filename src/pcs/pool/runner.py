@@ -17,6 +17,7 @@ from pcs.data.access import PCSDataAccess
 from pcs.data.strategy_readiness import (resolve_active_verified_daily_handle,
                                           resolve_active_verified_options_handle)
 from pcs.data.control_plane import MarketDataRequirements, ensure_market_data
+from pcs.data.canonical_generations import admit_migrated_daily_symbol
 from pcs.trend.snapshot import build_trend_snapshot
 from pcs.trend.interpretation import interpret_trend
 from pcs.trend.scoring import score_trend
@@ -148,15 +149,27 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
     """Prepare one daily dependency through the canonical control plane."""
     req = _daily_requirements(symbol, effective_daily_session)
     try:
-        adopted = _adopt_existing_daily_canonical(symbol, access)
-        result = ensure_market_data(symbol, req, access=access)
+        admission = admit_migrated_daily_symbol(symbol, decision_as_of=effective_daily_session,
+                                                required_warmup_sessions=200, data_access=access)
+        admission_status = str(admission.get("status", ""))
+        admission_reasons = tuple(admission.get("reason_codes", ()) or ())
+        if admission_status == "MIGRATED_CANONICAL_INVALID" or admission_status in {"MIGRATION_CATALOG_AMBIGUOUS", "MIGRATION_CATALOG_NOT_SUCCESS"}:
+            return {"symbol": str(symbol).upper(), "attempted": True, "result": None,
+                    "result_status": admission_status, "reason_codes": admission_reasons,
+                    "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0,
+                    "admission_status": admission_status}
+        needs_incremental = admission_status == "ADMITTED_NEEDS_INCREMENTAL"
+        result = ensure_market_data(symbol, req, access=access) if (
+            admission_status in {"MIGRATION_CATALOG_MISSING", "MIGRATION_CATALOG_NOT_SUCCESS",
+                                 "MIGRATION_PHYSICAL_MISSING", ""} or needs_incremental) else None
         status = str(getattr(result, "status", ""))
-        reasons = tuple(getattr(result, "reason_codes", ()) or ())
+        reasons = tuple(dict.fromkeys((*admission_reasons, *(getattr(result, "reason_codes", ()) or ()))))
         return {"symbol": str(symbol).upper(), "attempted": True, "result": result,
-                "result_status": status, "reason_codes": reasons,
+                "result_status": status or admission_status, "reason_codes": reasons,
                 "provider_calls": 0,
                 "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
-                "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()) + adopted}
+                "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()) + len(admission.get("promoted_partitions", ()) or ()),
+                "admission_status": admission_status}
     except Exception as exc:
         return {"symbol": str(symbol).upper(), "attempted": True, "result": None,
                 "result_status": "FAILED", "reason_codes": (str(exc).strip() or type(exc).__name__,),
@@ -239,40 +252,6 @@ def _audit_verified_daily(states, symbols, access, effective_daily_session, reso
     return states
 
 
-def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> int:
-    """Adopt only the exact complete canonical rows for one ticker."""
-    from pcs.data.canonical_generations import adopt_legacy_canonical_generation
-    manifest = access._read_manifest(access.manifest_path)
-    if manifest.empty or not {"dataset", "symbol", "active_generation"}.issubset(manifest.columns):
-        return 0
-    rows = manifest[(manifest.dataset.astype(str) == "daily") &
-                    manifest.symbol.astype(str).str.upper().eq(str(symbol).upper())]
-    if rows.empty:
-        return 0
-    # Adopt only rows without an active pointer.  A symbol may already have
-    # one active generation for a later, non-overlapping partition; its older
-    # canonical partition is still needed for warmup and may be adopted.
-    rows = rows[rows.active_generation.isna() |
-                rows.active_generation.astype(str).str.strip().isin(("", "nan"))]
-    adopted = 0
-    for _, row in rows.iterrows():
-        path = str(row.get("parquet_path") or "").strip()
-        if not path:
-            continue
-        import hashlib
-        from pathlib import Path
-        file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-        recorded_hash = row.get("file_hash")
-        if recorded_hash is not None and not pd.isna(recorded_hash) and str(recorded_hash).strip() not in ("", "nan"):
-            if str(recorded_hash).strip() != file_hash:
-                raise ValueError("LEGACY_FILE_HASH_MISMATCH")
-        adopt_legacy_canonical_generation(dataset="daily", symbol=symbol,
-            legacy_manifest=row.to_dict(), expected_file_hash=file_hash,
-            adoption_reason="AUTO_ADOPT_EXISTING_CANONICAL", data_access=access)
-        adopted += 1
-    return adopted
-
-
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
                      daily_handle_resolver=None, auto_prepare_data=True,
@@ -297,12 +276,15 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 # A verified canonical object with a missing pointer can be
                 # adopted locally before any provider path is considered.
                 try:
-                    _adopt_existing_daily_canonical(symbol, access)
+                    admission = admit_migrated_daily_symbol(
+                        symbol, decision_as_of=str(day.date()), required_warmup_sessions=200,
+                        data_access=access)
                 except (OSError, ValueError, KeyError):
-                    pass
-                prepared = ensure_market_data(symbol, prep, access=access)
-                if getattr(prepared, "status", "") == "ALREADY_COMPLETE":
-                    _adopt_existing_daily_canonical(symbol, access)
+                    admission = {"status": "MIGRATION_ADMISSION_FAILED"}
+                if admission.get("status") in {"MIGRATED_CANONICAL_INVALID", "MIGRATION_CATALOG_AMBIGUOUS", "MIGRATION_CATALOG_NOT_SUCCESS"}:
+                    raise ValueError(admission.get("reason_codes", ("MIGRATION_ADMISSION_FAILED",))[0])
+                if admission.get("status") in {"MIGRATION_CATALOG_MISSING", "MIGRATION_PHYSICAL_MISSING", "ADMITTED_NEEDS_INCREMENTAL", "MIGRATION_ADMISSION_FAILED"}:
+                    ensure_market_data(symbol, prep, access=access)
                 if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
                     runtime.refresh_manifest_snapshot()
 

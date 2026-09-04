@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Any
 import hashlib, json, os, uuid
 from datetime import datetime, timezone
+from threading import RLock
 import pandas as pd
 from .access import PCSDataAccess, DataAccessError, DataQualityError
+
+_MIGRATED_ADMISSION_WRITE_LOCK = RLock()
 
 def _strict_text(value: Any, code: str) -> str:
     if value is None or pd.isna(value) or not str(value).strip() or str(value).strip().lower() == "nan":
@@ -42,6 +45,145 @@ def adopt_legacy_canonical_generation(*, dataset: str, symbol: str, legacy_manif
     receipt=access.promote_generation(frame,dataset,symbol,partition,source_version="LEGACY_CANONICAL_ADOPTION")
     if not hasattr(receipt,"generation_id"): raise DataAccessError("DATASET_GENERATION_ID_MISSING")
     return {"receipt":receipt.to_dict(),"dataset_fingerprint":desc["dataset_fingerprint"],"snapshot_descriptor":desc,"adoption_reason":adoption_reason,"source_legacy_manifest_hash":hashlib.sha256(json.dumps(legacy_manifest,sort_keys=True,default=str).encode()).hexdigest(),"source_file_hash":actual}
+
+
+def _migration_catalog_path(access: PCSDataAccess, migration_manifest_path=None) -> Path:
+    return Path(migration_manifest_path) if migration_manifest_path is not None else Path(access.manifest_path).with_name("daily_universe_migration.csv")
+
+
+def _migrated_daily_files(access: PCSDataAccess, symbol: str) -> tuple[Path, ...]:
+    root = Path(access.parquet_root) / "daily" / f"symbol={symbol}"
+    return tuple(sorted((path for path in root.glob("year=*/*.parquet")
+                         if path.parent.name.startswith("year=") and path.is_file()),
+                        key=lambda path: (path.parent.name, str(path))))
+
+
+def _validate_migrated_daily_file(path: Path, symbol: str, access: PCSDataAccess) -> tuple[pd.DataFrame, dict[str, Any]]:
+    if not path.exists():
+        raise DataAccessError("MIGRATION_PHYSICAL_MISSING")
+    try:
+        frame = pd.read_parquet(path)
+    except Exception as exc:
+        raise DataQualityError("MIGRATED_CANONICAL_UNREADABLE") from exc
+    if "symbol" not in frame.columns:
+        frame.insert(0, "symbol", symbol)
+    else:
+        values = frame["symbol"]
+        nonempty = values.notna() & values.astype(str).str.strip().ne("") & values.astype(str).str.lower().ne("nan")
+        if not values[nonempty].astype(str).str.upper().eq(symbol).all():
+            raise DataQualityError("MIGRATED_CANONICAL_SYMBOL_MISMATCH")
+        frame["symbol"] = values.fillna(symbol).astype(str).replace({"": symbol, "nan": symbol})
+    frame = access.validate_schema(frame, "daily")
+    required = ("date", "open", "high", "low", "close", "volume")
+    dates = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    if dates.isna().any() or dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise DataQualityError("MIGRATED_CANONICAL_DATE_ORDER_INVALID")
+    numeric = frame[list(required[1:])].apply(pd.to_numeric, errors="coerce")
+    if numeric.isna().any().any() or numeric.abs().eq(float("inf")).any().any():
+        raise DataQualityError("MIGRATED_CANONICAL_OHLCV_INVALID")
+    if (numeric.volume < 0).any() or (numeric.high < numeric.low).any() or (numeric.high < numeric[["open", "close"]].max(axis=1)).any() or (numeric.low > numeric[["open", "close"]].min(axis=1)).any():
+        raise DataQualityError("MIGRATED_CANONICAL_OHLCV_INVALID")
+    try:
+        partition_year = int(path.parent.name.split("=", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise DataQualityError("MIGRATED_CANONICAL_PARTITION_INVALID") from exc
+    if not (dates.dt.year == partition_year).all():
+        raise DataQualityError("MIGRATED_CANONICAL_YEAR_MISMATCH")
+    file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    descriptor = canonical_snapshot_descriptor(dataset="daily", symbol=symbol, frame=frame,
+        file_hash=file_hash, byte_size=path.stat().st_size, schema_version="2",
+        price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
+        partition_key=f"year={partition_year}")
+    return frame, {"path": str(path), "year": partition_year, "physical_sha256": file_hash,
+                   "semantic_content_hash": access.semantic_content_hash(frame),
+                   "row_count": len(frame), "min_date": str(dates.min().date()),
+                   "max_date": str(dates.max().date()), "dataset_fingerprint": descriptor["dataset_fingerprint"],
+                   "schema_fingerprint": descriptor["schema_fingerprint"]}
+
+
+def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = None,
+                                required_warmup_sessions: int = 200, data_access=None,
+                                migration_manifest_path=None, read_only: bool = False) -> dict[str, Any]:
+    """Validate and admit migrated daily files through immutable generations.
+
+    The migration catalog is only an eligibility claim. Every physical file is
+    independently validated before any promotion is attempted.
+    """
+    access = data_access or PCSDataAccess.canonical()
+    s = str(symbol).strip().upper()
+    catalog_path = _migration_catalog_path(access, migration_manifest_path)
+    if not catalog_path.exists():
+        return {"symbol": s, "status": "MIGRATION_CATALOG_MISSING", "reason_codes": ("MIGRATION_CATALOG_MISSING",), "partitions": ()}
+    catalog = pd.read_csv(catalog_path)
+    matches = catalog[catalog.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(s)]
+    if len(matches) != 1:
+        code = "MIGRATION_CATALOG_MISSING" if matches.empty else "MIGRATION_CATALOG_AMBIGUOUS"
+        return {"symbol": s, "status": code, "reason_codes": (code,), "partitions": ()}
+    if str(matches.iloc[0].get("status", "")).strip().upper() != "SUCCESS":
+        return {"symbol": s, "status": "MIGRATION_CATALOG_NOT_SUCCESS", "reason_codes": ("MIGRATION_CATALOG_NOT_SUCCESS",), "partitions": ()}
+    paths = _migrated_daily_files(access, s)
+    if not paths:
+        return {"symbol": s, "status": "MIGRATION_PHYSICAL_MISSING", "reason_codes": ("MIGRATION_PHYSICAL_MISSING",), "partitions": ()}
+    validated = []
+    try:
+        for path in paths:
+            validated.append(_validate_migrated_daily_file(path, s, access))
+        all_dates = pd.concat([frame[["symbol", "date"]] for frame, _ in validated], ignore_index=True)
+        all_dates["date"] = pd.to_datetime(all_dates["date"], errors="coerce").dt.normalize()
+        if all_dates["date"].duplicated().any():
+            raise DataQualityError("MIGRATED_CANONICAL_CROSS_PARTITION_DUPLICATE_DATE")
+        if decision_as_of is not None:
+            day = pd.Timestamp(decision_as_of).normalize()
+            pit_count = int(all_dates.loc[all_dates["date"] <= day, "date"].nunique())
+            latest = pd.Timestamp(all_dates["date"].max())
+            if pit_count < int(required_warmup_sessions):
+                raise DataQualityError("INSUFFICIENT_FEATURE_WARMUP")
+            needs_incremental = latest < day
+        else:
+            needs_incremental = False
+    except (DataAccessError, DataQualityError) as exc:
+        return {"symbol": s, "status": "MIGRATED_CANONICAL_INVALID", "reason_codes": (str(exc).strip() or type(exc).__name__,),
+                "partitions": tuple(meta for _, meta in validated)}
+    if read_only:
+        return {"symbol": s, "status": "MIGRATED_CANONICAL_VALIDATED", "reason_codes": ("MIGRATED_CANONICAL_FOUND", "MIGRATED_CANONICAL_VALIDATED"),
+                "partitions": tuple(meta for _, meta in validated), "needs_incremental": needs_incremental}
+    promoted = []
+    already = []
+    try:
+        with _MIGRATED_ADMISSION_WRITE_LOCK:
+            for frame, meta in validated:
+                manifest = access._read_manifest(access.manifest_path)
+                year = meta["year"]
+                rows = manifest[(manifest.get("dataset", pd.Series(dtype=str)).astype(str) == "daily") &
+                                manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(s) &
+                                pd.to_numeric(manifest.get("year", pd.Series(dtype=float)), errors="coerce").eq(year)]
+                active_values = rows.get("active_generation", pd.Series(dtype=str)).astype(str).str.strip()
+                active = rows[active_values.ne("") & active_values.str.lower().ne("nan") & active_values.str.lower().ne("none")] if not rows.empty else rows
+                if not active.empty:
+                    current = active.iloc[-1]
+                    current_path = Path(str(current.get("parquet_path", "")))
+                    current_frame = pd.read_parquet(current_path)
+                    if access.semantic_content_hash(current_frame) != meta["semantic_content_hash"] or len(current_frame) != meta["row_count"]:
+                        raise DataQualityError("MIGRATED_ACTIVE_CONTENT_CONFLICT")
+                    already.append(f"year={year}")
+                    continue
+                receipt = access.promote_generation(frame, "daily", s, f"year={year}", source_version="DAILY_UNIVERSE_MIGRATION_ADMISSION")
+                if not hasattr(receipt, "generation_id"):
+                    raise DataAccessError("MIGRATION_ADMISSION_IDEMPOTENCY_UNVERIFIED")
+                record = access.active_generation_record("daily", s, f"year={year}")
+                read_back = access.read_pinned_generation("daily", s, f"year={year}", str(record.get("active_generation")))
+                if len(read_back) != meta["row_count"] or access.semantic_content_hash(read_back) != meta["semantic_content_hash"]:
+                    raise DataQualityError("MIGRATION_ADMISSION_READ_BACK_MISMATCH")
+                promoted.append(f"year={year}")
+    except (DataAccessError, DataQualityError, OSError, ValueError) as exc:
+        return {"symbol": s, "status": "ADMISSION_INCOMPLETE" if promoted else "MIGRATION_ADMISSION_FAILED",
+                "reason_codes": (str(exc).strip() or type(exc).__name__,), "partitions": tuple(meta for _, meta in validated),
+                "promoted_partitions": tuple(promoted), "already_admitted": tuple(already)}
+    status = "ADMITTED_NEEDS_INCREMENTAL" if needs_incremental else "ALREADY_ADMITTED" if not promoted else "ADMITTED_READY"
+    reasons = ("MIGRATED_CANONICAL_ALREADY_ADMITTED",) if not promoted else ("MIGRATED_CANONICAL_ADMITTED",)
+    return {"symbol": s, "status": status, "reason_codes": reasons,
+            "partitions": tuple(meta for _, meta in validated), "promoted_partitions": tuple(promoted),
+            "already_admitted": tuple(already), "needs_incremental": needs_incremental}
 
 def register_active_generation_provenance(*, dataset: str, symbol: str, generation_id: str,
                                           price_basis: str, corporate_action_version: str,

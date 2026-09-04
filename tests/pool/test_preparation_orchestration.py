@@ -8,6 +8,7 @@ from pcs.pool.models import EligibilityStatus
 from pcs.pool.runtime import ManifestSnapshot
 from pcs.data.access import PCSDataAccess
 from pcs.data.strategy_readiness import resolve_active_verified_daily_handle
+from pcs.data.canonical_generations import admit_migrated_daily_symbol
 
 
 def _frame():
@@ -170,27 +171,41 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
     }])
     manifest.to_csv(access.manifest_path, index=False)
     assert runner._daily_preflight(["AAA"], access, "2025-09-17")["AAA"].reason_codes == ("ACTIVE_GENERATION_MISSING",)
-    assert runner._adopt_existing_daily_canonical("AAA", access) == 1
+    first_admission = admit_migrated_daily_symbol(
+        "AAA", decision_as_of="2025-09-17", data_access=access,
+        migration_manifest_path=tmp_path / "migration.csv")
+    assert first_admission["status"] == "MIGRATION_CATALOG_MISSING"
+    migration = manifest.copy()
+    migration["status"] = "SUCCESS"
+    migration.to_csv(tmp_path / "migration.csv", index=False)
+    first_admission = admit_migrated_daily_symbol(
+        "AAA", decision_as_of="2025-09-17", data_access=access,
+        migration_manifest_path=tmp_path / "migration.csv")
+    assert first_admission["status"] == "ADMITTED_READY"
     first = resolve_active_verified_daily_handle("AAA", "2025-09-17", 200, data_access=access)
     manifest_hash = __import__("hashlib").sha256(access.manifest_path.read_bytes()).hexdigest()
-    assert runner._adopt_existing_daily_canonical("AAA", access) == 0
+    assert admit_migrated_daily_symbol(
+        "AAA", decision_as_of="2025-09-17", data_access=access,
+        migration_manifest_path=tmp_path / "migration.csv")["status"] == "ALREADY_ADMITTED"
     assert __import__("hashlib").sha256(access.manifest_path.read_bytes()).hexdigest() == manifest_hash
     second = resolve_active_verified_daily_handle("AAA", "2025-09-17", 200, data_access=access)
     assert second.generation_id == first.generation_id
 
 
-def test_legacy_hash_conflict_is_not_admitted(tmp_path):
+def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
     access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     frame = _frame()
+    frame.loc[0, "high"] = frame.loc[0, "low"] - 1
     path = access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "AAA_2025.parquet"
     path.parent.mkdir(parents=True)
     frame.to_parquet(path, index=False)
-    pd.DataFrame([{"dataset": "daily", "symbol": "AAA", "year": 2025,
-                   "parquet_path": str(path), "row_count": len(frame),
-                   "min_date": str(frame.date.min().date()), "max_date": str(frame.date.max().date()),
-                   "active_generation": None, "file_hash": "trusted-but-wrong"}]).to_csv(access.manifest_path, index=False)
-    with pytest.raises(ValueError, match="LEGACY_FILE_HASH_MISMATCH"):
-        runner._adopt_existing_daily_canonical("AAA", access)
+    migration = pd.DataFrame([{"symbol": "AAA", "status": "SUCCESS"}])
+    migration.to_csv(tmp_path / "migration.csv", index=False)
+    result = admit_migrated_daily_symbol(
+        "AAA", decision_as_of="2025-09-17", data_access=access,
+        migration_manifest_path=tmp_path / "migration.csv")
+    assert result["status"] == "MIGRATED_CANONICAL_INVALID"
+    assert result["reason_codes"] == ("MIGRATED_CANONICAL_OHLCV_INVALID",)
     assert not list((path.parent / "generations").glob("*.parquet"))
 
 
