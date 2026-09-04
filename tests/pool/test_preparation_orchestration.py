@@ -1,10 +1,13 @@
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 import pcs.pool.runner as runner
 from pcs.pool.models import EligibilityStatus
 from pcs.pool.runtime import ManifestSnapshot
+from pcs.data.access import PCSDataAccess
+from pcs.data.strategy_readiness import resolve_active_verified_daily_handle
 
 
 def _frame():
@@ -150,6 +153,45 @@ def test_preparation_worker_count_is_bounded(tmp_path, monkeypatch):
     runner._bounded_daily_preparation(
         ["A", "B", "C", "D"], access, "2025-09-17", max_workers=2, timeout_seconds=5)
     assert maximum <= 2
+
+
+def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
+    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    frame = _frame()
+    path = access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "AAA_2025.parquet"
+    path.parent.mkdir(parents=True)
+    frame.to_parquet(path, index=False)
+    manifest = pd.DataFrame([{
+        "dataset": "daily", "symbol": "AAA", "year": 2025, "quarter": None,
+        "parquet_path": str(path), "row_count": len(frame),
+        "min_date": str(frame.date.min().date()), "max_date": str(frame.date.max().date()),
+        "active_generation": None, "file_hash": __import__("hashlib").sha256(path.read_bytes()).hexdigest(),
+        "status": "SUCCESS",
+    }])
+    manifest.to_csv(access.manifest_path, index=False)
+    assert runner._daily_preflight(["AAA"], access, "2025-09-17")["AAA"].reason_codes == ("ACTIVE_GENERATION_MISSING",)
+    assert runner._adopt_existing_daily_canonical("AAA", access) == 1
+    first = resolve_active_verified_daily_handle("AAA", "2025-09-17", 200, data_access=access)
+    manifest_hash = __import__("hashlib").sha256(access.manifest_path.read_bytes()).hexdigest()
+    assert runner._adopt_existing_daily_canonical("AAA", access) == 0
+    assert __import__("hashlib").sha256(access.manifest_path.read_bytes()).hexdigest() == manifest_hash
+    second = resolve_active_verified_daily_handle("AAA", "2025-09-17", 200, data_access=access)
+    assert second.generation_id == first.generation_id
+
+
+def test_legacy_hash_conflict_is_not_admitted(tmp_path):
+    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    frame = _frame()
+    path = access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "AAA_2025.parquet"
+    path.parent.mkdir(parents=True)
+    frame.to_parquet(path, index=False)
+    pd.DataFrame([{"dataset": "daily", "symbol": "AAA", "year": 2025,
+                   "parquet_path": str(path), "row_count": len(frame),
+                   "min_date": str(frame.date.min().date()), "max_date": str(frame.date.max().date()),
+                   "active_generation": None, "file_hash": "trusted-but-wrong"}]).to_csv(access.manifest_path, index=False)
+    with pytest.raises(ValueError, match="LEGACY_FILE_HASH_MISMATCH"):
+        runner._adopt_existing_daily_canonical("AAA", access)
+    assert not list((path.parent / "generations").glob("*.parquet"))
 
 
 def test_quarterly_warmup_uses_cumulative_active_rows(tmp_path):

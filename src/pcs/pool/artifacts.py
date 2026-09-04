@@ -47,7 +47,7 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
     files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
     empty_schema = {"symbol": [], "run_id": [], "as_of": [], "status": [], "reason_codes": []}
-    options_evaluated = any(row.options_status.value != "NOT_EVALUATED"
+    options_evaluated = sum(row.options_status.value != "NOT_EVALUATED"
                             for row in result.ticker_results)
     option_rows = []
     for candidate in result.discovered_contracts:
@@ -78,7 +78,7 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
     report = (f"# PCS pool scan {result.snapshot.run_id}\n\n"
               f"Mode: `{result.snapshot.mode}`  \nAs of: `{result.snapshot.as_of}`  \n"
               f"Symbols: **{len(result.ticker_results)}**  \n\n"
-              f"OPTIONS_EVALUATED_COUNT: **{int(options_evaluated)}**  \n"
+              f"OPTIONS_EVALUATED_COUNT: **{options_evaluated}**  \n"
               f"OPTIONS_DISCOVERED_TICKER_COUNT: **{sum(bool(row.discovered_contracts) for row in result.ticker_results)}**  \n"
               f"DISCOVERED_SPREAD_COUNT: **{len(result.discovered_contracts)}**  \n\n"
               "Stage-B contract discovery is evidence only; Stage-C selection and "

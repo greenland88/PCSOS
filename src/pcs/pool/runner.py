@@ -148,6 +148,7 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
     """Prepare one daily dependency through the canonical control plane."""
     req = _daily_requirements(symbol, effective_daily_session)
     try:
+        adopted = _adopt_existing_daily_canonical(symbol, access)
         result = ensure_market_data(symbol, req, access=access)
         status = str(getattr(result, "status", ""))
         reasons = tuple(getattr(result, "reason_codes", ()) or ())
@@ -155,7 +156,7 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
                 "result_status": status, "reason_codes": reasons,
                 "provider_calls": 0,
                 "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
-                "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ())}
+                "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()) + adopted}
     except Exception as exc:
         return {"symbol": str(symbol).upper(), "attempted": True, "result": None,
                 "result_status": "FAILED", "reason_codes": (str(exc).strip() or type(exc).__name__,),
@@ -238,29 +239,38 @@ def _audit_verified_daily(states, symbols, access, effective_daily_session, reso
     return states
 
 
-def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> None:
+def _adopt_existing_daily_canonical(symbol: str, access: PCSDataAccess) -> int:
     """Adopt only the exact complete canonical rows for one ticker."""
     from pcs.data.canonical_generations import adopt_legacy_canonical_generation
     manifest = access._read_manifest(access.manifest_path)
+    if manifest.empty or not {"dataset", "symbol", "active_generation"}.issubset(manifest.columns):
+        return 0
     rows = manifest[(manifest.dataset.astype(str) == "daily") &
                     manifest.symbol.astype(str).str.upper().eq(str(symbol).upper())]
     if rows.empty:
-        return
+        return 0
     # Adopt only rows without an active pointer.  A symbol may already have
     # one active generation for a later, non-overlapping partition; its older
     # canonical partition is still needed for warmup and may be adopted.
     rows = rows[rows.active_generation.isna() |
                 rows.active_generation.astype(str).str.strip().isin(("", "nan"))]
+    adopted = 0
     for _, row in rows.iterrows():
         path = str(row.get("parquet_path") or "").strip()
         if not path:
-            return
+            continue
         import hashlib
         from pathlib import Path
         file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        recorded_hash = row.get("file_hash")
+        if recorded_hash is not None and not pd.isna(recorded_hash) and str(recorded_hash).strip() not in ("", "nan"):
+            if str(recorded_hash).strip() != file_hash:
+                raise ValueError("LEGACY_FILE_HASH_MISMATCH")
         adopt_legacy_canonical_generation(dataset="daily", symbol=symbol,
             legacy_manifest=row.to_dict(), expected_file_hash=file_hash,
             adoption_reason="AUTO_ADOPT_EXISTING_CANONICAL", data_access=access)
+        adopted += 1
+    return adopted
 
 
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,

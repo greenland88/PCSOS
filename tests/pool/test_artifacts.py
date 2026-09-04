@@ -55,3 +55,19 @@ def test_discovered_contracts_are_persisted_without_reconstruction(tmp_path: Pat
     report = (root / "human_report.md").read_text()
     assert "DISCOVERED_SPREAD_COUNT: **1**" in report
     assert "Options, event, and portfolio stages are not implemented" not in report
+
+
+def test_options_evaluated_count_counts_tickers_not_boolean(tmp_path: Path):
+    snap = PoolRunSnapshot("run3", "2025-01-01", "EOD", "2024-12-31", "u1")
+    rows = (
+        TickerScanResult("AAA", "run3", snap.as_of, EligibilityStatus.PCS_ELIGIBLE,
+                         options_status=OptionsStatus.DISCOVERED),
+        TickerScanResult("BBB", "run3", snap.as_of, EligibilityStatus.PCS_ELIGIBLE,
+                         options_status=OptionsStatus.REJECT),
+        TickerScanResult("CCC", "run3", snap.as_of, EligibilityStatus.PCS_ELIGIBLE),
+    )
+    root = persist_pool_artifacts(PoolScanResult(snap, rows, {}), tmp_path)
+    report = (root / "human_report.md").read_text()
+    manifest = json.loads((root / "run_manifest.json").read_text())
+    assert "OPTIONS_EVALUATED_COUNT: **2**" in report
+    assert manifest["stage_status"]["OPTIONS_SHORTLIST"] == "COMPLETE"

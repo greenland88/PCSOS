@@ -386,16 +386,41 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
             if left["_lo"] <= right["_hi"] and right["_lo"] <= left["_hi"]:
                 left_gid, right_gid = str(left.active_generation), str(right.active_generation)
                 raise ValueError("ACTIVE_GENERATION_OVERLAP_CONFLICT")
-    candidates = rows[pd.to_datetime(rows.min_date, errors="coerce").le(day)].sort_values("min_date")
+    candidates = rows[pd.to_datetime(rows.min_date, errors="coerce").le(day)].sort_values(
+        ["min_date", "max_date", "active_generation"], ascending=[False, False, False]
+    )
     if len(candidates) == 0 or not pd.to_datetime(candidates.max_date, errors="coerce").ge(day).any():
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
     required = ["active_generation", "content_hash", "row_count", "min_date", "max_date", "schema_version", "parquet_path", "partition_ids"]
     if any(pd.isna(row.get(k)) or not str(row.get(k)).strip() for _, row in candidates.iterrows() for k in required):
         raise ValueError("DATASET_PROVENANCE_INCOMPLETE")
-    partitions = tuple(str(row.partition_ids) for _, row in candidates.iterrows())
-    generations = tuple(str(row.active_generation) for _, row in candidates.iterrows())
-    paths = tuple(str(row.parquet_path) for _, row in candidates.iterrows())
-    frame = pd.concat([access.read_pinned_generation("daily", s, p, g) for p, g in zip(partitions, generations)], ignore_index=True)
+    selected = []
+    selected_dates = set()
+    reaches_as_of = False
+    for _, row in candidates.iterrows():
+        partition = str(row.partition_ids)
+        generation = str(row.active_generation)
+        part_frame = access.read_pinned_generation("daily", s, partition, generation)
+        if "date" not in part_frame.columns:
+            raise ValueError("DAILY_SCHEMA_INCOMPLETE")
+        part_dates = pd.to_datetime(part_frame["date"], errors="coerce").dt.normalize()
+        if part_dates.isna().any() or part_dates.duplicated().any():
+            raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
+        if part_dates.min() < pd.Timestamp(row.min_date).normalize() or part_dates.max() > pd.Timestamp(row.max_date).normalize():
+            raise ValueError("DAILY_DATE_IDENTITY_MISMATCH")
+        selected.append((row, part_frame))
+        selected_dates.update(part_dates[part_dates <= day].tolist())
+        reaches_as_of = reaches_as_of or part_dates.max() >= day
+        if reaches_as_of and len(selected_dates) >= int(required_warmup_sessions):
+            break
+    if not reaches_as_of or len(selected_dates) < int(required_warmup_sessions):
+        raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
+    selected.sort(key=lambda item: (pd.Timestamp(item[0].min_date), str(item[0].active_generation)))
+    candidates = pd.DataFrame([row for row, _ in selected])
+    partitions = tuple(str(row.partition_ids) for row, _ in selected)
+    generations = tuple(str(row.active_generation) for row, _ in selected)
+    paths = tuple(str(row.parquet_path) for row, _ in selected)
+    frame = pd.concat([part_frame for _, part_frame in selected], ignore_index=True)
     if "symbol" not in frame.columns:
         frame.insert(0, "symbol", s)
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
