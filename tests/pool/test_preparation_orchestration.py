@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 
 import pcs.pool.runner as runner
 from pcs.pool.models import EligibilityStatus
@@ -207,6 +208,27 @@ def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
     assert result["status"] == "MIGRATED_CANONICAL_INVALID"
     assert result["reason_codes"] == ("MIGRATED_CANONICAL_OHLCV_INVALID",)
     assert not list((path.parent / "generations").glob("*.parquet"))
+
+
+def test_concurrent_migrated_admission_preserves_all_manifest_rows(tmp_path):
+    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    catalog = []
+    for symbol in ("AAA", "BBB"):
+        frame = _frame().assign(symbol=symbol)
+        path = access.parquet_root / "daily" / f"symbol={symbol}" / "year=2025" / f"{symbol}_2025.parquet"
+        path.parent.mkdir(parents=True)
+        frame.to_parquet(path, index=False)
+        catalog.append({"symbol": symbol, "status": "SUCCESS"})
+    pd.DataFrame(catalog).to_csv(tmp_path / "migration.csv", index=False)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda symbol: admit_migrated_daily_symbol(
+            symbol, decision_as_of="2025-09-17", data_access=access,
+            migration_manifest_path=tmp_path / "migration.csv"), ("AAA", "BBB")))
+    assert {result["status"] for result in results} == {"ADMITTED_READY"}
+    manifest = pd.read_csv(access.manifest_path)
+    assert set(manifest.symbol) == {"AAA", "BBB"}
+    assert all(resolve_active_verified_daily_handle(symbol, "2025-09-17", 200, data_access=access)
+               for symbol in ("AAA", "BBB"))
 
 
 def test_quarterly_warmup_uses_cumulative_active_rows(tmp_path):
