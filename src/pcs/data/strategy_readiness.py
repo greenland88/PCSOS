@@ -423,6 +423,8 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     frame = pd.concat([part_frame for _, part_frame in selected], ignore_index=True)
     if "symbol" not in frame.columns:
         frame.insert(0, "symbol", s)
+    else:
+        frame["symbol"] = frame["symbol"].fillna(s).astype(str).replace({"": s, "nan": s})
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     pit_rows = int(frame.loc[frame["date"] <= day, "date"].nunique())
