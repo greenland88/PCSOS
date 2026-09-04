@@ -117,25 +117,30 @@ def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="dat
     return ("UPDATED" if changed else "NO_OP", changed, latest)
 
 
-def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", source_version="incremental") -> tuple[str, list[str], str | None]:
+def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", source_version="incremental", physical_dataset=None) -> tuple[str, list[str], str | None]:
     symbol = symbol.upper()
     incoming = incoming.copy()
     if "symbol" not in incoming:
         incoming["symbol"] = symbol
     incoming["symbol"] = incoming["symbol"].astype(str).str.upper()
     access = PCSDataAccess(manifest_path=manifest_path, parquet_root=parquet_root)
-    try:
-        resolved = access.resolve_source("options", symbol)
-        physical_dataset = resolved.dataset
-    except DataAccessError:
-        # A new isolated onboarding store has no manifest row yet. Reserve
-        # the canonical v2 physical layout and let the first atomic write
-        # establish its validated manifest identity; production logical
-        # routes remain fail-closed in PCSDataAccess.
-        if Path(manifest_path) != Path("data/manifests/storage_manifest.csv"):
-            physical_dataset = "options_v2"
-        else:
-            raise
+    if physical_dataset is None:
+        try:
+            physical_dataset, routed_manifest, routed_root = access._resolve_route("options", symbol)
+            if access.routing_mode == "isolated" and access._read_manifest(access.manifest_path).empty:
+                physical_dataset = None
+        except DataAccessError:
+            physical_dataset = None
+        if physical_dataset is None:
+            if Path(manifest_path) != Path("data/manifests/storage_manifest.csv"):
+                physical_dataset = "options_v2"
+                routed_manifest, routed_root = Path(manifest_path), Path(parquet_root)
+            else:
+                raise
+    else:
+        routed_manifest, routed_root = Path(manifest_path), Path(parquet_root)
+    access = PCSDataAccess.isolated(manifest_path=routed_manifest, parquet_root=routed_root, source_routes=access.source_routes)
+    parquet_root = routed_root
     incoming = access.validate_schema(incoming, "options")
     if set(incoming.symbol) - {symbol}:
         raise DataQualityError(f"ticker isolation failure for {symbol}")
@@ -157,14 +162,14 @@ def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="d
     return ("UPDATED" if changed else "NO_OP", changed, latest)
 
 
-def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest.csv", source_version="incremental") -> dict[str, Any]:
+def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest.csv", source_version="incremental", physical_dataset=None) -> dict[str, Any]:
     result = UpdateResult(symbol=symbol.upper(), as_of=datetime.now(timezone.utc).isoformat(), data_timestamp=datetime.now(timezone.utc).isoformat())
     try:
         if daily_frame is not None:
             result.daily_update, parts, result.latest_daily_date = update_daily_frame(symbol, daily_frame, parquet_root=parquet_root, manifest_path=manifest_path, source_version=source_version)
             result.affected_partitions.extend(parts)
         if options_frame is not None:
-            result.options_update, parts, result.latest_options_date = update_options_frame(symbol, options_frame, parquet_root=parquet_root, manifest_path=options_manifest_path, source_version=source_version)
+            result.options_update, parts, result.latest_options_date = update_options_frame(symbol, options_frame, parquet_root=parquet_root, manifest_path=options_manifest_path, source_version=source_version, physical_dataset=physical_dataset)
             result.affected_partitions.extend(parts)
         result.current_data_asof = max([x for x in (result.latest_daily_date, result.latest_options_date) if x], default=None)
         result.current_route = "options" if options_frame is not None else "daily"

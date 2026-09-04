@@ -91,8 +91,9 @@ def execute_covered_call_request(symbol: str, mode: str = "eod", *,
                             for p in handle.underlying_handle.partitions]
             option_frames = [access.read_pinned_generation(handle.options_handle.dataset,
                                                             handle.options_handle.ticker,
-                                                            p, handle.options_handle.generation_id)
-                             for p in handle.options_handle.partitions]
+                                                            p, handle.options_handle.generation_id,
+                                                            manifest_identity=handle.options_handle.manifest_identity)
+                            for p in handle.options_handle.partitions]
             pinned_daily = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
             pinned_options = pd.concat(option_frames, ignore_index=True) if option_frames else pd.DataFrame()
         except Exception as exc:

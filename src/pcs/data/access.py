@@ -9,6 +9,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import csv
+import copy
 import os
 import uuid
 import json
@@ -34,6 +35,9 @@ class PromotionReceipt:
     partition_ids: tuple[str, ...] = ()
     dataset_fingerprint: str = ""
     snapshot_descriptor: dict[str, Any] | None = None
+    logical_dataset: str = ""
+    manifest_identity: str = ""
+    parquet_root_identity: str = ""
     @property
     def promoted_generation_id(self) -> str:
         return self.generation_id
@@ -61,6 +65,9 @@ class PromotionReceipt:
             "path": self.path,
             "dataset_fingerprint": self.dataset_fingerprint,
             "snapshot_descriptor": self.snapshot_descriptor,
+            "logical_dataset": self.logical_dataset or self.dataset,
+            "manifest_identity": self.manifest_identity,
+            "parquet_root_identity": self.parquet_root_identity,
         }
     def __fspath__(self): return self.path
     def __str__(self): return self.path
@@ -210,6 +217,21 @@ class PCSDataAccess:
         kwargs["manifest_path"] = manifest_path
         kwargs["routing_mode"] = "isolated"
         return cls(**kwargs)
+
+    @staticmethod
+    def normalized_path_identity(path) -> str:
+        return str(Path(path).resolve())
+
+    def route_bound_access(self, dataset: str, symbol: str):
+        """Return the isolated access boundary for one resolved route."""
+        physical, manifest, root = self._resolve_route(dataset, symbol)
+        bound = copy.copy(self)
+        bound.routing_mode = "isolated"
+        bound.manifest_path = Path(manifest)
+        bound.provenance_manifest_path = bound.manifest_path.with_name("data_provenance_manifest.csv")
+        bound.parquet_root = Path(root)
+        bound._manifest = bound._read_manifest(bound.manifest_path)
+        return bound, physical, manifest, root
 
     def get_price_basis(self, dataset: str, symbol: str) -> dict[str, Any]:
         """Return explicit basis metadata; absent metadata is UNKNOWN."""
@@ -948,12 +970,16 @@ class PCSDataAccess:
             raise DataCorrectnessError("GENERATION_NOT_VERIFIED")
         if not getattr(handle, "dataset_fingerprint", "") or not getattr(handle, "checksum", ""):
             raise DataCorrectnessError("DATASET_FINGERPRINT_MISMATCH")
+        manifest_identity = str(getattr(handle, "manifest_identity", "") or "")
+        if str(handle.dataset).lower().startswith("options") and not manifest_identity:
+            raise DataAccessError("ROUTED_MANIFEST_IDENTITY_MISSING")
         generation_ids = str(handle.generation_id).split("|")
         if len(generation_ids) not in {1, len(handle.partitions)}:
             raise DataCorrectnessError("UNPINNED_INPUT")
         if len(generation_ids) == 1:
             generation_ids = generation_ids * len(handle.partitions)
-        frames = [self.read_pinned_generation(handle.dataset, handle.ticker, partition, generation)
+        frames = [self.read_pinned_generation(handle.dataset, handle.ticker, partition, generation,
+                                              manifest_identity=manifest_identity or None)
                   for partition, generation in zip(handle.partitions, generation_ids)]
         if not frames:
             raise DataCorrectnessError("UNPINNED_INPUT")
@@ -1084,7 +1110,8 @@ class PCSDataAccess:
     def write_partition(self, frame, dataset, symbol, partition, *, source_version, allow_overwrite=False, update_manifest=True, filename=None, replace_manifest=False):
         return self.write(frame, dataset, symbol, partition, source_version=source_version, allow_overwrite=allow_overwrite, update_manifest=update_manifest, filename=filename, replace_manifest=replace_manifest)
 
-    def promote_generation(self, frame, dataset, symbol, partition, *, source_version):
+    def promote_generation(self, frame, dataset, symbol, partition, *, source_version,
+                           logical_dataset=None):
         """Publish an immutable generation for a mutable logical partition.
 
         Existing active data is merged by the canonical option identity. The
@@ -1167,13 +1194,18 @@ class PCSDataAccess:
             manifest_active_generation_id=generation,
             source_lineage=({"source": source_version, "partition": str(partition)},),
             created_at=created_at, partition_ids=(str(partition),),
-            dataset_fingerprint=dataset_fingerprint, snapshot_descriptor=descriptor)
+            dataset_fingerprint=dataset_fingerprint, snapshot_descriptor=descriptor,
+            logical_dataset=str(logical_dataset or dataset),
+            manifest_identity=self.normalized_path_identity(self.manifest_path),
+            parquet_root_identity=self.normalized_path_identity(self.parquet_root))
 
     def read_pinned_generation(self, dataset: str, symbol: str, partition: str,
-                               generation_id: str) -> pd.DataFrame:
+                               generation_id: str, *, manifest_path=None,
+                               manifest_identity=None) -> pd.DataFrame:
         """Read only the manifest-active immutable generation."""
         if not generation_id: raise DataAccessError("GENERATION_REQUIRED")
-        manifest=self._read_manifest(self.manifest_path)
+        selected_manifest = manifest_identity or manifest_path or self.manifest_path
+        manifest=self._read_manifest(Path(selected_manifest))
         parts=dict(x.split("=",1) for x in str(partition).split("/") if "=" in x)
         mask=(manifest.get("dataset",pd.Series(dtype=str)).astype(str).eq(str(dataset)) &
               manifest.get("symbol",pd.Series(dtype=str)).astype(str).str.upper().eq(self._symbol(symbol)) &
@@ -1189,9 +1221,11 @@ class PCSDataAccess:
         if len(frame) != int(row.row_count) or self.semantic_content_hash(frame) != str(row.content_hash): raise DataAccessError("READ_BACK_CHECKSUM_MISMATCH")
         return frame
 
-    def active_generation_record(self, dataset: str, symbol: str, partition: str) -> dict[str, Any]:
+    def active_generation_record(self, dataset: str, symbol: str, partition: str, *, manifest_path=None,
+                                 manifest_identity=None) -> dict[str, Any]:
         """Return the physically persisted active manifest record."""
-        manifest=self._read_manifest(self.manifest_path)
+        selected_manifest = manifest_identity or manifest_path or self.manifest_path
+        manifest=self._read_manifest(Path(selected_manifest))
         parts=dict(x.split("=",1) for x in str(partition).split("/") if "=" in x)
         mask=(manifest.get("dataset",pd.Series(dtype=str)).astype(str).eq(str(dataset)) &
               manifest.get("symbol",pd.Series(dtype=str)).astype(str).str.upper().eq(self._symbol(symbol)) &

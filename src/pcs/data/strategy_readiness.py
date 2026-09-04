@@ -444,7 +444,9 @@ def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_acce
         raise ValueError("DATASET_PROVENANCE_INCOMPLETE")
     partition = "/".join([f"year={int(row.year)}"] + ([f"quarter={int(row.quarter)}"] if pd.notna(row.get("quarter")) else []))
     dataset = str(row.dataset)
-    frame = access.read_pinned_generation(dataset, s, partition, str(row.active_generation))
+    manifest_identity = access.normalized_path_identity(routed_manifest)
+    frame = access.read_pinned_generation(dataset, s, partition, str(row.active_generation),
+                                          manifest_identity=manifest_identity)
     if len(frame) != int(row.row_count): raise ValueError("READ_BACK_ROW_COUNT_MISMATCH")
     if str(access.semantic_content_hash(frame)) != str(row.content_hash): raise ValueError("DATASET_CHECKSUM_MISMATCH")
     required_columns = {"symbol", "trade_date", "expiration_date", "call_put", "strike"}
@@ -459,6 +461,8 @@ def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_acce
         raise ValueError("DATASET_FINGERPRINT_MISSING")
     return VerifiedDatasetHandle(dataset, s, str(row.active_generation), (partition,), str(row.content_hash), int(row.row_count), (str(row.parquet_path),),
         {"min_date": str(row.min_date), "max_date": str(row.max_date)},
-        ({"source": str(row.source), "partition": partition},), dataset_fingerprint=fingerprint,
+        ({"source": str(row.source), "partition": partition},),
+        dataset_fingerprint=fingerprint,
+        manifest_identity=manifest_identity,
         schema_version=str(row.schema_version), price_basis="canonical_adjusted", corporate_action_version="canonical_identity",
         min_date=str(row.min_date), max_date=str(row.max_date), partition_count=1)

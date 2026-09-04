@@ -1,6 +1,7 @@
 """Unified market-data import control plane over canonical PCSDataAccess."""
 from __future__ import annotations
 import uuid
+import copy
 import hashlib
 import json
 import shutil
@@ -232,39 +233,58 @@ class ImportEngine:
         self.catalog = catalog or CanonicalDataCatalog()
         self.ledger = ledger or RequestLedger()
 
+    def _bound_access(self, staged: dict[str, Any]) -> PCSDataAccess:
+        bound = copy.copy(self.access)
+        bound.routing_mode = "isolated"
+        bound.manifest_path = Path(staged["manifest_path"])
+        bound.provenance_manifest_path = bound.manifest_path.with_name("data_provenance_manifest.csv")
+        bound.parquet_root = Path(staged["parquet_root"])
+        bound._manifest = bound._read_manifest(bound.manifest_path)
+        return bound
+
     def stage(self, frame: pd.DataFrame, *, symbol: str, dataset: str, partition: str, source_id: str, request_id: str | None = None):
         rid = request_id or uuid.uuid4().hex
         symbol = str(symbol).strip().upper()
         if frame is None or frame.empty:
             raise DataAccessError("STAGE_EMPTY_PAYLOAD")
+        logical_dataset = str(dataset)
+        route_access, physical_dataset, manifest_path, parquet_root = self.access.route_bound_access(logical_dataset, symbol)
         checked = frame.copy()
         if "symbol" not in checked.columns or set(checked["symbol"].astype(str).str.upper()) != {symbol}:
             raise DataAccessError("TICKER_ISOLATION_FAILED")
-        checked = self.access.validate_schema(checked, dataset)
-        target = self.staging_root / rid / symbol.upper() / dataset / partition
+        checked = self.access.validate_schema(checked, physical_dataset)
+        target = self.staging_root / rid / symbol.upper() / physical_dataset / partition
         target.mkdir(parents=True, exist_ok=True)
         path = target / "payload.parquet"
         checked.to_parquet(path, index=False)
         verify = pd.read_parquet(path)
         if len(verify) != len(checked): raise DataAccessError("STAGE_ROW_COUNT_MISMATCH")
-        return {"status": "STAGED", "path": str(path), "symbol": symbol, "dataset": dataset, "partition": partition, "source_id": source_id, "request_id": rid, "row_count": len(checked)}
+        return {"status": "STAGED", "path": str(path), "symbol": symbol,
+                "dataset": physical_dataset, "logical_dataset": logical_dataset,
+                "physical_dataset": physical_dataset,
+                "manifest_path": str(manifest_path), "parquet_root": str(parquet_root),
+                "source_routes": self.access.source_routes,
+                "partition": partition, "source_id": source_id,
+                "request_id": rid, "row_count": len(checked)}
 
     def promote(self, staged: dict[str, Any], *, source_version: str):
         path = Path(staged["path"]); frame = pd.read_parquet(path)
+        route_access = self._bound_access(staged)
         written = None
-        metadata_files = [Path(self.access.manifest_path), Path(self.access.provenance_manifest_path), Path(self.catalog.path), Path(self.ledger.path)]
+        metadata_files = [Path(route_access.manifest_path), Path(route_access.provenance_manifest_path), Path(self.catalog.path), Path(self.ledger.path)]
         snapshots = {}
         for target in metadata_files:
             snapshots[target] = target.read_bytes() if target.exists() else None
         try:
-            written = self.access.promote_generation(frame, staged["dataset"], staged["symbol"], staged["partition"], source_version=source_version)
-            self.access.record_provenance({"dataset": staged["dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(frame), "status": "PROMOTED"})
-            self.catalog.rebuild(self.access)
+            written = route_access.promote_generation(frame, staged["physical_dataset"], staged["symbol"], staged["partition"], source_version=source_version, logical_dataset=staged["logical_dataset"])
+            self._assert_route_identity(staged, written, route_access)
+            route_access.record_provenance({"dataset": staged["physical_dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(frame), "status": "PROMOTED"})
+            self.catalog.rebuild(route_access)
             self.ledger.record(request_id=staged["request_id"], source_id=staged["source_id"], symbol=staged["symbol"], dataset=staged["dataset"], shard=staged["partition"], physical_row_count=len(frame), status="API_COMPLETE", completed_at=datetime.now(timezone.utc).isoformat())
             receipt = written
             receipt_payload = receipt.__dict__.copy() if hasattr(receipt, "__dict__") else None
             if receipt_payload is not None:
-                active = self.access.active_generation_record(staged["dataset"], staged["symbol"], staged["partition"])
+                active = route_access.active_generation_record(staged["physical_dataset"], staged["symbol"], staged["partition"], manifest_identity=route_access.normalized_path_identity(staged["manifest_path"]))
                 receipt_payload["manifest_active_generation_id"] = str(active.get("active_generation") or "")
                 receipt_payload["manifest_content_hash"] = str(active.get("content_hash") or "")
                 receipt_payload["manifest_row_count"] = int(active.get("row_count") or 0)
@@ -280,13 +300,13 @@ class ImportEngine:
             # only when semantic content is byte-independent and identical;
             # never overwrite an existing trusted partition.
             if isinstance(exc, FileExistsError):
-                target = self.access.parquet_root / staged["dataset"] / f"symbol={staged['symbol']}" / staged["partition"] / f"{staged['symbol']}_{staged['partition'].replace('=', '_').replace('/', '_')}.parquet"
+                target = route_access.parquet_root / staged["physical_dataset"] / f"symbol={staged['symbol']}" / staged["partition"] / f"{staged['symbol']}_{staged['partition'].replace('=', '_').replace('/', '_')}.parquet"
                 try:
                     existing = pd.read_parquet(target)
-                    if self.access.semantic_content_hash(existing) == self.access.semantic_content_hash(frame):
-                        self.access.update_manifest(staged["dataset"], staged["symbol"], existing, target, source_version, staged["partition"], replace_existing=True)
-                        self.access.record_provenance({"dataset": staged["dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(existing), "status": "PROMOTED"})
-                        self.catalog.rebuild(self.access)
+                    if route_access.semantic_content_hash(existing) == route_access.semantic_content_hash(frame):
+                        route_access.update_manifest(staged["physical_dataset"], staged["symbol"], existing, target, source_version, staged["partition"], replace_existing=True)
+                        route_access.record_provenance({"dataset": staged["physical_dataset"], "symbol": staged["symbol"], "partition": staged["partition"], "source_id": staged["source_id"], "source_version": source_version, "request_id": staged["request_id"], "row_count": len(existing), "status": "PROMOTED"})
+                        self.catalog.rebuild(route_access)
                         self.ledger.record(request_id=staged["request_id"], source_id=staged["source_id"], symbol=staged["symbol"], dataset=staged["dataset"], shard=staged["partition"], physical_row_count=len(existing), status="API_COMPLETE", completed_at=datetime.now(timezone.utc).isoformat())
                         return {"status": "IMPORTED", "path": str(target), "request_id": staged["request_id"], "reason_codes": ["EXACT_CANONICAL_PARTITION_METADATA_RECONCILED"]}
                 except Exception:
@@ -311,16 +331,39 @@ class ImportEngine:
             if path.exists(): path.replace(quarantine.with_suffix(".parquet"))
             return {"status": "QUARANTINED", "reason_codes": [type(exc).__name__], "detail": str(exc), "request_id": staged["request_id"]}
 
+    @staticmethod
+    def _assert_route_identity(staged, receipt, route_access):
+        expected_root = (Path(staged["parquet_root"]) / staged["physical_dataset"] / f"symbol={staged['symbol']}").resolve()
+        try:
+            Path(receipt.path).resolve().relative_to(expected_root)
+        except ValueError as exc:
+            raise DataAccessError("CANONICAL_ROUTE_IDENTITY_MISMATCH") from exc
+        active = route_access.active_generation_record(
+            staged["physical_dataset"], staged["symbol"], staged["partition"],
+            manifest_identity=route_access.normalized_path_identity(staged["manifest_path"]),
+        )
+        if (receipt.dataset != staged["physical_dataset"] or
+                receipt.logical_dataset != staged["logical_dataset"] or
+                receipt.manifest_identity != route_access.normalized_path_identity(staged["manifest_path"]) or
+                receipt.parquet_root_identity != route_access.normalized_path_identity(staged["parquet_root"]) or
+                str(active.get("dataset")) != staged["physical_dataset"] or
+                route_access.normalized_path_identity(staged["manifest_path"]) != route_access.normalized_path_identity(route_access.manifest_path)):
+            raise DataAccessError("CANONICAL_ROUTE_IDENTITY_MISMATCH")
+
     def promote_batch(self, staged: list[dict[str, Any]], *, source_version: str):
         """Promote a set of partitions as one recoverable transaction."""
         if not staged:
             return []
         symbol = str(staged[0]["symbol"]).upper()
-        dataset = str(staged[0]["dataset"])
-        if any(str(item["symbol"]).upper() != symbol or str(item["dataset"]) != dataset for item in staged):
+        dataset = str(staged[0]["physical_dataset"])
+        identity = tuple(staged[0].get(key) for key in ("logical_dataset", "physical_dataset", "manifest_path", "parquet_root"))
+        if any((str(item["symbol"]).upper() != symbol or
+                tuple(item.get(key) for key in ("logical_dataset", "physical_dataset", "manifest_path", "parquet_root")) != identity)
+               for item in staged):
             return [{"status": "QUARANTINED", "reason_codes": ["BATCH_TICKER_OR_DATASET_MISMATCH"]}]
-        canonical_root = Path(self.access.parquet_root) / dataset / f"symbol={symbol}"
-        files = [self.access.manifest_path, self.access.provenance_manifest_path,
+        route_access = self._bound_access(staged[0])
+        canonical_root = Path(staged[0]["parquet_root"]) / dataset / f"symbol={symbol}"
+        files = [route_access.manifest_path, route_access.provenance_manifest_path,
                  self.catalog.path, self.ledger.path]
         transaction_root = self.staging_root / ".transactions"
         transaction_root.mkdir(parents=True, exist_ok=True)
@@ -966,8 +1009,10 @@ class MarketDataControlPlane:
             missing = [k for k in expected_keys if k not in actual]
             if missing: raise DataAccessError(f"EXACT_OPTIONS_EXPECTED_KEYS_MISSING:{missing}")
         from .incremental_update import update_ticker
-        return update_ticker(symbol, options_frame=checked, parquet_root=str(self.access.parquet_root),
-                             options_manifest_path=str(self.access.manifest_path), source_version=source_version)
+        physical_dataset, routed_manifest, routed_root = self.access._resolve_route("options", symbol)
+        return update_ticker(symbol, options_frame=checked, parquet_root=str(routed_root),
+                             options_manifest_path=str(routed_manifest), source_version=source_version,
+                             physical_dataset=physical_dataset)
 
 def get_market_data_status(symbol_or_requirements, requirements=None, *, access=None): return MarketDataControlPlane(access).get_market_data_status(requirements or symbol_or_requirements, None if requirements is None else symbol_or_requirements)
 def ensure_market_data(symbol=None, requirements=None, *, access=None, importer=None): return MarketDataControlPlane(access).ensure_market_data(requirements or {}, importer, symbol)

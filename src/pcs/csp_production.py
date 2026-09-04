@@ -56,7 +56,8 @@ def execute_cash_secured_put_request(symbol: str, *, decision_as_of: str,
                         for partition in handle.underlying_handle.partitions]
         option_frames = [access.read_pinned_generation(handle.options_handle.dataset,
                                                         handle.options_handle.ticker,
-                                                        partition, handle.options_handle.generation_id)
+                                                        partition, handle.options_handle.generation_id,
+                                                        manifest_identity=handle.options_handle.manifest_identity)
                          for partition in handle.options_handle.partitions]
         pinned_daily = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
         pinned_options = pd.concat(option_frames, ignore_index=True) if option_frames else pd.DataFrame()
