@@ -77,8 +77,10 @@ def _daily_preflight(symbols, access, decision_date):
                 max_date = pd.to_datetime(active.max_date, errors="coerce").max()
                 reason = "DAILY_STALE" if pd.notna(max_date) and max_date < decision else "INSUFFICIENT_FEATURE_WARMUP"
                 index[s] = DailyReadiness("PREP_REQUIRED", (reason,)); continue
-            if "row_count" in covered and (pd.to_numeric(covered.row_count, errors="coerce") < 200).all():
-                index[s] = DailyReadiness("PREP_REQUIRED", ("INSUFFICIENT_FEATURE_WARMUP",)); continue
+            if "row_count" in covered:
+                counts = pd.to_numeric(covered.row_count, errors="coerce")
+                if counts.isna().any() or counts.sum() < 200:
+                    index[s] = DailyReadiness("PREP_REQUIRED", ("INSUFFICIENT_FEATURE_WARMUP",)); continue
             index[s] = DailyReadiness("READY")
         except Exception as exc:
             index[s] = DailyReadiness("HARD_BLOCKED", (str(exc).strip() or "DAILY_READINESS_UNAVAILABLE",))
@@ -387,6 +389,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     load_project_environment()
     if max_workers < 1:
         raise ValueError("max_workers must be positive")
+    if max_data_workers < 1:
+        raise ValueError("max_data_workers must be positive")
     if stage_timeout_seconds is not None and timeout_seconds is not None:
         raise ValueError("specify only one timeout")
     stage_timeout_seconds = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
