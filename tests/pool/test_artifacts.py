@@ -72,3 +72,24 @@ def test_options_evaluated_count_counts_tickers_not_boolean(tmp_path: Path):
     manifest = json.loads((root / "run_manifest.json").read_text())
     assert "OPTIONS_EVALUATED_COUNT: **2**" in report
     assert manifest["stage_status"]["OPTIONS_SHORTLIST"] == "COMPLETE"
+
+
+def test_artifacts_generate_identity_checked_reconciliation(tmp_path: Path):
+    first_snap = PoolRunSnapshot("run-first", "2025-01-01", "EOD", "2024-12-31", "u1",
+                                 effective_daily_session="2024-12-31")
+    first_row = TickerScanResult("AAA", "run-first", first_snap.as_of,
+                                 EligibilityStatus.DATA_BLOCKED,
+                                 initial_daily_readiness="PREP_REQUIRED")
+    persist_pool_artifacts(PoolScanResult(first_snap, (first_row,), {}), tmp_path)
+
+    second_snap = PoolRunSnapshot("run-second", "2025-01-02", "EOD", "2025-01-02", "u1",
+                                  effective_daily_session="2025-01-02")
+    second_row = TickerScanResult("AAA", "run-second", second_snap.as_of,
+                                  EligibilityStatus.PCS_ELIGIBLE,
+                                  initial_daily_readiness="READY")
+    root = persist_pool_artifacts(PoolScanResult(second_snap, (second_row,), {}), tmp_path)
+    reconciliation = json.loads((root / "reconciliation.json").read_text())
+    assert reconciliation["status"] == "COMPARED"
+    assert reconciliation["previous_run_id"] == "run-first"
+    assert reconciliation["comparable"] is False
+    assert reconciliation["daily_ready_added"] == ["AAA"]

@@ -39,8 +39,10 @@ readiness or promotion semantics.
 
 When an output directory is requested, the same fields are persisted in
 `preparation_recovery.json` and the run manifest records its recovery summary;
-this makes a later READ_ONLY comparison reproducible without reopening live
-provider objects.
+the artifact writer also creates `reconciliation.json` against the newest
+prior current run in that directory. Identity mismatches are explicitly marked
+non-comparable rather than attributed to recovery, and no live provider object
+is reopened.
 
 ## Runtime and result invariants
 

@@ -10,6 +10,29 @@ import pandas as pd
 from .models import PoolScanResult
 
 
+def _previous_pool_run(root: Path, current_run_id: str):
+    """Load the newest prior persisted run from this output directory."""
+    candidates = []
+    for manifest_path in root.glob("*/run_manifest.json"):
+        if manifest_path.parent.name == current_run_id:
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not manifest.get("current"):
+                continue
+            snapshot_path = manifest_path.parent / "universe_snapshot.json"
+            timing_path = manifest_path.parent / "daily_timing.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            ticker_results = json.loads(timing_path.read_text(encoding="utf-8"))
+            candidates.append((manifest_path.stat().st_mtime, manifest_path.parent.name,
+                               {"snapshot": snapshot, "ticker_results": ticker_results}))
+        except (OSError, ValueError, TypeError):
+            continue
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])
+
+
 def _write_atomic(path: Path, payload: str) -> str:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(payload, encoding="utf-8")
@@ -28,7 +51,8 @@ def _write_parquet_atomic(path: Path, rows) -> str:
 
 def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path) -> Path:
     """Write the U1 snapshot/results and manifest; later stages are explicit."""
-    root = Path(output_directory) / result.snapshot.run_id
+    output_root = Path(output_directory)
+    root = output_root / result.snapshot.run_id
     root.mkdir(parents=True, exist_ok=True)
     files: dict[str, str] = {}
     snapshot = json.dumps(asdict(result.snapshot), default=str, sort_keys=True, indent=2)
@@ -66,6 +90,20 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         default=str, sort_keys=True, indent=2)
     files["preparation_recovery.json"] = _write_atomic(
         root / "preparation_recovery.json", recovery_payload)
+    previous = _previous_pool_run(output_root, result.snapshot.run_id)
+    if previous is None:
+        reconciliation = {"status": "NO_COMPARABLE_PREVIOUS_RUN", "comparable": False}
+    else:
+        from .runner import reconcile_pool_scan_results
+        _, previous_run_id, before = previous
+        after = {"snapshot": asdict(result.snapshot),
+                 "ticker_results": [asdict(row) for row in result.ticker_results]}
+        reconciliation = {"status": "COMPARED", "previous_run_id": previous_run_id,
+                          **reconcile_pool_scan_results(before, after,
+                              result.preparation_results)}
+    files["reconciliation.json"] = _write_atomic(
+        root / "reconciliation.json", json.dumps(reconciliation, default=str,
+                                                   sort_keys=True, indent=2))
     transitions = []
     failures = []
     for row in result.ticker_results:
