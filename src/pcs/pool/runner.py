@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import Literal, Sequence
 import uuid
 import os
+import traceback
 from threading import RLock
 from pathlib import Path
 from math import isfinite
@@ -426,6 +427,13 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             pullback_gate_reasons=tuple(getattr(pullback_gate, "reasons", ()) or ()),
             warnings=tuple(timing_warnings))
     except Exception as exc:
+        trace_dir = os.getenv("PCS_POOL_SCAN_TRACEBACK_DIR")
+        if trace_dir:
+            target = Path(trace_dir)
+            target.mkdir(parents=True, exist_ok=True)
+            (target / f"{str(symbol).upper()}.traceback.txt").write_text(
+                f"symbol={str(symbol).upper()}\nstage=timing_or_options\nexception={type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+                encoding="utf-8")
         failure_code = str(exc).strip()
         reasons = (failure_code,) if failure_code in {
             "DATASET_CHECKSUM_MISMATCH", "DATASET_FINGERPRINT_MISMATCH",

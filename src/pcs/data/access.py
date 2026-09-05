@@ -422,9 +422,46 @@ class PCSDataAccess:
             if pd.api.types.is_datetime64_any_dtype(out[col]):
                 out[col] = out[col].map(lambda x: x.isoformat() if pd.notna(x) else None)
         if len(out):
-            out = out.sort_values(list(out.columns), kind="mergesort", na_position="first").reset_index(drop=True)
+            try:
+                # Preserve the established hash ordering for compatible
+                # canonical frames; this keeps existing generation checksums
+                # stable across releases.
+                out = out.sort_values(list(out.columns), kind="mergesort", na_position="first").reset_index(drop=True)
+            except TypeError:
+                # Mixed object columns (for example date and Timestamp) need
+                # deterministic surrogate keys. Values in the payload remain
+                # unchanged, so only ordering—not content identity—changes.
+                sort_keys = pd.DataFrame(index=out.index)
+                for col in out.columns:
+                    sort_keys[col] = out[col].map(
+                        lambda value: value.isoformat() if hasattr(value, "isoformat")
+                        else "" if pd.isna(value) else str(value))
+                out = out.loc[sort_keys.sort_values(list(out.columns), kind="mergesort", na_position="first").index]
+                out = out.reset_index(drop=True)
         payload = out.to_json(orient="records", date_format="iso", default_handler=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _surrogate_semantic_content_hash(cls, frame: pd.DataFrame) -> str:
+        """Compatibility hash for generations written from mixed object dates."""
+        volatile = {"created_at", "import_timestamp", "run_id", "request_id", "timestamp", "updated_at", "semantic_hash"}
+        out = frame.drop(columns=[c for c in frame.columns if c in volatile], errors="ignore").copy()
+        out = out.reindex(sorted(out.columns), axis=1)
+        for col in out.columns:
+            if pd.api.types.is_datetime64_any_dtype(out[col]):
+                out[col] = out[col].map(lambda x: x.isoformat() if pd.notna(x) else None)
+        if len(out):
+            sort_keys = pd.DataFrame(index=out.index)
+            for col in out.columns:
+                sort_keys[col] = out[col].map(lambda value: value.isoformat() if hasattr(value, "isoformat") else "" if pd.isna(value) else str(value))
+            out = out.loc[sort_keys.sort_values(list(out.columns), kind="mergesort", na_position="first").index].reset_index(drop=True)
+        return hashlib.sha256(out.to_json(orient="records", date_format="iso", default_handler=str).encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _semantic_hash_matches(cls, frame: pd.DataFrame, expected: str) -> bool:
+        expected = str(expected)
+        return (str(cls.semantic_content_hash(frame)) == expected or
+                str(cls._surrogate_semantic_content_hash(frame)) == expected)
 
     def resolve_source(self, dataset: str, symbol: str, start_date=None, end_date=None) -> SourceSpec:
         symbol = self._symbol(symbol)
@@ -1012,7 +1049,7 @@ class PCSDataAccess:
         if len(frame) != int(handle.row_count):
             raise DataCorrectnessError("DATASET_ROW_COUNT_MISMATCH")
         actual_checksum = self.semantic_content_hash(frame)
-        if str(actual_checksum) != str(handle.checksum):
+        if not self._semantic_hash_matches(frame, str(handle.checksum)):
             raise DataCorrectnessError("DATASET_CHECKSUM_MISMATCH")
         if str(handle.dataset).lower() == "daily":
             duplicate_key = ["date"] if "symbol" not in frame.columns else ["symbol", "date"]
@@ -1173,7 +1210,7 @@ class PCSDataAccess:
             try:
                 existing = pd.read_parquet(existing_path)
                 if (len(existing) == len(merged) and
-                        self.semantic_content_hash(existing) == digest):
+                        self._semantic_hash_matches(existing, digest)):
                     return existing_path
             except (OSError, ValueError, DataQualityError):
                 pass
@@ -1183,7 +1220,7 @@ class PCSDataAccess:
         if not path.exists():
             tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
             merged.to_parquet(tmp, index=False)
-            if self.semantic_content_hash(pd.read_parquet(tmp)) != digest:
+            if not self._semantic_hash_matches(pd.read_parquet(tmp), digest):
                 tmp.unlink(missing_ok=True); raise DataQualityError("GENERATION_HASH_VERIFICATION_FAILED")
             os.replace(tmp, path)
         from .canonical_generations import canonical_snapshot_descriptor
@@ -1210,7 +1247,7 @@ class PCSDataAccess:
             manifest_committed = True
             read_back = pd.read_parquet(path)
             read_back_checksum = self.semantic_content_hash(read_back)
-            if read_back_checksum != digest or len(read_back) != len(merged):
+            if not self._semantic_hash_matches(read_back, digest) or len(read_back) != len(merged):
                 raise DataQualityError("READ_BACK_CHECKSUM_OR_ROW_COUNT_MISMATCH")
         except Exception as exc:
             if manifest_committed:
@@ -1255,7 +1292,7 @@ class PCSDataAccess:
         path=Path(str(row.parquet_path))
         if not path.exists(): raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
         frame=pd.read_parquet(path)
-        if len(frame) != int(row.row_count) or self.semantic_content_hash(frame) != str(row.content_hash): raise DataAccessError("READ_BACK_CHECKSUM_MISMATCH")
+        if len(frame) != int(row.row_count) or not self._semantic_hash_matches(frame, str(row.content_hash)): raise DataAccessError("READ_BACK_CHECKSUM_MISMATCH")
         return frame
 
     def active_generation_record(self, dataset: str, symbol: str, partition: str, *, manifest_path=None,

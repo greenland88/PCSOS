@@ -432,7 +432,7 @@ def resolve_active_verified_options_handle(symbol: str, as_of: str, *, data_acce
     frame = access.read_pinned_generation(dataset, s, partition, str(row.active_generation),
                                           manifest_identity=manifest_identity)
     if len(frame) != int(row.row_count): raise ValueError("READ_BACK_ROW_COUNT_MISMATCH")
-    if str(access.semantic_content_hash(frame)) != str(row.content_hash): raise ValueError("DATASET_CHECKSUM_MISMATCH")
+    if not access._semantic_hash_matches(frame, str(row.content_hash)): raise ValueError("DATASET_CHECKSUM_MISMATCH")
     required_columns = {"symbol", "trade_date", "expiration_date", "call_put", "strike"}
     if not required_columns.issubset(frame.columns): raise ValueError("OPTIONS_SCHEMA_INCOMPLETE")
     frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce").dt.normalize()

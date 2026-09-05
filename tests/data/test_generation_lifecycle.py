@@ -101,6 +101,11 @@ def test_same_partition_expected_active_generation_blocks_lost_update(tmp_path):
         a.update_manifest("daily","ZZZ",newer,tmp_path/"candidate.parquet","fixture","year=2026",replace_existing=True,expected_active_generation="stale-generation",active_generation=digest[:24],content_hash=digest)
     assert pd.read_csv(tmp_path/"manifest.csv").iloc[0].active_generation==old.generation_id
 
+def test_semantic_hash_handles_mixed_date_object_values():
+    a=PCSDataAccess()
+    mixed=pd.DataFrame({"date":[pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-03").date()], "value":[1,2]})
+    assert a.semantic_content_hash(mixed)
+
 def test_promotion_invalidates_old_generation_cache(tmp_path):
     a=access(tmp_path); r1=a.promote_generation(frame(),"options","ZZZ","year=2026/quarter=1",source_version="a"); a.generation_cache.put("options","ZZZ","year=2026/quarter=1",r1.generation_id,"old"); r2=a.promote_generation(frame(bid=1.2),"options","ZZZ","year=2026/quarter=1",source_version="b")
     assert a.generation_cache.get("options","ZZZ","year=2026/quarter=1",r1.generation_id) is None and r1.generation_id!=r2.generation_id
