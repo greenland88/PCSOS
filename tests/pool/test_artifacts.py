@@ -93,3 +93,17 @@ def test_artifacts_generate_identity_checked_reconciliation(tmp_path: Path):
     assert reconciliation["previous_run_id"] == "run-first"
     assert reconciliation["comparable"] is False
     assert reconciliation["daily_ready_added"] == ["AAA"]
+
+
+def test_artifacts_ignore_tampered_history_and_accept_explicit_baseline(tmp_path: Path):
+    snap = PoolRunSnapshot("run-first", "2025-01-01", "EOD", "2024-12-31", "u1",
+                           effective_daily_session="2024-12-31")
+    row = TickerScanResult("AAA", "run-first", snap.as_of, EligibilityStatus.DATA_BLOCKED)
+    root = persist_pool_artifacts(PoolScanResult(snap, (row,), {}), tmp_path)
+    (root / "daily_timing.json").write_text("[]", encoding="utf-8")
+    snap2 = PoolRunSnapshot("run-second", "2025-01-02", "EOD", "2025-01-02", "u1",
+                            effective_daily_session="2025-01-02")
+    row2 = TickerScanResult("AAA", "run-second", snap2.as_of, EligibilityStatus.PCS_ELIGIBLE)
+    out = persist_pool_artifacts(PoolScanResult(snap2, (row2,), {}), tmp_path,
+                                 baseline_run_id="run-first")
+    assert json.loads((out / "reconciliation.json").read_text())["status"] == "BASELINE_NOT_FOUND"

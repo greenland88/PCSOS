@@ -275,8 +275,14 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
                      daily_handle_resolver=None, auto_prepare_data=True,
                      refresh_policy="INCREMENTAL_IF_NEEDED", runtime=None,
-                     options_prepare=None, options_enabled=None, mode="EOD"):
+                     options_prepare=None, options_enabled=None, mode="EOD",
+                     contract_selector=None, market_state_reader=None,
+                     portfolio_context_reader=None, event_calendar_reader=None):
     started = perf_counter()
+    selected_contract = None
+    selection_result = None
+    selection_reasons = ()
+    selection_identity = None
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
     if entry.status != EligibilityStatus.PCS_ELIGIBLE:
@@ -412,9 +418,41 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 contract_entry_date = option_day
                 candidates = discover_spreads(symbol, contract_entry_date, close, atr, chain,
                                               rules=option_rules)
-                options_status = OptionsStatus.DISCOVERED if candidates else OptionsStatus.REJECT
-                option_reasons = ("CONTRACT_CANDIDATES_DISCOVERED" if candidates
-                                  else "NO_STRUCTURALLY_VALID_PCS",)
+                selected_contract = None
+                selection_result = None
+                selection_reasons = ()
+                selection_identity = None
+                if candidates and contract_selector is None:
+                    options_status = OptionsStatus.DISCOVERED
+                    selection_reasons = ("CONTRACT_SELECTION_NOT_CONNECTED",)
+                elif candidates and contract_selector is not None:
+                    decisions = [contract_selector(
+                        candidate, symbol=symbol, feature_date=str(feature_date),
+                        market_state=(market_state_reader(symbol, daily, benchmark)
+                                      if market_state_reader is not None else None),
+                        portfolio=(portfolio_context_reader(symbol, candidate)
+                                   if portfolio_context_reader is not None else None),
+                        event_calendar=(event_calendar_reader(symbol, candidate)
+                                        if event_calendar_reader is not None else None))
+                                 for candidate in candidates]
+                    accepted = next((item for item in decisions
+                                     if str(item.get("status", "")).upper() == "PASS"), None)
+                    if accepted is None:
+                        options_status = OptionsStatus.REJECT
+                        selection_reasons = tuple(dict.fromkeys(
+                            code for item in decisions for code in item.get("reason_codes", ())
+                        )) or ("CONTRACT_SELECTION_REJECTED",)
+                    else:
+                        options_status = OptionsStatus.PASS
+                        selected_contract = accepted.get("contract") or accepted.get("selected_contract")
+                        selection_result = accepted
+                        selection_reasons = tuple(accepted.get("reason_codes", ()))
+                        selection_identity = accepted.get("data_identity")
+                else:
+                    options_status = OptionsStatus.REJECT
+                    selection_reasons = ("NO_STRUCTURALLY_VALID_PCS",)
+                option_reasons = tuple(dict.fromkeys(
+                    (("CONTRACT_CANDIDATES_DISCOVERED",) if candidates else ()) + selection_reasons))
                 discovered_contracts = tuple(_candidate_record(candidate) for candidate in candidates)
             except Exception as exc:
                 options_status = OptionsStatus.DATA_BLOCKED
@@ -425,6 +463,10 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             latency_ms=(perf_counter()-started)*1000,
             spread_count=len(candidates),
             discovered_contracts=discovered_contracts,
+            selected_contract=selected_contract,
+            selection_result=selection_result,
+            selection_reason_codes=selection_reasons,
+            selection_data_identity=selection_identity,
             structural_trend=getattr(engine, "structural_trend", None),
             short_term_phase=getattr(engine, "short_term_phase", None),
             trend_gate_reasons=tuple(getattr(trend_gate, "reasons", ()) or ()),
@@ -469,7 +511,17 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
     fields = ("effective_daily_session", "universe_snapshot_id", "mode", "manifest_snapshot_id",
               "code_revision", "engine_version", "profile_versions", "refresh_policy")
     identity = {f: (before.get("snapshot", {}).get(f), after.get("snapshot", {}).get(f)) for f in fields}
-    comparable = all(a is not None and b is not None and a == b for a, b in identity.values())
+    def valid(value):
+        if value is None or value == "" or value == {}:
+            return False
+        if isinstance(value, str) and value.strip().lower() in {"unknown", "none", "null"}:
+            return False
+        return True
+    observed_fields = tuple(f for f in fields if f != "manifest_snapshot_id")
+    observed_comparable = all(valid(identity[f][0]) and valid(identity[f][1]) and
+                              identity[f][0] == identity[f][1] for f in observed_fields)
+    comparable = observed_comparable and valid(identity["manifest_snapshot_id"][0]) and \
+        valid(identity["manifest_snapshot_id"][1]) and identity["manifest_snapshot_id"][0] == identity["manifest_snapshot_id"][1]
     keys = ("eligibility_status", "initial_daily_readiness", "timing_status", "options_status", "final_action")
     changed = []
     kept = []
@@ -501,7 +553,14 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
                             if key in nested:
                                 evidence[f"admission_{key}"] = nested[key]
                     recovery_by_symbol[symbol] = evidence
-    return {"comparable": comparable, "identity": identity, "added": sorted(set(right)-set(left)),
+    receipt_symbols = set(recovery_by_symbol)
+    attribution = {symbol: {"supported": bool(symbol in receipt_symbols and observed_comparable),
+                            "reason": "RECEIPT_AND_READ_IDENTITY" if symbol in receipt_symbols and observed_comparable
+                                      else "RECOVERY_RECEIPT_OR_IDENTITY_INCOMPLETE"}
+                   for symbol in sorted(set(left) | set(right)) if symbol in receipt_symbols}
+    return {"comparable": comparable, "observed_comparable": observed_comparable,
+            "attribution_supported": bool(attribution) and all(v["supported"] for v in attribution.values()),
+            "recovery_attribution": attribution, "identity": identity, "added": sorted(set(right)-set(left)),
             "removed": sorted(set(left)-set(right)), "ready_added": sorted(ready_right-ready_left),
             "ready_removed": sorted(ready_left-ready_right),
             "daily_ready_added": sorted(daily_right-daily_left),
@@ -610,10 +669,13 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  benchmark_symbol: str = "QQQ", options_reader=None,
                  option_rules=None, event_status_reader=None,
                  portfolio_status_reader=None, static_metadata_reader=None,
+                 contract_selector=None, market_state_reader=None,
+                 portfolio_context_reader=None, event_calendar_reader=None,
                  daily_handle_resolver=None, auto_prepare_data=False,
                  refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
                  max_scan_workers=None, stage_timeout_seconds: float | None = 60.0,
-                 timeout_seconds: float | None = None) -> PoolScanResult:
+                 timeout_seconds: float | None = None, baseline_run_id: str | None = None,
+                 recovery_run_id: str | None = None) -> PoolScanResult:
     """Scan pinned daily/options inputs; preparation requires explicit opt-in."""
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
@@ -787,7 +849,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             static_metadata_reader=static_metadata_reader,
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=False,
             refresh_policy=refresh_policy, options_prepare=None,
-            options_enabled=(options_reader is not None or options_resolver is not None), mode=mode),
+            options_enabled=(options_reader is not None or options_resolver is not None), mode=mode,
+            contract_selector=contract_selector, market_state_reader=market_state_reader,
+            portfolio_context_reader=portfolio_context_reader,
+            event_calendar_reader=event_calendar_reader),
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
     outcomes = scan.outcomes
@@ -897,7 +962,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                             recovery_summary=recovery_summary)
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
-        persist_pool_artifacts(result, output_directory)
+        persist_pool_artifacts(result, output_directory, baseline_run_id=baseline_run_id,
+                               recovery_run_id=recovery_run_id)
     return result
 
 

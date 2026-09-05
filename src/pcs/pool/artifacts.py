@@ -10,22 +10,52 @@ import pandas as pd
 from .models import PoolScanResult
 
 
-def _previous_pool_run(root: Path, current_run_id: str):
-    """Load the newest prior persisted run from this output directory."""
+def _load_pool_run(manifest_path: Path):
+    """Load a completed run only when its manifest and payload hashes agree."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("current") is not True or manifest.get("run_id") != manifest_path.parent.name:
+        return None
+    if manifest.get("stage_status", {}).get("DAILY_TIMING") != "COMPLETE":
+        return None
+    for name, expected in (manifest.get("artifact_hashes") or {}).items():
+        path = manifest_path.parent / name
+        if not path.exists():
+            return None
+        actual = sha256(path.read_bytes()).hexdigest()
+        # JSON hashes are payload hashes; parquet hashes are byte hashes.
+        if name.endswith(".json") or name.endswith(".jsonl"):
+            payload = path.read_text(encoding="utf-8")
+            actual = sha256(payload.encode("utf-8")).hexdigest()
+        if actual != expected:
+            return None
+    snapshot_path = manifest_path.parent / "universe_snapshot.json"
+    timing_path = manifest_path.parent / "daily_timing.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    if snapshot.get("run_id") != manifest.get("run_id"):
+        return None
+    ticker_results = json.loads(timing_path.read_text(encoding="utf-8"))
+    return {"snapshot": snapshot, "ticker_results": ticker_results}
+
+
+def _previous_pool_run(root: Path, current_run_id: str, *, baseline_run_id: str | None = None):
+    """Load an explicitly named baseline, or an untrusted observation candidate."""
+    if baseline_run_id:
+        path = root / baseline_run_id / "run_manifest.json"
+        try:
+            loaded = _load_pool_run(path)
+        except (OSError, ValueError, TypeError):
+            return None
+        return (0.0, baseline_run_id, loaded) if loaded is not None else None
     candidates = []
     for manifest_path in root.glob("*/run_manifest.json"):
         if manifest_path.parent.name == current_run_id:
             continue
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not manifest.get("current"):
+            loaded = _load_pool_run(manifest_path)
+            if loaded is None:
                 continue
-            snapshot_path = manifest_path.parent / "universe_snapshot.json"
-            timing_path = manifest_path.parent / "daily_timing.json"
-            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            ticker_results = json.loads(timing_path.read_text(encoding="utf-8"))
             candidates.append((manifest_path.stat().st_mtime, manifest_path.parent.name,
-                               {"snapshot": snapshot, "ticker_results": ticker_results}))
+                               loaded))
         except (OSError, ValueError, TypeError):
             continue
     if not candidates:
@@ -35,8 +65,11 @@ def _previous_pool_run(root: Path, current_run_id: str):
 
 def _write_atomic(path: Path, payload: str) -> str:
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(payload, encoding="utf-8")
-    digest = sha256(payload.encode("utf-8")).hexdigest()
+    # Write bytes so the digest is identical on Windows and POSIX (text mode
+    # newline translation would otherwise invalidate the recorded identity).
+    encoded = payload.encode("utf-8")
+    temporary.write_bytes(encoded)
+    digest = sha256(encoded).hexdigest()
     temporary.replace(path)
     return digest
 
@@ -49,7 +82,9 @@ def _write_parquet_atomic(path: Path, rows) -> str:
     return digest
 
 
-def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path) -> Path:
+def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
+                           *, baseline_run_id: str | None = None,
+                           recovery_run_id: str | None = None) -> Path:
     """Write the U1 snapshot/results and manifest; later stages are explicit."""
     output_root = Path(output_directory)
     root = output_root / result.snapshot.run_id
@@ -90,9 +125,11 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         default=str, sort_keys=True, indent=2)
     files["preparation_recovery.json"] = _write_atomic(
         root / "preparation_recovery.json", recovery_payload)
-    previous = _previous_pool_run(output_root, result.snapshot.run_id)
+    previous = _previous_pool_run(output_root, result.snapshot.run_id,
+                                  baseline_run_id=baseline_run_id)
     if previous is None:
-        reconciliation = {"status": "NO_COMPARABLE_PREVIOUS_RUN", "comparable": False}
+        reconciliation = {"status": "BASELINE_NOT_FOUND" if baseline_run_id else "NO_COMPARABLE_PREVIOUS_RUN",
+                          "comparable": False, "baseline_run_id": baseline_run_id}
     else:
         from .runner import reconcile_pool_scan_results
         _, previous_run_id, before = previous
@@ -100,7 +137,11 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
                  "ticker_results": [asdict(row) for row in result.ticker_results]}
         reconciliation = {"status": "COMPARED", "previous_run_id": previous_run_id,
                           **reconcile_pool_scan_results(before, after,
-                              result.preparation_results)}
+                              result.preparation_results),
+                          "baseline_run_id": baseline_run_id or previous_run_id,
+                          "recovery_run_id": recovery_run_id,
+                          "recovery_evidence_source": "CURRENT_PREPARATION_RESULTS" if result.preparation_results else
+                                                      ("EXPLICIT_RECOVERY_RUN" if recovery_run_id else "NONE")}
     files["reconciliation.json"] = _write_atomic(
         root / "reconciliation.json", json.dumps(reconciliation, default=str,
                                                    sort_keys=True, indent=2))

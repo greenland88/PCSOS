@@ -23,12 +23,24 @@ The canonical implementation is `pcs.pool.runner.run_pcs_pool`, exposed by the
   closed with the specific reason code. Never fall back to raw or unrelated data.
 - Required options coverage is `min_date <= decision_date <= max_date`.
 
-When comparing two runs, require matching effective session, universe snapshot,
-mode, manifest snapshot, code revision, engine version, profile versions, and
-refresh policy. Any missing or changed identity makes the comparison
-non-comparable; do not attribute deltas to recovery. Recovery evidence may be
-attached per symbol, including nested `admission_result` values, but READY
-counts must still come from the independent scan result.
+Stage-B discovery does not approve a contract. A caller that has the existing
+PCS selector/DecisionEngine and its complete market, event, and portfolio
+context may provide the explicit `contract_selector` adapter to
+`run_pcs_pool`; only an adapter result with `status=PASS` sets
+`options_status=PASS`. Selected contract identity, selector result, reason
+codes, and data identity are retained. Without that adapter, candidates remain
+`DISCOVERED` with `CONTRACT_SELECTION_NOT_CONNECTED`.
+
+Historical comparison validates the run manifest, completion state, payload
+hashes, run id, and non-empty/non-`unknown` identities. An explicit
+`baseline_run_id` is authoritative; timestamp-selected runs are observation
+only. Effective session, universe, mode, code, engine, profiles, and refresh
+policy determine observed comparability; a manifest/generation change is
+recorded separately and may be attributed to recovery only when a linked
+receipt and read identity support it. Missing receipts are incomplete history.
+Recovery evidence may be attached per symbol, including nested
+`admission_result` values, but READY counts still come from the independent
+scan result.
 
 `PoolScanResult.preparation_results` exposes sanitized per-symbol preparation
 records, including nested partition admission evidence and promotion

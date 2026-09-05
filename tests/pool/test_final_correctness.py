@@ -187,3 +187,28 @@ def test_stage_b_discovery_is_not_stage_c_approval(monkeypatch):
     assert row.spread_count == 1
     assert row.final_action != FinalAction.PCS_TRADE_READY
     assert "CONTRACT_CANDIDATES_DISCOVERED" in row.reason_codes
+
+
+def test_connected_selector_must_explicitly_pass_and_preserves_identity(monkeypatch):
+    monkeypatch.setattr(runner, "build_trend_snapshot", lambda *args, **kwargs: _controlled_trend())
+    monkeypatch.setattr(runner, "interpret_trend", lambda *args, **kwargs: _controlled_interpretation())
+    monkeypatch.setattr(runner, "score_trend", lambda *args, **kwargs: _controlled_score())
+    monkeypatch.setattr(runner, "evaluate_trend_gate", lambda *args, **kwargs: SimpleNamespace(
+        available=True, trend_gate_result="PASS", reasons=(), warnings=()))
+    monkeypatch.setattr(runner, "evaluate_pullback_gate", lambda *args, **kwargs: SimpleNamespace(
+        available=True, pullback_gate_result="PASS", reasons=(), warnings=()))
+    candidate = SimpleNamespace(to_dict=lambda: {"expiration": "2025-04-01", "short_strike": 95,
+                                                   "long_strike": 90})
+    monkeypatch.setattr(runner, "discover_spreads", lambda *args, **kwargs: (candidate,))
+    row = runner._evaluate_symbol(
+        "AAA", run_id="r", asof="2025-03-03", access=Access(_frame()), benchmark=_frame(),
+        benchmark_symbol="QQQ", options_reader=lambda *_: pd.DataFrame({"quote_as_of": ["2025-03-03"]}),
+        option_rules=dict(runner.load_pool_option_rules()), daily_handle_resolver=resolve_handle,
+        auto_prepare_data=False, mode="EOD", static_metadata_reader=lambda _: {"optionable": True},
+        contract_selector=lambda candidate, **_: {"status": "PASS", "selected_contract": candidate.to_dict(),
+                                                  "reason_codes": ("DECISION_ENGINE_PASS",),
+                                                  "data_identity": {"options_generation_id": "gen-1"}},
+        runtime=PoolRuntime(access=Access(_frame()), daily_handle_resolver=resolve_handle))
+    assert row.options_status == OptionsStatus.PASS
+    assert row.selected_contract["short_strike"] == 95
+    assert row.selection_data_identity == {"options_generation_id": "gen-1"}

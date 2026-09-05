@@ -93,6 +93,10 @@ class TickerScanResult:
     effective_daily_session: str | None = None
     discovered_contracts: tuple[Mapping[str, Any], ...] = ()
     initial_daily_readiness: str = "READY"
+    selected_contract: Mapping[str, Any] | None = None
+    selection_result: Mapping[str, Any] | None = None
+    selection_reason_codes: tuple[str, ...] = ()
+    selection_data_identity: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
