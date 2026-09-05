@@ -31,6 +31,14 @@ def test_reconcile_pool_scan_results_requires_matching_identity():
     assert not delta["comparable"] and delta["added"] == ["BBB"] and delta["removed"] == []
     assert delta["ready_added"] == ["AAA"] and delta["ready_removed"] == []
     assert delta["changed"][0]["symbol"] == "AAA"
+    assert delta["kept"] == []
+
+
+def test_reconcile_reports_unchanged_tickers_as_kept():
+    snapshot = {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m"}
+    run = {"snapshot": snapshot, "ticker_results": [{"symbol": "AAA", "eligibility_status": "PCS_ELIGIBLE", "reason_codes": ["WAIT"]}]}
+    delta = reconcile_pool_scan_results(run, run)
+    assert delta["kept"] == ["AAA"] and delta["changed"] == []
 
 
 def test_reconcile_attaches_recovery_receipts_and_daily_readiness_delta():

@@ -468,11 +468,14 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
     comparable = all(a is not None and b is not None and a == b for a, b in identity.values())
     keys = ("eligibility_status", "initial_daily_readiness", "timing_status", "options_status", "final_action")
     changed = []
+    kept = []
     for symbol in sorted(set(left) & set(right)):
         a, b = left[symbol], right[symbol]
         if any(a.get(k) != b.get(k) or a.get("reason_codes", ()) != b.get("reason_codes", ()) for k in keys):
             changed.append({"symbol": symbol, "before": {k: a.get(k) for k in (*keys, "reason_codes")},
                             "after": {k: b.get(k) for k in (*keys, "reason_codes")}})
+        else:
+            kept.append(symbol)
     ready_left = {s for s, row in left.items() if row.get("eligibility_status") == "PCS_ELIGIBLE"}
     ready_right = {s for s, row in right.items() if row.get("eligibility_status") == "PCS_ELIGIBLE"}
     daily_left = {s for s, row in left.items() if str(row.get("initial_daily_readiness", "")).upper() == "READY"}
@@ -499,7 +502,7 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
             "ready_removed": sorted(ready_left-ready_right),
             "daily_ready_added": sorted(daily_right-daily_left),
             "daily_ready_removed": sorted(daily_left-daily_right),
-            "recovery_by_symbol": recovery_by_symbol, "changed": changed,
+            "recovery_by_symbol": recovery_by_symbol, "changed": changed, "kept": kept,
             "before_count": len(left), "after_count": len(right)}
 
 
