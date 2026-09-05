@@ -80,6 +80,12 @@ def build_ai_evidence_packet(row, snapshot: Mapping[str, Any], *, evidence_windo
         series_value = unknown()
     else:
         series_value = provided(series[-evidence_window:], source="candidate_state.price_indicator_series")
+    last_series = series[-1] if series else {}
+    rules = state.get("applicable_rules") or {}
+    engine = trend.get("market_structure_engine") or {}
+    market_structure = trend.get("market_structure") or {}
+    confirmed_swings = market_structure.get("confirmed_swings") if isinstance(market_structure, Mapping) else None
+    support = trend.get("support") or {}
     selection = row.get("selected_contract") or row.get("selection_result") or row.get("discovered_contracts")
     phase = row.get("short_term_phase")
     setup_type = ("TREND_CONTINUATION" if phase == "CONTINUATION" else
@@ -109,7 +115,8 @@ def build_ai_evidence_packet(row, snapshot: Mapping[str, Any], *, evidence_windo
             "timing": {"status": _status(row, "timing_status"),
                        "reason_codes": list(row.get("timing_reason_codes", state.get("timing_reason_codes", ()))),
                        "actual_values": {key: _value(state, key, "candidate_state")
-                                         for key in ("close", "atr")}},
+                                         for key in ("close", "atr")},
+                       "applicable_rules": {key: rules[key] for key in rules if key.startswith("pullback_") or key.startswith("support_")}},
             "options": {"status": _status(row, "options_status"),
                         "reason_codes": list(row.get("selection_reason_codes", ())) or
                                         list(row.get("reason_codes", ())),
@@ -134,16 +141,48 @@ def build_ai_evidence_packet(row, snapshot: Mapping[str, Any], *, evidence_windo
             "current_values": {key: _value(state, key, "candidate_state")
                                for key in ("close", "atr")},
         },
-        "structure": provided(trend.get("market_structure"), source="trend_snapshot.market_structure")
-                     if trend.get("market_structure") else unknown(),
-        "support_resistance": provided(trend.get("support"), source="trend_snapshot.support")
-                             if trend.get("support") else unknown(),
+        "structure": {
+            "snapshot": provided(trend.get("market_structure"), source="trend_snapshot.market_structure")
+                        if trend.get("market_structure") else unknown(),
+            "confirmed_points": provided(confirmed_swings, source="market_structure.confirmed_swings")
+                                if confirmed_swings else unknown("NO_CONFIRMED_SWINGS_SAVED"),
+            "failure_evidence": provided(engine.get("reason_codes"), source="market_structure_engine.reason_codes")
+                                if engine.get("reason_codes") else unknown("STRUCTURE_FAILURE_CONDITIONS_NOT_SAVED"),
+        },
+        "support_resistance": {
+            "support_snapshot": provided(support, source="trend_snapshot.support") if support else unknown(),
+            "nearest_support": _value(support, "nearest_support", "trend_snapshot.support"),
+            "distance_pct": _value(support, "nearest_support_distance_pct", "trend_snapshot.support"),
+            "distance_atr": _value(support, "nearest_support_distance_atr", "trend_snapshot.support"),
+            "resistance": unknown("RESISTANCE_NOT_COMPUTED_BY_EXISTING_PATH"),
+        },
         "trend_engine_evidence": provided(trend.get("market_structure_engine"), source="trend_snapshot.market_structure_engine")
                                  if trend.get("market_structure_engine") else unknown(),
+        "volume": {
+            "rvol20": _value(engine, "rvol20", "market_structure_engine"),
+            "sequence_included": bool(series and any("volume" in item for item in series)),
+        },
+        "overheat": {
+            "rsi14": _value(last_series, "rsi14", "candidate_state.price_indicator_series"),
+            "thresholds": {key: rules[key] for key in ("rsi_overheated", "rsi_hard_block") if key in rules},
+            "status": ("OVERHEATED" if isinstance(last_series.get("rsi14"), (int, float)) and
+                       "rsi_overheated" in rules and last_series["rsi14"] >= rules["rsi_overheated"]
+                       else "NOT_OVERHEATED" if isinstance(last_series.get("rsi14"), (int, float)) else "UNKNOWN"),
+        },
         "rule_context": provided(state.get("applicable_rules"), source="candidate_state.applicable_rules")
                         if state.get("applicable_rules") else unknown("RULE_CONTEXT_NOT_SAVED"),
-        "market_and_industry": unknown("MARKET_CONTEXT_NOT_SAVED"),
-        "instrument_and_events": unknown("INSTRUMENT_METADATA_NOT_SAVED"),
+        "market_and_industry": {
+            "market_regime": unknown("MARKET_CONTEXT_NOT_SAVED"),
+            "industry_trend": unknown("INDUSTRY_CONTEXT_NOT_SAVED"),
+            "relative_strength": provided(trend.get("relative_strength"), source="trend_snapshot.relative_strength")
+                                if trend.get("relative_strength") else unknown("RELATIVE_STRENGTH_NOT_SAVED"),
+        },
+        "instrument_and_events": {
+            "event_status": _value(row, "event_status", "ticker_result"),
+            "company_or_etf_type": unknown("INSTRUMENT_METADATA_NOT_SAVED"),
+            "industry": unknown("INSTRUMENT_METADATA_NOT_SAVED"),
+            "event_detail": unknown("EVENT_DATA_NOT_SAVED"),
+        },
         "trade_evidence": provided(selection, source="ticker_result contract fields") if selection else unknown(),
         "data_identity": {
             key: _value(row, key, "ticker_result")

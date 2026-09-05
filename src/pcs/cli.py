@@ -250,6 +250,22 @@ def pool_scan(args):
     print(result.to_json())
 
 
+def pool_evidence(args):
+    """Read or upgrade saved pool artifacts; never invokes the scanner."""
+    from pcs.pool.ai_evidence import read_ai_evidence, upgrade_current_pool_artifacts
+    from pathlib import Path
+    root = Path(args.run_directory)
+    if args.upgrade:
+        upgrade_current_pool_artifacts(root, evidence_window=args.window)
+    if args.symbol:
+        payload = read_ai_evidence(root, args.symbol)
+        if payload is None:
+            raise SystemExit(f"ticker not found: {args.symbol.upper()}")
+        print(json.dumps(payload, default=str, sort_keys=True, indent=2))
+    else:
+        print((root / "full_pool_summary.json").read_text(encoding="utf-8"))
+
+
 def market_data_status(args):
     from pcs.data.control_plane import ImportCoordinator, MarketDataControlPlane, default_import_handlers, get_market_data_status
     requirements = {"symbol": args.symbol, "required_start": args.start, "required_end": args.end,
@@ -329,6 +345,13 @@ def main():
                       help="directory for scan and reconciliation artifacts")
     pool.add_argument("--decision-context-json", help="source-backed historical v1 or current EOD v2 decision context (optional for scanning)")
     pool.set_defaults(func=pool_scan)
+
+    evidence = sub.add_parser("pool-evidence", help="read or upgrade saved pool AI evidence without scanning")
+    evidence.add_argument("--run-directory", required=True, help="one saved pool run directory")
+    evidence.add_argument("--symbol", help="read one ticker packet; omit for compact full-pool summary")
+    evidence.add_argument("--upgrade", action="store_true", help="add evidence views to a hash-valid legacy run")
+    evidence.add_argument("--window", type=int, default=60, help="saved evidence window in sessions")
+    evidence.set_defaults(func=pool_evidence)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")
     admin_sub = admin.add_subparsers(required=True)
