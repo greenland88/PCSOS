@@ -130,6 +130,15 @@ class PoolRuntime:
         with self._lock:
             self.manifest_snapshot = ManifestSnapshot.capture(self.access)
 
+    def refresh_options(self) -> None:
+        """Invalidate only options reads after promotion; keep daily/timing inputs."""
+        self.refresh_manifest_snapshot()
+        with self._lock:
+            for cache in (self._values, self._frames):
+                for key in list(cache):
+                    if str(key[0]).startswith("options"):
+                        cache.pop(key, None)
+
     @staticmethod
     def _handle_key(handle: Any) -> tuple[Any, ...]:
         return (

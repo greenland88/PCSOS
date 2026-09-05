@@ -381,7 +381,7 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
         tmp = access.manifest_path.with_name(f".{access.manifest_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             current.to_csv(tmp, index=False)
-            access._atomic_replace_manifest(tmp)
+            access._atomic_replace_manifest(tmp, access.manifest_path)
         finally:
             tmp.unlink(missing_ok=True)
         access._manifest = current

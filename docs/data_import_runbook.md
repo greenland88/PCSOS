@@ -47,3 +47,22 @@ orchestration outcomes; they still require independent canonical read-back.
 Failed adapter outcomes retain their specific reason codes at the top-level
 control-plane boundary, including AUTHORIZED_SOURCE_NO_ROWS for the actual
 queried window. Such a result does not prove global provider absence.
+
+
+Pool Scan now orchestrates on-demand options preparation itself. From the
+workspace containing canonical data, point PYTHONPATH at the task checkout and
+PCS_ENV_FILE at the existing authorized .env; run `python -m pcs.cli pool-scan
+--mode EOD --as-of latest --data-mode PREPARE_THEN_SCAN --auto-prepare-data`.
+Use `--data-mode READ_ONLY` without the opt-in for a strictly read-only scan.
+Use a stable `--output-directory` for local recovery. See the
+[Pool Scan contract](architecture/pool_scan_contract.md#on-demand-options-preparation-and-local-recovery).
+
+The registered options handler fetches the requested quote window, including an
+interior missing session; it does not assume that max(trade_date) proves every
+earlier session is present. ImportEngine staging can bind a first-ingestion
+options destination to the access object's existing default canonical store.
+This importer-only binding does not create a read route or manifest before
+promotion, does not override existing per-symbol routes, and does not resolve an
+ambiguous route. Incremental promotion normalizes quote/expiration date types
+before merging so validated staging dates and existing timestamp columns can
+coexist without discarding earlier data.

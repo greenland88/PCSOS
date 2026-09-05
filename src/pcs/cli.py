@@ -226,7 +226,8 @@ def pool_scan(args):
             raise SystemExit(2)
         return
     # Authorized preparation remains in-process so a hard timeout cannot
-    # interrupt canonical promotion. Prefer the separate import command.
+    # interrupt canonical promotion. This entry prepares daily data and resumes
+    # only timing candidates after on-demand options preparation.
     from pcs.pool.runner import run_pcs_pool
     from pcs.data.access import PCSDataAccess
     from pcs.pool.options import load_pool_option_rules
@@ -309,7 +310,7 @@ def main():
     status_cmd.add_argument("--json", action="store_true")
     status_cmd.set_defaults(func=pcs_status)
 
-    pool = sub.add_parser("pool-scan", help="run the read-only ticker-neutral PCS universe funnel")
+    pool = sub.add_parser("pool-scan", help="scan the PCS universe with optional on-demand data preparation")
     pool.add_argument("--symbol", dest="symbols", action="append", help="explicit symbol; repeat for multiple symbols")
     pool.add_argument("--universe-id")
     pool.add_argument("--as-of", default="latest")

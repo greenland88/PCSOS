@@ -1,0 +1,693 @@
+{
+  "configuration": {
+    "source_path": "H:/workspace/PCSOS/.env",
+    "source_exists": true,
+    "cwd": "H:\\workspace\\PCSOS",
+    "worktree_env_exists": false,
+    "loaded_password_present": true,
+    "url_explicitly_present": false,
+    "user_present_or_default": true,
+    "child": {
+      "env_file_inherited": true,
+      "password_inherited": true
+    }
+  },
+  "source_probe": {
+    "snapshot": {
+      "as_of": "2026-09-04T17:00:00-04:00",
+      "benchmark_handles": {
+        "QQQ": "PINNED"
+      },
+      "benchmark_status": "READY",
+      "code_revision": "sha256:94f329578511ce4aa7aee272dcd039a9028a55e6c0e50fb5a087ffe55ae6bd38",
+      "effective_daily_session": "2026-09-04",
+      "engine_version": "sha256:968ca559f45ff1ae720687c8678af6cb72974b471c087dfc7f59f852b77d4fac",
+      "last_completed_daily_session": "2026-09-04",
+      "manifest_snapshot_id": "f7797b2912a0de32414e42048b09bb56bc3a5ac6604251c38c086d1ce473323d",
+      "mode": "EOD",
+      "profile_versions": {},
+      "refresh_policy": "FULL",
+      "requested_as_of": "2026-09-04T17:00:00-04:00",
+      "run_id": "5f63eede52764515ad3725a7bf4bc80d",
+      "symbol_handles": {},
+      "universe_snapshot_id": "explicit:1:EXPLICIT:1:"
+    },
+    "summary": {
+      "benchmark_blocked": 0,
+      "benchmark_daily_prepare_attempted": 0,
+      "daily_hard_blocked_initial_count": 0,
+      "daily_prep_required_count": 0,
+      "daily_prepare_attempted_count": 0,
+      "daily_prepare_failed_count": 0,
+      "daily_prepared_ready_count": 0,
+      "daily_provider_coverage_count": 0,
+      "daily_ready_initial_count": 2,
+      "daily_scan_ready_count": 1,
+      "data_blocked_count": 0,
+      "dormant_count": 0,
+      "hard_excluded_count": 0,
+      "missing_ticker_decisions": 0,
+      "options_check_count": 1,
+      "options_evaluated_count": 0,
+      "options_prepare_attempted_count": 1,
+      "options_verified_count": 0,
+      "pcs_eligible_count": 1,
+      "pcs_trade_ready_count": 0,
+      "raw_count": 1,
+      "rejected_count": 0,
+      "run_status": "COMPLETED",
+      "spread_count": 0,
+      "temp_blocked_count": 0,
+      "timing_entry_ready_count": 1,
+      "timing_reused_count": 0,
+      "timing_watch_count": 0
+    },
+    "row": {
+      "as_of": "2026-09-04T17:00:00-04:00",
+      "candidate_state": {
+        "atr": 3.2882069900575166,
+        "attempt_budget_per_run": 1,
+        "close": 65.21,
+        "contract_evaluation_status": "NOT_EVALUATED",
+        "daily_identity": [
+          "daily",
+          "GSHD",
+          "7ef5c4210937b087c6e9d85b|639c5abebd9c8444cb973b32",
+          "4864464c4882d3c9c865424100240dda38ce2b576ac43f7b23751f91b2d8c7ad",
+          "bffef9c93fa01cc4421b4c56cc03617a2fb499a2d935042b7075d90ed1c448ed"
+        ],
+        "decision_as_of": "2026-09-04T17:00:00-04:00",
+        "decision_mode": "EOD_SCAN",
+        "expiration_end": "2026-10-19",
+        "expiration_start": "2026-10-04",
+        "market_data_as_of": "2026-09-04",
+        "options_data_status": "WAITING_DATA",
+        "options_identity": null,
+        "preparation_attempt_run_id": "5f63eede52764515ad3725a7bf4bc80d",
+        "preparation_receipt": {
+          "final_canonical_status": "PARTIAL",
+          "import_outcomes": [
+            {
+              "dataset": "options",
+              "result": {
+                "call_rows": 0,
+                "physical_rows": 0,
+                "put_rows": 0,
+                "reason_codes": [
+                  "AUTHORIZED_SOURCE_NO_ROWS"
+                ],
+                "requested_end": "2026-09-04",
+                "requested_start": "2026-09-04",
+                "selected_source": "clickhouse_options",
+                "source_max_date": null,
+                "source_min_date": null,
+                "source_table": "firstrate.options_kline_1d",
+                "status": "BLOCKED",
+                "symbol": "GSHD",
+                "unique_contract_keys": 0
+              },
+              "status": "BLOCKED"
+            }
+          ],
+          "promoted_partitions": [],
+          "provider_attempted": true,
+          "provider_coverage": [],
+          "reason_codes": [
+            "AUTHORIZED_SOURCE_NO_ROWS",
+            "DATASET_GAP"
+          ],
+          "request_id": "bfd7b68fb9ca4ae593bc1e442050f23e",
+          "selected_source": [
+            "clickhouse_options"
+          ],
+          "status": "BLOCKED",
+          "symbol": "GSHD"
+        },
+        "requirements": {
+          "datasets": [
+            "options"
+          ],
+          "decision_as_of": "2026-09-04",
+          "exact_contract_quote_keys": [],
+          "max_dte": 45,
+          "min_dte": 30,
+          "option_type": "PUT",
+          "required_end": "2026-09-04",
+          "required_fields": [],
+          "required_history_rows": 0,
+          "required_start": "2026-09-04",
+          "symbol": "GSHD"
+        },
+        "resume_stage": "OPTIONS",
+        "source_query_completed_at": "2026-09-05T17:03:52.996838+00:00",
+        "source_query_started_at": "2026-09-05T17:03:50.540266+00:00",
+        "timing_computed_at": "2026-09-05T17:03:50.480665+00:00",
+        "timing_reason_codes": [
+          "direction_bullish",
+          "health_healthy",
+          "positive_factors_present",
+          "negative_factors_present",
+          "trend_state_B",
+          "all_component_weights_available",
+          "trend_direction_bullish",
+          "trend_health_healthy",
+          "healthy_uptrend_pullback",
+          "trend_gate_pass",
+          "healthy_pullback",
+          "bullish_market_structure",
+          "support_confluence_sufficient",
+          "healthy_trend"
+        ],
+        "verified_read_status": "FAILED"
+      },
+      "dataset_fingerprint": "bffef9c93fa01cc4421b4c56cc03617a2fb499a2d935042b7075d90ed1c448ed",
+      "discovered_contracts": [],
+      "effective_daily_session": "2026-09-04",
+      "eligibility_status": "PCS_ELIGIBLE",
+      "event_status": "NOT_EVALUATED",
+      "feature_max_date": "2026-09-04 00:00:00",
+      "final_action": "WAIT",
+      "generation_id": "7ef5c4210937b087c6e9d85b|639c5abebd9c8444cb973b32",
+      "initial_daily_readiness": "READY",
+      "latency_ms": 154.12750001996756,
+      "next_review_at": "2026-09-05T17:04:22.996838+00:00",
+      "options_status": "DATA_BLOCKED",
+      "portfolio_status": "NOT_EVALUATED",
+      "preparation_attempted": false,
+      "preparation_reason_codes": [],
+      "preparation_result_status": "ALREADY_COMPLETE",
+      "preparation_status": "NOT_NEEDED",
+      "prepared_dataset": "daily",
+      "profile_version": null,
+      "pullback_gate_reasons": [
+        "trend_gate_pass",
+        "healthy_pullback",
+        "bullish_market_structure",
+        "support_confluence_sufficient",
+        "healthy_trend"
+      ],
+      "reason_codes": [
+        "direction_bullish",
+        "health_healthy",
+        "positive_factors_present",
+        "negative_factors_present",
+        "trend_state_B",
+        "all_component_weights_available",
+        "trend_direction_bullish",
+        "trend_health_healthy",
+        "healthy_uptrend_pullback",
+        "trend_gate_pass",
+        "healthy_pullback",
+        "bullish_market_structure",
+        "support_confluence_sufficient",
+        "healthy_trend",
+        "AUTHORIZED_SOURCE_NO_ROWS",
+        "DATASET_GAP",
+        "OPTIONS_GENERATION_MISSING"
+      ],
+      "reentry_conditions": [
+        "RETRY_AT_OR_AFTER_NEXT_REVIEW_AT"
+      ],
+      "run_id": "5f63eede52764515ad3725a7bf4bc80d",
+      "selected_contract": null,
+      "selection_data_identity": null,
+      "selection_reason_codes": [],
+      "selection_result": null,
+      "short_term_phase": "HEALTHY_PULLBACK",
+      "spread_count": 0,
+      "structural_trend": "STRUCTURAL_UPTREND",
+      "symbol": "GSHD",
+      "timeframe": "daily",
+      "timing_status": "TIMING_ENTRY_READY",
+      "trend_gate_reasons": [
+        "trend_state_B",
+        "trend_direction_bullish",
+        "trend_health_healthy",
+        "healthy_uptrend_pullback"
+      ],
+      "warnings": []
+    },
+    "artifact_hashes_verified": true,
+    "manifest_path": "H:\\workspace\\PCSOS\\pool_scan_runs\\on_demand_acceptance_20260905\\5f63eede52764515ad3725a7bf4bc80d\\run_manifest.json"
+  },
+  "final_code_readonly_runs": [
+    {
+      "snapshot": {
+        "run_id": "9d636a4dd3f642d2b9da1b322dee3359",
+        "as_of": "2026-09-05T13:12:14.861412-04:00",
+        "mode": "EOD",
+        "last_completed_daily_session": "2026-09-04",
+        "universe_snapshot_id": "explicit:1:EXPLICIT:1:",
+        "benchmark_handles": {
+          "QQQ": "PINNED"
+        },
+        "symbol_handles": {},
+        "profile_versions": {},
+        "engine_version": "sha256:fc4b10fbc838d73bc596305facec222465d1020f8a6e1af4806fa2fc7e838c3f",
+        "code_revision": "sha256:c3a1e2c710e55a298ad9c2faba367d067c7b02060fb3b83ea459e01713c7c364",
+        "refresh_policy": "FULL",
+        "manifest_snapshot_id": "f7797b2912a0de32414e42048b09bb56bc3a5ac6604251c38c086d1ce473323d",
+        "requested_as_of": "2026-09-05T13:12:14.861412-04:00",
+        "effective_daily_session": "2026-09-04",
+        "benchmark_status": "READY"
+      },
+      "summary": {
+        "raw_count": 1,
+        "hard_excluded_count": 0,
+        "data_blocked_count": 0,
+        "pcs_eligible_count": 1,
+        "dormant_count": 0,
+        "timing_watch_count": 0,
+        "timing_entry_ready_count": 1,
+        "options_check_count": 1,
+        "spread_count": 0,
+        "pcs_trade_ready_count": 0,
+        "temp_blocked_count": 0,
+        "rejected_count": 0,
+        "missing_ticker_decisions": 0,
+        "daily_ready_initial_count": 2,
+        "daily_prep_required_count": 0,
+        "daily_hard_blocked_initial_count": 0,
+        "daily_prepare_attempted_count": 0,
+        "daily_provider_coverage_count": 0,
+        "daily_prepared_ready_count": 0,
+        "daily_prepare_failed_count": 0,
+        "daily_scan_ready_count": 1,
+        "benchmark_daily_prepare_attempted": 0,
+        "benchmark_blocked": 0,
+        "options_verified_count": 0,
+        "options_evaluated_count": 0,
+        "options_prepare_attempted_count": 0,
+        "timing_reused_count": 0,
+        "run_status": "COMPLETED"
+      },
+      "row": {
+        "symbol": "GSHD",
+        "run_id": "9d636a4dd3f642d2b9da1b322dee3359",
+        "as_of": "2026-09-05T13:12:14.861412-04:00",
+        "eligibility_status": "PCS_ELIGIBLE",
+        "timing_status": "TIMING_ENTRY_READY",
+        "options_status": "DATA_BLOCKED",
+        "event_status": "NOT_EVALUATED",
+        "portfolio_status": "NOT_EVALUATED",
+        "final_action": "WAIT",
+        "reason_codes": [
+          "direction_bullish",
+          "health_healthy",
+          "positive_factors_present",
+          "negative_factors_present",
+          "trend_state_B",
+          "all_component_weights_available",
+          "trend_direction_bullish",
+          "trend_health_healthy",
+          "healthy_uptrend_pullback",
+          "trend_gate_pass",
+          "healthy_pullback",
+          "bullish_market_structure",
+          "support_confluence_sufficient",
+          "healthy_trend",
+          "AUTHORIZED_SOURCE_NO_ROWS",
+          "DATASET_GAP",
+          "OPTIONS_GENERATION_MISSING"
+        ],
+        "next_review_at": "2026-09-05T17:04:22.996838+00:00",
+        "reentry_conditions": [
+          "RUN_PREPARE_THEN_SCAN_WITH_AUTO_PREPARE_DATA"
+        ],
+        "generation_id": "7ef5c4210937b087c6e9d85b|639c5abebd9c8444cb973b32",
+        "dataset_fingerprint": "bffef9c93fa01cc4421b4c56cc03617a2fb499a2d935042b7075d90ed1c448ed",
+        "profile_version": null,
+        "feature_max_date": "2026-09-04 00:00:00",
+        "timeframe": "daily",
+        "latency_ms": 155.35219997400418,
+        "spread_count": 0,
+        "structural_trend": "STRUCTURAL_UPTREND",
+        "short_term_phase": "HEALTHY_PULLBACK",
+        "trend_gate_reasons": [
+          "trend_state_B",
+          "trend_direction_bullish",
+          "trend_health_healthy",
+          "healthy_uptrend_pullback"
+        ],
+        "pullback_gate_reasons": [
+          "trend_gate_pass",
+          "healthy_pullback",
+          "bullish_market_structure",
+          "support_confluence_sufficient",
+          "healthy_trend"
+        ],
+        "warnings": [],
+        "preparation_status": "NOT_NEEDED",
+        "preparation_reason_codes": [],
+        "preparation_attempted": false,
+        "preparation_result_status": "ALREADY_COMPLETE",
+        "prepared_dataset": "daily",
+        "effective_daily_session": "2026-09-04",
+        "discovered_contracts": [],
+        "initial_daily_readiness": "READY",
+        "selected_contract": null,
+        "selection_result": null,
+        "selection_reason_codes": [],
+        "selection_data_identity": null,
+        "candidate_state": {
+          "source_check_status": "NOT_CHECKED",
+          "decision_as_of": "2026-09-05T13:12:14.861412-04:00",
+          "market_data_as_of": "2026-09-04",
+          "decision_mode": "EOD_SCAN",
+          "timing_computed_at": "2026-09-05T17:12:16.871233+00:00",
+          "timing_reason_codes": [
+            "direction_bullish",
+            "health_healthy",
+            "positive_factors_present",
+            "negative_factors_present",
+            "trend_state_B",
+            "all_component_weights_available",
+            "trend_direction_bullish",
+            "trend_health_healthy",
+            "healthy_uptrend_pullback",
+            "trend_gate_pass",
+            "healthy_pullback",
+            "bullish_market_structure",
+            "support_confluence_sufficient",
+            "healthy_trend"
+          ],
+          "close": 65.21,
+          "atr": 3.2882069900575166,
+          "daily_identity": [
+            "daily",
+            "GSHD",
+            "7ef5c4210937b087c6e9d85b|639c5abebd9c8444cb973b32",
+            "4864464c4882d3c9c865424100240dda38ce2b576ac43f7b23751f91b2d8c7ad",
+            "bffef9c93fa01cc4421b4c56cc03617a2fb499a2d935042b7075d90ed1c448ed"
+          ],
+          "options_identity": null,
+          "options_evaluation_reused": false,
+          "options_data_status": "WAITING_DATA",
+          "contract_evaluation_status": "NOT_EVALUATED",
+          "resume_stage": "OPTIONS",
+          "code_identity": "sha256:c3a1e2c710e55a298ad9c2faba367d067c7b02060fb3b83ea459e01713c7c364",
+          "rules_identity": "sha256:fc4b10fbc838d73bc596305facec222465d1020f8a6e1af4806fa2fc7e838c3f",
+          "market_session": "2026-09-04",
+          "attempt_budget_per_run": 1,
+          "preparation_attempt_run_id": "5f63eede52764515ad3725a7bf4bc80d",
+          "preparation_receipt": {
+            "final_canonical_status": "PARTIAL",
+            "import_outcomes": [
+              {
+                "dataset": "options",
+                "result": {
+                  "call_rows": 0,
+                  "physical_rows": 0,
+                  "put_rows": 0,
+                  "reason_codes": [
+                    "AUTHORIZED_SOURCE_NO_ROWS"
+                  ],
+                  "requested_end": "2026-09-04",
+                  "requested_start": "2026-09-04",
+                  "selected_source": "clickhouse_options",
+                  "source_max_date": null,
+                  "source_min_date": null,
+                  "source_table": "firstrate.options_kline_1d",
+                  "status": "BLOCKED",
+                  "symbol": "GSHD",
+                  "unique_contract_keys": 0
+                },
+                "status": "BLOCKED"
+              }
+            ],
+            "promoted_partitions": [],
+            "provider_attempted": true,
+            "provider_coverage": [],
+            "reason_codes": [
+              "AUTHORIZED_SOURCE_NO_ROWS",
+              "DATASET_GAP"
+            ],
+            "request_id": "bfd7b68fb9ca4ae593bc1e442050f23e",
+            "selected_source": [
+              "clickhouse_options"
+            ],
+            "status": "BLOCKED",
+            "symbol": "GSHD"
+          },
+          "source_query_completed_at": "2026-09-05T17:03:52.996838+00:00",
+          "source_query_started_at": "2026-09-05T17:03:50.540266+00:00",
+          "requirements": {
+            "symbol": "GSHD",
+            "required_start": "2026-09-04",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "options"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": "PUT",
+            "min_dte": 30,
+            "max_dte": 45,
+            "required_history_rows": 0
+          },
+          "expiration_start": "2026-10-04",
+          "expiration_end": "2026-10-19",
+          "verified_read_status": "FAILED"
+        }
+      },
+      "manifest_path": "H:\\workspace\\PCSOS\\pool_scan_runs\\on_demand_acceptance_20260905\\9d636a4dd3f642d2b9da1b322dee3359\\run_manifest.json",
+      "manifest_sha256": "920d812b4adff9d62ee2bdbc498daa1907a0a850fab70b566b19c3ab28d835d5"
+    },
+    {
+      "snapshot": {
+        "run_id": "d92777b543864a23a48ab2c4059a5dda",
+        "as_of": "2026-09-05T13:12:17.062838-04:00",
+        "mode": "EOD",
+        "last_completed_daily_session": "2026-09-04",
+        "universe_snapshot_id": "explicit:1:EXPLICIT:1:",
+        "benchmark_handles": {
+          "QQQ": "PINNED"
+        },
+        "symbol_handles": {},
+        "profile_versions": {},
+        "engine_version": "sha256:fc4b10fbc838d73bc596305facec222465d1020f8a6e1af4806fa2fc7e838c3f",
+        "code_revision": "sha256:c3a1e2c710e55a298ad9c2faba367d067c7b02060fb3b83ea459e01713c7c364",
+        "refresh_policy": "FULL",
+        "manifest_snapshot_id": "f7797b2912a0de32414e42048b09bb56bc3a5ac6604251c38c086d1ce473323d",
+        "requested_as_of": "2026-09-05T13:12:17.062838-04:00",
+        "effective_daily_session": "2026-09-04",
+        "benchmark_status": "READY"
+      },
+      "summary": {
+        "raw_count": 1,
+        "hard_excluded_count": 0,
+        "data_blocked_count": 0,
+        "pcs_eligible_count": 1,
+        "dormant_count": 0,
+        "timing_watch_count": 0,
+        "timing_entry_ready_count": 1,
+        "options_check_count": 1,
+        "spread_count": 0,
+        "pcs_trade_ready_count": 0,
+        "temp_blocked_count": 0,
+        "rejected_count": 0,
+        "missing_ticker_decisions": 0,
+        "daily_ready_initial_count": 2,
+        "daily_prep_required_count": 0,
+        "daily_hard_blocked_initial_count": 0,
+        "daily_prepare_attempted_count": 0,
+        "daily_provider_coverage_count": 0,
+        "daily_prepared_ready_count": 0,
+        "daily_prepare_failed_count": 0,
+        "daily_scan_ready_count": 1,
+        "benchmark_daily_prepare_attempted": 0,
+        "benchmark_blocked": 0,
+        "options_verified_count": 0,
+        "options_evaluated_count": 0,
+        "options_prepare_attempted_count": 0,
+        "timing_reused_count": 1,
+        "run_status": "COMPLETED"
+      },
+      "row": {
+        "symbol": "GSHD",
+        "run_id": "d92777b543864a23a48ab2c4059a5dda",
+        "as_of": "2026-09-05T13:12:17.062838-04:00",
+        "eligibility_status": "PCS_ELIGIBLE",
+        "timing_status": "TIMING_ENTRY_READY",
+        "options_status": "DATA_BLOCKED",
+        "event_status": "NOT_EVALUATED",
+        "portfolio_status": "NOT_EVALUATED",
+        "final_action": "WAIT",
+        "reason_codes": [
+          "direction_bullish",
+          "health_healthy",
+          "positive_factors_present",
+          "negative_factors_present",
+          "trend_state_B",
+          "all_component_weights_available",
+          "trend_direction_bullish",
+          "trend_health_healthy",
+          "healthy_uptrend_pullback",
+          "trend_gate_pass",
+          "healthy_pullback",
+          "bullish_market_structure",
+          "support_confluence_sufficient",
+          "healthy_trend",
+          "AUTHORIZED_SOURCE_NO_ROWS",
+          "DATASET_GAP",
+          "OPTIONS_GENERATION_MISSING"
+        ],
+        "next_review_at": "2026-09-05T17:04:22.996838+00:00",
+        "reentry_conditions": [
+          "RUN_PREPARE_THEN_SCAN_WITH_AUTO_PREPARE_DATA"
+        ],
+        "generation_id": "7ef5c4210937b087c6e9d85b|639c5abebd9c8444cb973b32",
+        "dataset_fingerprint": "bffef9c93fa01cc4421b4c56cc03617a2fb499a2d935042b7075d90ed1c448ed",
+        "profile_version": null,
+        "feature_max_date": "2026-09-04 00:00:00",
+        "timeframe": "daily",
+        "latency_ms": 155.35219997400418,
+        "spread_count": 0,
+        "structural_trend": "STRUCTURAL_UPTREND",
+        "short_term_phase": "HEALTHY_PULLBACK",
+        "trend_gate_reasons": [
+          "trend_state_B",
+          "trend_direction_bullish",
+          "trend_health_healthy",
+          "healthy_uptrend_pullback"
+        ],
+        "pullback_gate_reasons": [
+          "trend_gate_pass",
+          "healthy_pullback",
+          "bullish_market_structure",
+          "support_confluence_sufficient",
+          "healthy_trend"
+        ],
+        "warnings": [],
+        "preparation_status": "NOT_NEEDED",
+        "preparation_reason_codes": [],
+        "preparation_attempted": false,
+        "preparation_result_status": "ALREADY_COMPLETE",
+        "prepared_dataset": "daily",
+        "effective_daily_session": "2026-09-04",
+        "discovered_contracts": [],
+        "initial_daily_readiness": "READY",
+        "selected_contract": null,
+        "selection_result": null,
+        "selection_reason_codes": [],
+        "selection_data_identity": null,
+        "candidate_state": {
+          "source_check_status": "NOT_CHECKED",
+          "atr": 3.2882069900575166,
+          "attempt_budget_per_run": 1,
+          "close": 65.21,
+          "code_identity": "sha256:c3a1e2c710e55a298ad9c2faba367d067c7b02060fb3b83ea459e01713c7c364",
+          "contract_evaluation_status": "NOT_EVALUATED",
+          "daily_identity": [
+            "daily",
+            "GSHD",
+            "7ef5c4210937b087c6e9d85b|639c5abebd9c8444cb973b32",
+            "4864464c4882d3c9c865424100240dda38ce2b576ac43f7b23751f91b2d8c7ad",
+            "bffef9c93fa01cc4421b4c56cc03617a2fb499a2d935042b7075d90ed1c448ed"
+          ],
+          "decision_as_of": "2026-09-05T13:12:17.062838-04:00",
+          "decision_mode": "EOD_SCAN",
+          "expiration_end": "2026-10-19",
+          "expiration_start": "2026-10-04",
+          "market_data_as_of": "2026-09-04",
+          "market_session": "2026-09-04",
+          "options_data_status": "WAITING_DATA",
+          "options_evaluation_reused": false,
+          "options_identity": null,
+          "preparation_attempt_run_id": "5f63eede52764515ad3725a7bf4bc80d",
+          "preparation_receipt": {
+            "final_canonical_status": "PARTIAL",
+            "import_outcomes": [
+              {
+                "dataset": "options",
+                "result": {
+                  "call_rows": 0,
+                  "physical_rows": 0,
+                  "put_rows": 0,
+                  "reason_codes": [
+                    "AUTHORIZED_SOURCE_NO_ROWS"
+                  ],
+                  "requested_end": "2026-09-04",
+                  "requested_start": "2026-09-04",
+                  "selected_source": "clickhouse_options",
+                  "source_max_date": null,
+                  "source_min_date": null,
+                  "source_table": "firstrate.options_kline_1d",
+                  "status": "BLOCKED",
+                  "symbol": "GSHD",
+                  "unique_contract_keys": 0
+                },
+                "status": "BLOCKED"
+              }
+            ],
+            "promoted_partitions": [],
+            "provider_attempted": true,
+            "provider_coverage": [],
+            "reason_codes": [
+              "AUTHORIZED_SOURCE_NO_ROWS",
+              "DATASET_GAP"
+            ],
+            "request_id": "bfd7b68fb9ca4ae593bc1e442050f23e",
+            "selected_source": [
+              "clickhouse_options"
+            ],
+            "status": "BLOCKED",
+            "symbol": "GSHD"
+          },
+          "requirements": {
+            "symbol": "GSHD",
+            "required_start": "2026-09-04",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "options"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": "PUT",
+            "min_dte": 30,
+            "max_dte": 45,
+            "required_history_rows": 0
+          },
+          "resume_stage": "OPTIONS",
+          "rules_identity": "sha256:fc4b10fbc838d73bc596305facec222465d1020f8a6e1af4806fa2fc7e838c3f",
+          "source_query_completed_at": "2026-09-05T17:03:52.996838+00:00",
+          "source_query_started_at": "2026-09-05T17:03:50.540266+00:00",
+          "timing_computed_at": "2026-09-05T17:12:16.871233+00:00",
+          "timing_reason_codes": [
+            "direction_bullish",
+            "health_healthy",
+            "positive_factors_present",
+            "negative_factors_present",
+            "trend_state_B",
+            "all_component_weights_available",
+            "trend_direction_bullish",
+            "trend_health_healthy",
+            "healthy_uptrend_pullback",
+            "trend_gate_pass",
+            "healthy_pullback",
+            "bullish_market_structure",
+            "support_confluence_sufficient",
+            "healthy_trend"
+          ],
+          "verified_read_status": "FAILED",
+          "timing_reused": true
+        }
+      },
+      "manifest_path": "H:\\workspace\\PCSOS\\pool_scan_runs\\on_demand_acceptance_20260905\\d92777b543864a23a48ab2c4059a5dda\\run_manifest.json",
+      "manifest_sha256": "4bca7109d7cac8425ddf7d02f4738f18ac9bedc22f63968264767f4a4b94299e"
+    }
+  ],
+  "canonical_manifests_unchanged": true,
+  "canonical_manifest_hashes": {
+    "data\\manifests\\storage_manifest.csv": "80ce0cec0ef1b57f21cafe82f946c60ba013f70886f5257abe80a31fa64ac2a0",
+    "data\\manifests\\storage_manifest_options_v2.csv": "e8d485a35dd1f3748eab60664bdf25c26fe4ea7bccd5ccbd36c568cf9f30aba2",
+    "data\\manifests\\storage_manifest_options_v3.csv": "3a6e29e759334693ffae2631f683d85f142d71f3187a7d1ccc730d4b637a3ade"
+  },
+  "real_positive_acceptance": "NOT_COMPLETED_AUTHORIZED_SOURCE_NO_ROWS",
+  "real_options_verified_identity": null,
+  "real_options_successfully_evaluated_denominator": 0,
+  "canonical_options_promotions": 0,
+  "background_monitor": false
+}

@@ -239,9 +239,19 @@ class PCSDataAccess:
     def normalized_path_identity(path) -> str:
         return str(Path(path).resolve())
 
-    def route_bound_access(self, dataset: str, symbol: str):
+    def route_bound_access(self, dataset: str, symbol: str, *, for_import: bool = False):
         """Return the isolated access boundary for one resolved route."""
-        physical, manifest, root = self._resolve_route(dataset, symbol)
+        try:
+            physical, manifest, root = self._resolve_route(dataset, symbol)
+        except DataAccessError as exc:
+            # First ingestion has no manifest row to discover yet. Only the
+            # standard importer may create a generation in this access object's
+            # canonical store. Readers still fail closed until promotion, and
+            # ambiguous or explicitly registered routes are never overridden.
+            if not (for_import and dataset == "options" and
+                    "reason=DATA_NOT_INGESTED_OR_CANONICAL_MANIFEST_MISSING" in str(exc)):
+                raise
+            physical, manifest, root = dataset, self.manifest_path, self.parquet_root
         bound = copy.copy(self)
         bound.routing_mode = "isolated"
         bound.manifest_path = Path(manifest)
@@ -357,7 +367,7 @@ class PCSDataAccess:
 
     @staticmethod
     @contextmanager
-    def _file_lock(target: Path):
+    def _file_lock(target: Path, *, blocking: bool = True):
         """Process/thread lock around metadata read-modify-write transactions."""
         lock_path = target.with_name(target.name + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -366,11 +376,11 @@ class PCSDataAccess:
             handle.seek(0)
             try:
                 import msvcrt
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
                 unlock = lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             except ImportError:
                 import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
                 unlock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             yield
         finally:
@@ -1199,6 +1209,11 @@ class PCSDataAccess:
             merged = pd.concat([old, merged], ignore_index=True)
         key = ["symbol", "trade_date", "expiration_date", "call_put", "strike"]
         if is_options and all(c in merged.columns for c in key):
+            # Legacy generations may store timestamps while the loader's
+            # validated staging uses date objects. Normalize before dedup and
+            # Arrow serialization so an interior quote repair can merge both.
+            for column in ("trade_date", "expiration_date"):
+                merged[column] = pd.to_datetime(merged[column], errors="raise").dt.date
             merged = merged.drop_duplicates(key, keep="last").reset_index(drop=True)
         if not is_options and "date" in merged.columns:
             merged = merged.drop_duplicates("date", keep="last").reset_index(drop=True)

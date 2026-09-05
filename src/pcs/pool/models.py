@@ -97,6 +97,7 @@ class TickerScanResult:
     selection_result: Mapping[str, Any] | None = None
     selection_reason_codes: tuple[str, ...] = ()
     selection_data_identity: Mapping[str, Any] | None = None
+    candidate_state: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

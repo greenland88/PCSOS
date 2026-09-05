@@ -10,6 +10,86 @@ import pandas as pd
 from .models import PoolScanResult
 
 
+class CandidateCheckpoints:
+    """Run-local, hashed recovery evidence, including interrupted runs.
+
+    These files never confer data readiness: callers must independently resolve
+    the current canonical inputs and compare identities before using a row.
+    """
+    def __init__(self, output_directory, run_id):
+        self.root = Path(output_directory) if output_directory is not None else None
+        self.run_id = run_id
+        self.previous = {}
+        if self.root is not None and self.root.exists():
+            paths = sorted(self.root.glob("*/candidate_checkpoints/*.json"),
+                           key=lambda p: p.stat().st_mtime_ns, reverse=True)
+            for path in paths:
+                try:
+                    envelope = json.loads(path.read_text(encoding="utf-8"))
+                    payload = envelope["payload"]
+                    if sha256(self._encode(payload).encode()).hexdigest() != envelope["sha256"]:
+                        continue
+                    row = payload["row"]
+                    if payload["version"] != 1 or row["run_id"] != path.parent.parent.name:
+                        continue
+                    self.previous.setdefault(row["symbol"], payload)
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+
+    @staticmethod
+    def _encode(value):
+        return json.dumps(value, sort_keys=True, default=str)
+
+    def save(self, row, identity):
+        if self.root is None:
+            return
+        payload = {"version": 1, "identity": identity, "row": asdict(row)}
+        envelope = {"payload": payload,
+                    "sha256": sha256(self._encode(payload).encode()).hexdigest()}
+        directory = self.root / self.run_id / "candidate_checkpoints"
+        directory.mkdir(parents=True, exist_ok=True)
+        # Use a digest filename; symbols must never become filesystem paths.
+        path = directory / (sha256(row.symbol.encode()).hexdigest() + ".json")
+        _write_atomic(path, self._encode(envelope))
+
+    def resume(self, symbol, identity):
+        from .models import (TickerScanResult, EligibilityStatus, TimingStatus,
+                             OptionsStatus, FinalAction)
+        payload = self.previous.get(symbol)
+        if not payload or payload["identity"] != identity:
+            return None
+        try:
+            values = dict(payload["row"])
+            for field, enum in (("eligibility_status", EligibilityStatus),
+                                ("timing_status", TimingStatus), ("options_status", OptionsStatus),
+                                ("final_action", FinalAction)):
+                values[field] = enum(values[field])
+            for field in ("reason_codes", "warnings", "trend_gate_reasons", "pullback_gate_reasons",
+                          "selection_reason_codes", "preparation_reason_codes", "reentry_conditions",
+                          "discovered_contracts"):
+                values[field] = tuple(values.get(field, ()))
+            row = TickerScanResult(**values)
+            required = {"close", "atr", "timing_reason_codes", "timing_computed_at", "daily_identity"}
+            if row.timing_status != TimingStatus.TIMING_ENTRY_READY or not required <= row.candidate_state.keys():
+                return None
+            return row
+        except (ValueError, TypeError, KeyError):
+            return None
+
+    def preparation_evidence(self, symbol, requirements):
+        """Provider backoff survives a timing/code invalidation for the same need."""
+        payload = self.previous.get(symbol)
+        if not payload:
+            return {}, None
+        row = payload["row"]
+        state = row.get("candidate_state", {})
+        if self._encode(state.get("requirements")) != self._encode(requirements):
+            return {}, None
+        keys = {"preparation_receipt", "source_query_started_at", "source_query_completed_at",
+                "attempt_budget_per_run", "preparation_attempt_run_id", "source_check_status"}
+        return {k: v for k, v in state.items() if k in keys}, row.get("next_review_at")
+
+
 def _load_pool_run(manifest_path: Path):
     """Load a completed run only when its manifest and payload hashes agree."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -102,7 +182,8 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
     rows = json.dumps(flat_rows, default=str, sort_keys=True, indent=2)
     files["static_eligibility.json"] = _write_atomic(root / "static_eligibility.json", rows)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
-    parquet_rows = flat_rows
+    parquet_rows = [{**row, "candidate_state": json.dumps(row.get("candidate_state", {}), default=str, sort_keys=True)}
+                    for row in flat_rows]
     files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
     files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
     empty_schema = {"symbol": [], "run_id": [], "as_of": [], "status": [], "reason_codes": []}

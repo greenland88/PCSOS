@@ -133,8 +133,10 @@ def _daily_preflight(symbols, access, decision_date):
             # Latest-session coverage and historical warmup are independent.
             # A current quarter is normally much smaller than the 200-row
             # indicator warmup, so count all active, non-future partitions.
-            history = active[pd.to_datetime(active.min_date, errors="coerce").le(decision) &
-                             pd.to_datetime(active.max_date, errors="coerce").le(decision)].copy()
+            # This is only an upper bound. The independent verified audit
+            # below counts PIT rows; a partition spanning the requested session
+            # must not be discarded merely because it also contains later rows.
+            history = active[pd.to_datetime(active.min_date, errors="coerce").le(decision)].copy()
             identity_columns = [column for column in ("partition_ids", "parquet_path", "active_generation")
                                 if column in history.columns]
             if identity_columns:
@@ -288,11 +290,11 @@ def _audit_verified_daily(states, symbols, access, effective_daily_session, reso
 
 def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbol,
                      options_reader, option_rules, daily_asof=None, static_metadata_reader=None,
-                     daily_handle_resolver=None, auto_prepare_data=True,
+                     daily_handle_resolver=None, auto_prepare_data=False,
                      refresh_policy="INCREMENTAL_IF_NEEDED", runtime=None,
                      options_prepare=None, options_enabled=None, mode="EOD",
                      contract_selector=None, market_state_reader=None,
-                     portfolio_context_reader=None, event_calendar_reader=None):
+                     portfolio_context_reader=None, event_calendar_reader=None, resume_row=None):
     started = perf_counter()
     selected_contract = None
     selection_result = None
@@ -308,92 +310,76 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         resolver = daily_handle_resolver or resolve_active_verified_daily_handle
         day = pd.Timestamp(daily_asof or asof).normalize()
 
-        def prepare_daily():
-            prep = MarketDataRequirements(symbol=symbol, required_start=str((day - pd.Timedelta(days=420)).date()),
-                                          required_end=str(day.date()), datasets=("daily",),
-                                          decision_as_of=str(day.date()), required_history_rows=200)
-            with _PREPARATION_LOCK:
-                active_state = _daily_preflight((symbol,), access, str(day.date()))[symbol]
-                if active_state.status == "READY":
-                    if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
-                        runtime.refresh_manifest_snapshot()
-                    return
-                if active_state.status == "PREP_REQUIRED" and any(code in {"DAILY_STALE", "CANONICAL_DAILY_STALE"} for code in active_state.reason_codes):
-                    ensure_market_data(symbol, prep, access=access)
-                    if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
-                        runtime.refresh_manifest_snapshot()
-                    return
-                # A verified canonical object with a missing pointer can be
-                # adopted locally before any provider path is considered.
-                try:
-                    admission = admit_migrated_daily_symbol(
-                        symbol, decision_as_of=str(day.date()), required_warmup_sessions=200,
-                        data_access=access)
-                except (OSError, ValueError, KeyError):
-                    admission = {"status": "MIGRATION_ADMISSION_FAILED"}
-                if admission.get("status") in {"MIGRATED_CANONICAL_INVALID", "MIGRATION_CATALOG_AMBIGUOUS", "MIGRATION_CATALOG_NOT_SUCCESS"}:
-                    raise ValueError(admission.get("reason_codes", ("MIGRATION_ADMISSION_FAILED",))[0])
-                if admission.get("status") in {"MIGRATION_CATALOG_MISSING", "MIGRATION_PHYSICAL_MISSING", "ADMITTED_NEEDS_INCREMENTAL", "MIGRATION_ADMISSION_FAILED"}:
-                    ensure_market_data(symbol, prep, access=access)
-                if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
-                    runtime.refresh_manifest_snapshot()
-
-        runtime = runtime or PoolRuntime(access)
+        # The scanner never prepares data; only the run orchestrator may write.
+        runtime = runtime or PoolRuntime(access=access)
         handle = runtime.resolve_daily_handle(
-            symbol, daily_asof or asof, 200, resolver=resolver,
-            prepare=prepare_daily,
-            auto_prepare=auto_prepare_data and daily_handle_resolver is None)
+            symbol, daily_asof or asof, 200, resolver=resolver)
         daily = runtime.read_daily(handle, end_date=daily_asof or asof,
                                    required_warmup_rows=200)
         if benchmark is None or daily.empty:
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
         # Each worker receives an independent immutable snapshot boundary;
         # trend helpers may construct intermediate columns internally.
-        timing_reasons = []
-        timing_warnings = []
-        trend_gate = pullback_gate = interpretation = trend_score = trend = None
-        try:
-            trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
-                                         as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol)
-            interpretation = interpret_trend(trend)
-            trend_score = score_trend(trend, interpretation)
-            trend_gate = evaluate_trend_gate(trend_score, interpretation, trend)
-            pullback_gate = evaluate_pullback_gate(trend_gate, trend, interpretation)
-            timing_warnings = list(getattr(trend, "warnings", ()) or ())
-            for result in (interpretation, trend_score, trend_gate, pullback_gate):
-                timing_warnings.extend(getattr(result, "warnings", ()) or ())
-            timing_warnings = list(dict.fromkeys(timing_warnings))
-            timing_reasons.extend(getattr(interpretation, "reasons", ()) or ())
-            timing_reasons.extend(getattr(trend_score, "reasons", ()) or ())
-            timing_reasons.extend(getattr(trend_gate, "reasons", ()) or ())
-            timing_reasons.extend(getattr(pullback_gate, "reasons", ()) or ())
-            if not all(getattr(result, "available", False) for result in
-                       (trend, interpretation, trend_score, trend_gate, pullback_gate)):
+        if resume_row is not None:
+            timing = resume_row.timing_status
+            action = FinalAction.WAIT
+            timing_reasons = tuple(resume_row.candidate_state["timing_reason_codes"])
+            timing_warnings = list(resume_row.warnings)
+            feature_date = resume_row.feature_max_date
+            close = resume_row.candidate_state["close"]
+            atr = resume_row.candidate_state["atr"]
+            engine = trend_gate = pullback_gate = None
+        else:
+            timing_reasons = []
+            timing_warnings = []
+            trend_gate = pullback_gate = interpretation = trend_score = trend = None
+            try:
+                trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
+                                             as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol)
+                interpretation = interpret_trend(trend)
+                trend_score = score_trend(trend, interpretation)
+                trend_gate = evaluate_trend_gate(trend_score, interpretation, trend)
+                pullback_gate = evaluate_pullback_gate(trend_gate, trend, interpretation)
+                timing_warnings = list(getattr(trend, "warnings", ()) or ())
+                for result in (interpretation, trend_score, trend_gate, pullback_gate):
+                    timing_warnings.extend(getattr(result, "warnings", ()) or ())
+                timing_warnings = list(dict.fromkeys(timing_warnings))
+                timing_reasons.extend(getattr(interpretation, "reasons", ()) or ())
+                timing_reasons.extend(getattr(trend_score, "reasons", ()) or ())
+                timing_reasons.extend(getattr(trend_gate, "reasons", ()) or ())
+                timing_reasons.extend(getattr(pullback_gate, "reasons", ()) or ())
+                if not all(getattr(result, "available", False) for result in
+                           (trend, interpretation, trend_score, trend_gate, pullback_gate)):
+                    timing, action = TimingStatus.WAIT, FinalAction.WAIT
+                    timing_reasons.insert(0, "TIMING_EVIDENCE_UNAVAILABLE")
+                elif trend_gate.trend_gate_result == "REJECT" or pullback_gate.pullback_gate_result == "REJECT":
+                    timing, action = TimingStatus.WAIT, FinalAction.REJECTED
+                    timing_reasons.insert(0, "UNDERLYING_STRUCTURAL_REJECT")
+                elif trend_gate.trend_gate_result == "WATCH":
+                    timing, action = TimingStatus.WATCH, FinalAction.WATCH
+                elif (trend_gate.trend_gate_result == "PASS" and
+                      pullback_gate.pullback_gate_result == "WAIT"):
+                    timing, action = TimingStatus.WAIT, FinalAction.WAIT
+                elif (trend_gate.trend_gate_result == "PASS" and
+                      pullback_gate.pullback_gate_result == "PASS"):
+                    timing, action = TimingStatus.TIMING_ENTRY_READY, FinalAction.WAIT
+                else:
+                    timing, action = TimingStatus.WAIT, FinalAction.WAIT
+            except Exception:
                 timing, action = TimingStatus.WAIT, FinalAction.WAIT
-                timing_reasons.insert(0, "TIMING_EVIDENCE_UNAVAILABLE")
-            elif trend_gate.trend_gate_result == "REJECT" or pullback_gate.pullback_gate_result == "REJECT":
-                timing, action = TimingStatus.WAIT, FinalAction.REJECTED
-                timing_reasons.insert(0, "UNDERLYING_STRUCTURAL_REJECT")
-            elif trend_gate.trend_gate_result == "WATCH":
-                timing, action = TimingStatus.WATCH, FinalAction.WATCH
-            elif (trend_gate.trend_gate_result == "PASS" and
-                  pullback_gate.pullback_gate_result == "WAIT"):
-                timing, action = TimingStatus.WAIT, FinalAction.WAIT
-            elif (trend_gate.trend_gate_result == "PASS" and
-                  pullback_gate.pullback_gate_result == "PASS"):
-                timing, action = TimingStatus.TIMING_ENTRY_READY, FinalAction.WAIT
-            else:
-                timing, action = TimingStatus.WAIT, FinalAction.WAIT
-        except Exception:
-            timing, action = TimingStatus.WAIT, FinalAction.WAIT
-            timing_reasons = ["TIMING_EVIDENCE_UNAVAILABLE"]
-        timing_reasons.extend(timing_warnings)
-        timing_reasons = tuple(dict.fromkeys(timing_reasons))
+                timing_reasons = ["TIMING_EVIDENCE_UNAVAILABLE"]
+            timing_reasons.extend(timing_warnings)
+            timing_reasons = tuple(dict.fromkeys(timing_reasons))
+            options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
+            candidates = ()
+            discovered_contracts = ()
+            engine = getattr(trend, "market_structure_engine", None)
+            feature_date = getattr(engine, "feature_max_date", None)
+            close = float(daily.iloc[-1].close)
+            atr = float(getattr(getattr(trend, "support", None), "current_atr", 0) or 0)
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
-        candidates = ()
-        discovered_contracts = ()
-        engine = getattr(trend, "market_structure_engine", None)
-        feature_date = getattr(engine, "feature_max_date", None)
+        candidates, discovered_contracts = (), ()
+        option_identity = None
         if options_enabled is None:
             options_enabled = options_reader is not None
         if (timing == TimingStatus.TIMING_ENTRY_READY and
@@ -401,35 +387,17 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             option_reasons = ("LIVE_OPTIONS_SOURCE_REQUIRED",)
         elif timing == TimingStatus.TIMING_ENTRY_READY and options_enabled:
             try:
-                if options_prepare is None and options_reader is None:
-                    option_day = pd.Timestamp(feature_date).normalize()
-
-                    def options_prepare():
-                        req = MarketDataRequirements(
-                            symbol=symbol, required_start=str(option_day.date()),
-                            required_end=str(option_day.date()), datasets=("options",),
-                            decision_as_of=str(option_day.date()), option_type="PUT",
-                            min_dte=30, max_dte=45, required_history_rows=0)
-                        ensure_market_data(symbol, req, access=access)
-
                 option_day = (pd.Timestamp(asof).normalize() if options_reader is not None and
                               mode in {"PREMARKET", "INTRADAY"} else pd.Timestamp(feature_date).normalize())
                 if options_reader is not None:
                     chain = runtime.read_options(
                         symbol=symbol, trade_date=option_day, reader=options_reader)
                 else:
-                    try:
-                        option_handle = runtime.resolve_options(symbol, str(option_day.date()))
-                    except Exception:
-                        if not auto_prepare_data or options_prepare is None:
-                            raise
-                        options_prepare()
-                        option_handle = resolve_active_verified_options_handle(
-                            symbol, str(option_day.date()), data_access=access)
+                    option_handle = runtime.resolve_options(symbol, str(option_day.date()))
                     chain = runtime.read_options_handle(option_handle, start_date=str(option_day.date()), end_date=str(option_day.date()))
                 chain = _validate_options_quote_session(chain, option_day)
-                close = float(daily.iloc[-1].close)
-                atr = float(getattr(trend.support, "current_atr", 0) or 0)
+                if options_reader is None:
+                    option_identity = list(runtime._handle_key(option_handle))
                 contract_entry_date = option_day
                 candidates = discover_spreads(symbol, contract_entry_date, close, atr, chain,
                                               rules=option_rules)
@@ -479,9 +447,9 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 discovered_contracts = tuple(_candidate_record(candidate) for candidate in candidates)
             except Exception as exc:
                 options_status = OptionsStatus.DATA_BLOCKED
-                option_reasons = (str(exc).strip() or "OPTIONS_DATA_BLOCKED",)
+                option_reasons = (_safe_reason(exc),)
         reasons = timing_reasons + option_reasons or ("TIMING_EVALUATED",)
-        return TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
+        evaluated = TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
             latency_ms=(perf_counter()-started)*1000,
             spread_count=len(candidates),
@@ -494,7 +462,30 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             short_term_phase=getattr(engine, "short_term_phase", None),
             trend_gate_reasons=tuple(getattr(trend_gate, "reasons", ()) or ()),
             pullback_gate_reasons=tuple(getattr(pullback_gate, "reasons", ()) or ()),
-            warnings=tuple(timing_warnings))
+            warnings=tuple(timing_warnings),
+            generation_id=getattr(handle, "generation_id", None),
+            dataset_fingerprint=getattr(handle, "dataset_fingerprint", None),
+            candidate_state={
+                "decision_as_of": asof, "market_data_as_of": str(day.date()),
+                "decision_mode": "EOD_SCAN" if contract_selector is None and mode == "EOD" else mode,
+                "timing_computed_at": (resume_row.candidate_state["timing_computed_at"] if resume_row
+                                       else datetime.now(timezone.utc).isoformat()),
+                "timing_reason_codes": list(timing_reasons), "close": close, "atr": atr,
+                "daily_identity": list(runtime._handle_key(handle)),
+                "options_identity": option_identity,
+                "options_evaluation_reused": False,
+                "options_data_status": "VERIFIED" if option_identity else "NOT_VERIFIED",
+                "contract_evaluation_status": options_status.value,
+                "resume_stage": ("TIMING" if timing != TimingStatus.TIMING_ENTRY_READY else
+                    "OPTIONS" if options_status in {OptionsStatus.NOT_EVALUATED, OptionsStatus.DATA_BLOCKED} else "EVENT"),
+            })
+        if resume_row is not None:
+            evaluated = replace(evaluated, structural_trend=resume_row.structural_trend,
+                short_term_phase=resume_row.short_term_phase,
+                trend_gate_reasons=resume_row.trend_gate_reasons,
+                pullback_gate_reasons=resume_row.pullback_gate_reasons,
+                candidate_state={**resume_row.candidate_state, **evaluated.candidate_state})
+        return evaluated
     except Exception as exc:
         trace_dir = os.getenv("PCS_POOL_SCAN_TRACEBACK_DIR")
         if trace_dir:
@@ -523,6 +514,201 @@ def _as_of(value) -> str:
         # UTC after midnight must not advance an NYSE PREMARKET run early.
         return datetime.now(ZoneInfo("America/New_York")).isoformat()
     return pd.Timestamp(value).isoformat()
+
+
+def _options_requirement(row, rules):
+    # Required dates are QUOTE sessions. Expiration is a separate selector bound.
+    day = str(pd.Timestamp(row.feature_max_date).date())
+    return MarketDataRequirements(symbol=row.symbol, required_start=day,
+        required_end=day, datasets=("options",), decision_as_of=day,
+        option_type="PUT", min_dte=int(rules.get("hard_dte_min", rules.get("dte_min", 7))),
+        max_dte=int(rules.get("hard_dte_max", rules.get("dte_max", 45))), required_history_rows=0)
+
+
+def _safe_reason(exc):
+    """Provider errors must not put request headers, bodies or secrets in reports."""
+    import re
+    text = str(exc).strip()
+    if "reason=DATA_NOT_INGESTED_OR_CANONICAL_MANIFEST_MISSING" in text:
+        return "OPTIONS_GENERATION_MISSING"
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{0,100}", text):
+        return text
+    diagnostics = getattr(exc, "diagnostics", None)
+    if getattr(diagnostics, "http_status", None) in {401, 403}:
+        return "CLICKHOUSE_AUTHENTICATION_FAILED"
+    if getattr(diagnostics, "timeout_code", None) or isinstance(exc, TimeoutError):
+        return "PROVIDER_PROBE_TIMEOUT"
+    return "OPTIONS_PREPARATION_ERROR" if diagnostics else "OPTIONS_CANONICAL_VERIFICATION_FAILED"
+
+
+def _options_receipt(value):
+    """Keep machine evidence, never free-form provider diagnostics/configuration."""
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    allowed = {"status", "reason_codes", "selected_source", "provider_coverage", "import_outcomes",
+        "promoted_partitions", "promotion_receipt", "result", "dataset", "symbol", "source_table",
+        "requested_start", "requested_end", "source_min_date", "source_max_date", "physical_rows",
+        "unique_contract_keys", "put_rows", "call_rows", "request_id", "generation_id",
+        "promoted_generation_id", "read_back_generation_id", "checksum", "row_count", "partition",
+        "path", "manifest_identity", "partition_ids", "content_hash", "final_canonical_status", "partitions"}
+    def clean(item):
+        if isinstance(item, Mapping):
+            return {k: clean(v) for k, v in item.items() if k in allowed}
+        if isinstance(item, (tuple, list)):
+            return [clean(v) for v in item]
+        return item if item is None or isinstance(item, (str, int, float, bool)) else str(item)
+    return clean(value) if isinstance(value, Mapping) else {"status": "UNKNOWN"}
+
+
+def _source_check_status(receipt):
+    codes, counts = set(), []
+    def visit(item):
+        if isinstance(item, Mapping):
+            codes.update(item.get("reason_codes", ()))
+            if "physical_rows" in item:
+                counts.append(int(item["physical_rows"] or 0))
+            for value in item.values():
+                visit(value)
+        elif isinstance(item, (list, tuple)):
+            for value in item:
+                visit(value)
+    visit(receipt)
+    for code, status in (("AUTHORIZED_SOURCE_NO_ROWS", "CONFIRMED_EMPTY"),
+                         ("CLICKHOUSE_AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED"),
+                         ("PROVIDER_PROBE_TIMEOUT", "TIMED_OUT"),
+                         ("CONFIGURATION_NOT_LOADED", "CONFIGURATION_NOT_LOADED"),
+                         ("CLICKHOUSE_CREDENTIALS_MISSING", "CREDENTIALS_MISSING"),
+                         ("CLICKHOUSE_CONNECTION_FAILED", "CONNECTION_FAILED")):
+        if code in codes:
+            return status
+    return "AVAILABLE" if any(counts) else "NOT_CHECKED"
+
+
+def _prepare_candidate_options(row, *, runtime, requirements):
+    """One standard control-plane call per need/run, with a cross-process lease.
+
+    The existing metadata lock is nonblocking here: another preparation yields
+    a recoverable result rather than a second concurrent loader or an idle wait.
+    """
+    import json
+    key = ("prepare_options", json.dumps(asdict(requirements), sort_keys=True))
+    def produce():
+        lease = Path(runtime.access.manifest_path).resolve().parent / "pool_options_preparation"
+        try:
+            with PCSDataAccess._file_lock(lease, blocking=False):
+                # Another process may have completed between scan and lease.
+                runtime.refresh_options()
+                try:
+                    handle = runtime.resolve_options(row.symbol, requirements.required_end)
+                    chain = runtime.read_options_handle(handle, start_date=requirements.required_start,
+                                                        end_date=requirements.required_end)
+                    _validate_options_quote_session(chain, requirements.required_end)
+                    return {"status": "ALREADY_COMPLETE", "reason_codes": [], "provider_attempted": False}
+                except Exception:
+                    pass
+                try:
+                    receipt = _options_receipt(ensure_market_data(row.symbol, requirements, access=runtime.access))
+                    source_status = _source_check_status(receipt)
+                    return {**receipt, "control_plane_attempted": True, "source_check_status": source_status,
+                            "provider_attempted": source_status in {"AVAILABLE", "CONFIRMED_EMPTY", "TIMED_OUT", "AUTHENTICATION_FAILED", "CONNECTION_FAILED"}}
+                except Exception as exc:
+                    return {"status": "BLOCKED", "reason_codes": [_safe_reason(exc)], "control_plane_attempted": True,
+                            "provider_attempted": bool(getattr(exc, "diagnostics", None))}
+        except OSError:
+            return {"status": "BLOCKED", "reason_codes": ["OPTIONS_PREPARATION_IN_PROGRESS"],
+                    "provider_attempted": False}
+    return runtime.resolve_handle(key, produce)
+
+
+def _continue_candidate(row, *, runtime, rules, allow_prepare, evaluate, save, deadline, reuse_evaluation=False):
+    """Bounded prepare -> independent verified read -> options-only continuation."""
+    from datetime import timedelta
+    from pcs.data.clickhouse import ClickHouseConfig
+    req = _options_requirement(row, rules)
+    state = {"source_check_status": "NOT_CHECKED", **row.candidate_state, "requirements": asdict(req),
+             "expiration_start": str((pd.Timestamp(req.required_end) + pd.Timedelta(days=req.min_dte)).date()),
+             "expiration_end": str((pd.Timestamp(req.required_end) + pd.Timedelta(days=req.max_dte)).date())}
+    row = replace(row, candidate_state=state)
+    save(row)  # Persist timing before any I/O or mutable preparation.
+
+    def verified():
+        handle = runtime.resolve_options(row.symbol, req.required_end)
+        frame = runtime.read_options_handle(handle, start_date=req.required_start, end_date=req.required_end)
+        _validate_options_quote_session(frame, req.required_end)
+        return list(runtime._handle_key(handle))
+
+    previous_options_identity = state.get("options_identity")
+    continuation_ready = False
+    try:
+        option_identity = verified()
+    except Exception as exc:
+        reason = _safe_reason(exc)
+        row = replace(row, options_status=OptionsStatus.DATA_BLOCKED, final_action=FinalAction.WAIT,
+            selected_contract=None, selection_result=None, selection_data_identity=None,
+            selection_reason_codes=(), discovered_contracts=(), spread_count=0,
+            reason_codes=tuple(state["timing_reason_codes"]) + tuple(dict.fromkeys(
+                (*state.get("preparation_receipt", {}).get("reason_codes", ()), reason))),
+            candidate_state={**state, "options_data_status": "WAITING_DATA",
+                             "verified_read_status": "FAILED", "options_identity": None,
+                             "options_evaluation_reused": False,
+                             "contract_evaluation_status": "NOT_EVALUATED", "resume_stage": "OPTIONS"})
+        now = datetime.now(timezone.utc)
+        due = row.next_review_at
+        if not allow_prepare:
+            row = replace(row, reentry_conditions=("RUN_PREPARE_THEN_SCAN_WITH_AUTO_PREPARE_DATA",))
+        elif due and now < datetime.fromisoformat(due):
+            row = replace(row, reentry_conditions=("RETRY_AT_OR_AFTER_NEXT_REVIEW_AT",))
+        elif perf_counter() >= deadline:
+            row = replace(row, reason_codes=row.reason_codes + ("OPTIONS_PREPARATION_BUDGET_EXHAUSTED",),
+                          reentry_conditions=("NEXT_RUN_WITH_PREPARATION_BUDGET",))
+        else:
+            budget = ClickHouseConfig.from_env()
+            # The loader owns its existing finite request retries. The outer run
+            # attempts a need once and never sleeps waiting for publication.
+            retry_seconds = max(budget.total_timeout, budget.backoff_base * 2 ** (budget.max_attempts - 1))
+            row = replace(row, next_review_at=(now + timedelta(seconds=retry_seconds)).isoformat(),
+                candidate_state={**row.candidate_state, "options_data_status": "PREPARING",
+                    "source_query_started_at": now.isoformat(), "attempt_budget_per_run": 1,
+                    "preparation_attempt_run_id": row.run_id})
+            save(row)
+            receipt = _prepare_candidate_options(row, runtime=runtime, requirements=req)
+            finished = datetime.now(timezone.utc)
+            row = replace(row, next_review_at=(finished + timedelta(seconds=retry_seconds)).isoformat(),
+                candidate_state={**row.candidate_state, "preparation_receipt": receipt,
+                    "source_check_status": receipt.get("source_check_status", "NOT_CHECKED"),
+                    "source_query_completed_at": finished.isoformat()})
+            # SUCCESS is never sufficient. Fresh resolution and exact-session
+            # readback are mandatory even when the provider claims success.
+            try:
+                runtime.refresh_options()
+                option_identity = verified()
+            except Exception as failure:
+                codes = tuple(receipt.get("reason_codes", ())) + (_safe_reason(failure),)
+                row = replace(row, reason_codes=tuple(state["timing_reason_codes"]) + tuple(dict.fromkeys(codes)),
+                    reentry_conditions=("RETRY_AT_OR_AFTER_NEXT_REVIEW_AT",),
+                    candidate_state={**row.candidate_state, "options_data_status": "WAITING_DATA",
+                        "verified_read_status": "FAILED", "options_identity": None})
+                save(row)
+                return row
+            continuation_ready = True
+        if not continuation_ready:
+            save(row)
+            return row
+    row = replace(row, next_review_at=None, reentry_conditions=(),
+        candidate_state={**row.candidate_state, "options_data_status": "VERIFIED",
+            "verified_read_status": "PASS", "options_identity": option_identity})
+    # Only the scanner evaluates contracts; it receives the same verified runtime
+    # and compact timing evidence. It cannot call the provider.
+    if (reuse_evaluation and previous_options_identity == option_identity
+            and row.options_status in {OptionsStatus.DISCOVERED, OptionsStatus.REJECT}):
+        result = replace(row, candidate_state={**row.candidate_state, "options_evaluation_reused": True})
+    else:
+        result = evaluate(row)
+    if result.timing_status != row.timing_status:
+        result = replace(row, options_status=OptionsStatus.DATA_BLOCKED,
+            reason_codes=tuple(state["timing_reason_codes"]) + ("OPTIONS_CONTINUATION_FAILED",))
+    save(result)
+    return result
 
 
 def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, Any],
@@ -867,19 +1053,40 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 initial_daily_readiness=initial[normalized].status)
         else:
             queued_symbols.append(symbol)
-    scan = runtime.run_stage(tuple(queued_symbols),
-        lambda symbol: _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
-            runtime=runtime,
-            benchmark=benchmark, benchmark_symbol=benchmark_symbol,
-            options_reader=options_reader, option_rules=option_rules,
-            daily_asof=effective_asof,
+    from .artifacts import CandidateCheckpoints
+    checkpoints = CandidateCheckpoints(output_directory, run_id)
+    checkpoint_identities = {}
+
+    def scan_symbol(symbol):
+        resume = None
+        if mode == "EOD" and options_reader is None and benchmark is not None:
+            handle = runtime.resolve_daily(symbol, effective_asof, 200, resolver=daily_resolver)
+            identity = {"symbol": symbol, "session": effective_asof, "mode": mode,
+                "code_revision": code_revision, "rules_identity": engine_version,
+                "daily": list(runtime._handle_key(handle)),
+                "daily_manifest": str(getattr(handle, "manifest_identity", "")),
+                "benchmark": list(runtime._handle_key(benchmark_handle)),
+                "benchmark_manifest": str(getattr(benchmark_handle, "manifest_identity", "")),
+                "static_metadata": (static_metadata_reader(symbol) if static_metadata_reader else None)}
+            checkpoint_identities[symbol] = identity
+            # Missing immutable identity is never compatible evidence.
+            if getattr(handle, "checksum", None) and getattr(handle, "generation_id", None):
+                resume = checkpoints.resume(symbol, identity)
+        if resume is not None:
+            return replace(resume, run_id=run_id, as_of=asof, event_status="NOT_EVALUATED",
+                portfolio_status="NOT_EVALUATED", final_action=FinalAction.WAIT,
+                candidate_state={**resume.candidate_state, "timing_reused": True})
+        return _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
+            runtime=runtime, benchmark=benchmark, benchmark_symbol=benchmark_symbol,
+            options_reader=options_reader, option_rules=option_rules, daily_asof=effective_asof,
             static_metadata_reader=static_metadata_reader,
             daily_handle_resolver=daily_handle_resolver, auto_prepare_data=False,
             refresh_policy=refresh_policy, options_prepare=None,
-            options_enabled=(options_reader is not None or options_resolver is not None), mode=mode,
+            options_enabled=(options_reader is not None), mode=mode,
             contract_selector=contract_selector, market_state_reader=market_state_reader,
-            portfolio_context_reader=portfolio_context_reader,
-            event_calendar_reader=event_calendar_reader),
+            portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader)
+
+    scan = runtime.run_stage(tuple(queued_symbols), scan_symbol,
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
     outcomes = scan.outcomes
@@ -887,6 +1094,47 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes))
         for outcome in outcomes}
+    options_started = perf_counter()
+    options_deadline = options_started + stage_timeout_seconds
+    options_preparation_results = {}
+    for symbol, row in tuple(worker_results.items()):
+        if mode != "EOD" or options_reader is not None or row.timing_status != TimingStatus.TIMING_ENTRY_READY:
+            continue
+        if not row.candidate_state:
+            # A custom scanner without recovery evidence cannot be resumed.
+            continue
+        row = replace(row, candidate_state={**row.candidate_state,
+            "code_identity": code_revision, "rules_identity": engine_version,
+            "market_session": effective_asof, "decision_as_of": asof})
+        if not row.candidate_state.get("preparation_receipt"):
+            evidence, next_review = checkpoints.preparation_evidence(symbol, asdict(_options_requirement(row, option_rules)))
+            row = replace(row, candidate_state={**row.candidate_state, **evidence}, next_review_at=next_review)
+        def save(candidate):
+            identity = checkpoint_identities.get(symbol)
+            if identity:
+                checkpoints.save(candidate, identity)
+        def evaluate(candidate):
+            return _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
+                runtime=runtime, benchmark=benchmark, benchmark_symbol=benchmark_symbol,
+                options_reader=None, option_rules=option_rules, daily_asof=effective_asof,
+                static_metadata_reader=static_metadata_reader, daily_handle_resolver=daily_handle_resolver,
+                auto_prepare_data=False, options_enabled=True, mode=mode, resume_row=candidate,
+                contract_selector=contract_selector, market_state_reader=market_state_reader,
+                portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader)
+        try:
+            row = _continue_candidate(row, runtime=runtime, rules=option_rules,
+                allow_prepare=auto_prepare_data, evaluate=evaluate, save=save, deadline=options_deadline,
+                reuse_evaluation=(contract_selector is None and market_state_reader is None
+                                  and portfolio_context_reader is None and event_calendar_reader is None))
+        except Exception as exc:
+            row = replace(row, options_status=OptionsStatus.DATA_BLOCKED, final_action=FinalAction.WAIT,
+                reason_codes=tuple(row.candidate_state["timing_reason_codes"]) + (_safe_reason(exc),),
+                candidate_state={**row.candidate_state, "resume_stage": "OPTIONS", "options_data_status": "WAITING_DATA"})
+            save(row)
+        worker_results[symbol] = row
+        if row.candidate_state.get("preparation_receipt") and row.candidate_state.get("preparation_attempt_run_id") == run_id:
+            options_preparation_results[symbol] = row.candidate_state["preparation_receipt"]
+    stage_latency["options_recovery"] = (perf_counter() - options_started) * 1000
     worker_results = {
         symbol: replace(row,
                         preparation_status=prep_evidence[symbol]["status"],
@@ -948,6 +1196,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         summary["pcs_trade_ready_count"] = sum(row.final_action == FinalAction.PCS_TRADE_READY for row in results)
     else:
         stage_latency["finalize"] = 0.0
+    for row in results:
+        if row.symbol in checkpoint_identities and row.timing_status == TimingStatus.TIMING_ENTRY_READY:
+            checkpoints.save(row, checkpoint_identities[row.symbol])
     counters = {
         "ordinary_reader_calls": 0,
         "options_reader_calls": summary["options_check_count"],
@@ -963,6 +1214,16 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         for symbol in prep_results
         if isinstance(prep_results.get(symbol), Mapping)
     }
+    for symbol, receipt in options_preparation_results.items():
+        preparation_results.setdefault(symbol, {})["options"] = receipt
+    summary["options_verified_count"] = sum(r.candidate_state.get("verified_read_status") == "PASS" for r in results)
+    summary["options_evaluated_count"] = sum(r.options_status in {OptionsStatus.PASS, OptionsStatus.DISCOVERED, OptionsStatus.REJECT} for r in results)
+    summary["options_prepare_attempted_count"] = sum(bool(r.get("control_plane_attempted", r.get("provider_attempted"))) for r in options_preparation_results.values())
+    summary["timing_reused_count"] = sum(bool(r.candidate_state.get("timing_reused")) for r in results)
+    counters["options_prepare_attempted"] = summary["options_prepare_attempted_count"]
+    counters["provider_calls"] += sum(bool(r.get("provider_attempted")) for r in options_preparation_results.values())
+    counters["promotion_calls"] += sum(len(r.get("promoted_partitions", ())) for r in options_preparation_results.values())
+    counters["recovery_calls"] += summary["options_prepare_attempted_count"]
     recovery_summary = summarize_recovery_results(prep_results)
     stage_latency["validation"] = 0.0
     from .validation import validate_pool_result

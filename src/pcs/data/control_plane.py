@@ -248,7 +248,7 @@ class ImportEngine:
         if frame is None or frame.empty:
             raise DataAccessError("STAGE_EMPTY_PAYLOAD")
         logical_dataset = str(dataset)
-        route_access, physical_dataset, manifest_path, parquet_root = self.access.route_bound_access(logical_dataset, symbol)
+        route_access, physical_dataset, manifest_path, parquet_root = self.access.route_bound_access(logical_dataset, symbol, for_import=True)
         checked = frame.copy()
         if "symbol" not in checked.columns or set(checked["symbol"].astype(str).str.upper()) != {symbol}:
             raise DataAccessError("TICKER_ISOLATION_FAILED")
@@ -637,7 +637,9 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
             load_project_environment()
             password = os.getenv("CLICKHOUSE_PASSWORD")
             if not password:
-                return {"status": "BLOCKED", "reason_codes": ["CLICKHOUSE_CREDENTIALS_MISSING"], "selected_source": "clickhouse_options"}
+                return {"status": "BLOCKED", "reason_codes": [
+                    "CONFIGURATION_NOT_LOADED" if os.getenv("PCS_ENV_FILE") and not Path(os.environ["PCS_ENV_FILE"]).is_file()
+                    else "CLICKHOUSE_CREDENTIALS_MISSING"], "selected_source": "clickhouse_options"}
             from .clickhouse import PCSClickHouseClient
             current_client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", "hisdata230"), password)
         if current_client is not None and req.required_start and req.required_end:
@@ -653,18 +655,9 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
                     start = max(pd.Timestamp(start).date(), first_daily).isoformat()
             except (DataAccessError, FileNotFoundError, ValueError):
                 pass
-            try:
-                existing = access.read("options", req.symbol)
-                if len(existing):
-                    latest = pd.Timestamp(existing["trade_date"].max()).date()
-                    start = max(pd.Timestamp(start).date(), latest + pd.Timedelta(days=1).to_pytimedelta()).isoformat()
-            except (DataAccessError, CanonicalFileAccessError, FileNotFoundError, ValueError):
-                # A normal canonical absence is recoverable and should allow
-                # the registered provider probe below.  Unexpected failures
-                # must not be silently converted into a fetch attempt.
-                pass
-            if str(start) > str(req.required_end):
-                return {"status": "REUSED", "reason_codes": ["CURRENT_OPTIONS_ALREADY_COVERED"], "requested_start": start}
+            # Do not advance past the latest quote: an earlier requested
+            # session may be an interior gap. The plan reuses complete data;
+            # promotion merges this bounded response into the active partition.
             coverage = current_client.fetch_options_coverage(req.symbol, str(start), req.required_end)
             if coverage.get("status") != "READY":
                 return {**coverage, "selected_source": "clickhouse_options"}
@@ -782,6 +775,15 @@ class MarketDataControlPlane:
                     if len(active):
                         payload["last_date"] = str(pd.to_datetime(active.max_date, errors="coerce").max().date())
                         payload["row_count"] = int(pd.to_numeric(active.row_count, errors="coerce").fillna(0).sum())
+                if dataset == "options" and req.required_start == req.required_end and req.required_end:
+                    from .strategy_readiness import resolve_active_verified_options_handle
+                    try:
+                        handle = resolve_active_verified_options_handle(req.symbol, req.required_end, data_access=self.access)
+                        quotes = self.access.read_verified_dataset(handle, start_date=req.required_start, end_date=req.required_end)
+                        if quotes.empty:
+                            raise ValueError("OPTIONS_SESSION_MISSING")
+                    except (DataAccessError, FileNotFoundError, ValueError):
+                        payload["coverage_gap"] = "OPTIONS_SESSION_MISSING"
                 out[dataset] = payload
             except CanonicalFileAccessError as exc:
                 out[dataset] = {"present": True, "readable": False,

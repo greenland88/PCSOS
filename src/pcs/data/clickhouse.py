@@ -196,7 +196,8 @@ class PCSClickHouseClient:
             diag = self.query(sql, ticker=ticker, operation="fetch_options_coverage")
         except ClickHouseError as exc:
             message = str(exc).lower()
-            reason = ("PROVIDER_PROBE_TIMEOUT" if getattr(exc.diagnostics, "timeout_code", None) == "PROVIDER_PROBE_TIMEOUT"
+            reason = ("CLICKHOUSE_AUTHENTICATION_FAILED" if exc.diagnostics.http_status in {401, 403}
+                      else "PROVIDER_PROBE_TIMEOUT" if getattr(exc.diagnostics, "timeout_code", None) == "PROVIDER_PROBE_TIMEOUT"
                       else "CLICKHOUSE_SOURCE_TABLE_UNAVAILABLE" if "unknown table" in message or "not exist" in message
                       else "CLICKHOUSE_CONNECTION_FAILED")
             return {"symbol": ticker, "requested_start": str(start)[:10], "requested_end": str(end)[:10],

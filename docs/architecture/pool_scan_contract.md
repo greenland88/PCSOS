@@ -9,7 +9,7 @@ The canonical implementation is `pcs.pool.runner.run_pcs_pool`, exposed by the
   `POOL_SCAN_STARTED` immediately. Every stage has a finite timeout and returns
   one ordered outcome per requested symbol. A hang, timeout, process failure, or
   empty ticker result is not success.
-- Read-only scans do not import, promote, recover, or write canonical data.
+- Read-only scans do not import, promote, repair, or write canonical data.
   Preparation is opt-in through `data_mode="PREPARE_THEN_SCAN"` plus
   `auto_prepare_data=True` and still uses the control plane.
 - Daily and options data resolve only through `PCSDataAccess` and
@@ -174,3 +174,61 @@ Run snapshots fingerprint the executing PCS Python source tree and effective
 option rules. These content identities replace unknown code/engine labels and
 remain independent of the canonical data manifest identity. A source digest is
 not a git commit; delivery evidence records the actual commit separately.
+
+
+## On-demand options preparation and local recovery
+
+`run_pcs_pool` owns the daily -> timing -> options preparation -> options-only
+continuation sequence. `PREPARE_THEN_SCAN` still requires `auto_prepare_data=True`;
+there is no import inside `_evaluate_symbol`. Only timing-ready EOD candidates
+with missing verified quotes enter the standard `ensure_market_data` importer.
+READ_ONLY may write run artifacts/checkpoints, but never calls import/promotion.
+Live modes continue to require their live reader; EOD preparation does not claim
+intraday coverage.
+
+Each candidate's `candidate_state` contains timing computation time, compact
+close/ATR evidence from the existing timing engine, code/rule/daily identities,
+quote requirements, separate expiration bounds, source-query timestamps and
+receipts, verified-read and contract-evaluation states, and resume stage.
+`event_status`, `portfolio_status`, and `final_action` remain separate fields.
+An options failure preserves timing and returns WAIT with specific reasons.
+The candidate is not approved for trading; unevaluated portfolio cannot produce
+PCS_TRADE_READY.
+
+Run-local `candidate_checkpoints/<symbol-hash>.json` files are atomically written
+and hashed before preparation, after readback, and after final gates. They are
+recovery evidence, never canonical manifests or proof of data readiness.
+Checkpoint consumption requires matching session, mode, code, effective rules,
+static metadata, and independently resolved daily/benchmark identities. A new
+session invalidates timing. An options generation change re-evaluates options
+without recomputing compatible timing. Compatible discovery/rejection may be
+reused only after current verified quote readback; decision-context adapters
+are evaluated again, and event/portfolio states are not inherited as approvals.
+Backoff evidence for an identical quote requirement survives a code/timing
+invalidation without preserving its old timing result. Historical source receipts
+retain the original query time and are not counted as new provider attempts.
+
+The orchestrator uses the existing runtime single-flight cache and a nonblocking
+PCSDataAccess file lock for preparation in the same canonical metadata directory.
+Contending runs preserve candidates with OPTIONS_PREPARATION_IN_PROGRESS.
+Each need gets at most one control-plane attempt per run; the existing
+ClickHouseConfig controls the provider's bounded retries and request timeouts.
+The next allowed outer attempt is after the recorded completion time plus
+`max(total_timeout, backoff_base * 2**(max_attempts-1))` seconds. The outer run
+never sleeps waiting for source publication. Its options stage deadline stops
+new preparations; a started importer completes its bounded I/O and transactional
+promotion rather than being forcibly killed. There is no background monitor.
+
+READY/SUCCESS loader receipts alone never authorize evaluation: refresh the
+options manifest/cache, resolve a verified handle, read the exact quote session,
+and validate that session independently before calling the existing options
+adapter. Preserve configuration-not-loaded, authentication, timeout, confirmed
+zero rows, canonical read failure, and not-checked outcomes distinctly. A provider
+zero-row result is not a global absence claim. Other tickers continue and every
+requested ticker has exactly one final row.
+
+Reuse the same output directory in daily commands so subsequent invocations can
+find compatible checkpoints. `options_evaluated_count` counts successfully
+completed options/discovery evaluations, not attempted reads; always report this
+denominator alongside opportunity counts. `options_verified_count` and
+`options_prepare_attempted_count` are separate.
