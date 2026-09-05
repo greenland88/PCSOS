@@ -105,6 +105,10 @@ def test_semantic_hash_handles_mixed_date_object_values():
     a=PCSDataAccess()
     mixed=pd.DataFrame({"date":[pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-03").date()], "value":[1,2]})
     assert a.semantic_content_hash(mixed)
+    legacy = a._surrogate_semantic_content_hash(mixed)
+    assert a._semantic_hash_matches(mixed, legacy)
+    changed = mixed.copy(); changed.loc[0, "value"] = 99
+    assert not a._semantic_hash_matches(changed, legacy)
 
 def test_promotion_invalidates_old_generation_cache(tmp_path):
     a=access(tmp_path); r1=a.promote_generation(frame(),"options","ZZZ","year=2026/quarter=1",source_version="a"); a.generation_cache.put("options","ZZZ","year=2026/quarter=1",r1.generation_id,"old"); r2=a.promote_generation(frame(bid=1.2),"options","ZZZ","year=2026/quarter=1",source_version="b")
