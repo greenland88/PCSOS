@@ -1,0 +1,178 @@
+[
+  {
+    "symbol": "OST",
+    "requirements": {
+      "symbol": "OST",
+      "required_start": "2025-11-18",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "source_result": "SOURCE_CONFIRMED_ZERO_ROWS",
+    "receipt_status": "PARTIAL",
+    "promoted_partitions": [],
+    "verified_status": "BLOCKED",
+    "verified_identity": null,
+    "verified_at": "2026-09-05T19:51:53.977260+00:00"
+  },
+  {
+    "symbol": "TLPH",
+    "requirements": {
+      "symbol": "TLPH",
+      "required_start": "2026-08-20",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "source_result": "IMPORTED",
+    "receipt_status": "ALREADY_COMPLETE",
+    "promoted_partitions": [],
+    "verified_status": "READY",
+    "verified_identity": {
+      "dataset": "daily",
+      "ticker": "TLPH",
+      "generation_id": "1272b29d7c3eeb639b4b3766|60c2890340e350c4de23137a",
+      "partitions": [
+        "year=2025",
+        "year=2026"
+      ],
+      "checksum": "8af35df0e911a8f46d3afbba1486c41b561e3fc4fb142648a1af8f1f61e3d9ff",
+      "row_count": 420,
+      "canonical_paths": [
+        "data\\parquet\\daily\\symbol=TLPH\\year=2025\\generations\\1272b29d7c3eeb639b4b3766.parquet",
+        "data\\parquet\\daily\\symbol=TLPH\\year=2026\\generations\\60c2890340e350c4de23137a.parquet"
+      ],
+      "coverage": {
+        "min_date": "2025-01-02",
+        "max_date": "2026-09-04"
+      },
+      "source_lineage": [],
+      "dataset_fingerprint": "2bc70a498c726873ec356bc516c9b0d095e9c9de550544addcfe06df40ab3fba",
+      "schema_version": "2",
+      "price_basis": "canonical_adjusted",
+      "corporate_action_version": "canonical_identity",
+      "min_date": "2025-01-02",
+      "max_date": "2026-09-04",
+      "partition_count": 2,
+      "manifest_identity": "",
+      "verification_status": "VERIFIED"
+    },
+    "verified_at": "2026-09-05T19:52:56.668746+00:00"
+  },
+  {
+    "symbol": "TLRY",
+    "requirements": {
+      "symbol": "TLRY",
+      "required_start": "2026-09-02",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "source_result": "IMPORTED",
+    "receipt_status": "ALREADY_COMPLETE",
+    "promoted_partitions": [],
+    "verified_status": "READY",
+    "verified_identity": {
+      "dataset": "daily",
+      "ticker": "TLRY",
+      "generation_id": "8f8bb4b3f18bf4dcd9ea0e48|c89ce039585ef5ef9fa39ec2",
+      "partitions": [
+        "year=2025",
+        "year=2026"
+      ],
+      "checksum": "9b4efcf2c54e2382d02141e01e8df4b2c78953174f6dd479d5628a32e262fd4e",
+      "row_count": 420,
+      "canonical_paths": [
+        "data\\parquet\\daily\\symbol=TLRY\\year=2025\\generations\\8f8bb4b3f18bf4dcd9ea0e48.parquet",
+        "data\\parquet\\daily\\symbol=TLRY\\year=2026\\generations\\c89ce039585ef5ef9fa39ec2.parquet"
+      ],
+      "coverage": {
+        "min_date": "2025-01-02",
+        "max_date": "2026-09-04"
+      },
+      "source_lineage": [],
+      "dataset_fingerprint": "c91c80cfae5e86d0ea29935199979fea42b33a0afec813f7f077e420cb12c033",
+      "schema_version": "2",
+      "price_basis": "canonical_adjusted",
+      "corporate_action_version": "canonical_identity",
+      "min_date": "2025-01-02",
+      "max_date": "2026-09-04",
+      "partition_count": 2,
+      "manifest_identity": "",
+      "verification_status": "VERIFIED"
+    },
+    "verified_at": "2026-09-05T19:52:56.770359+00:00"
+  },
+  {
+    "symbol": "TLT",
+    "requirements": {
+      "symbol": "TLT",
+      "required_start": "2026-08-14",
+      "required_end": "2026-08-14",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-08-14",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "source_result": "IMPORTED",
+    "receipt_status": "ALREADY_COMPLETE",
+    "promoted_partitions": [],
+    "verified_status": "BLOCKED",
+    "verified_identity": null,
+    "verified_at": "2026-09-05T19:52:56.783533+00:00"
+  },
+  {
+    "symbol": "TLT",
+    "requirements": {
+      "symbol": "TLT",
+      "required_start": "2026-09-02",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "source_result": "SOURCE_RATE_LIMITED",
+    "receipt_status": "PARTIAL",
+    "promoted_partitions": [],
+    "verified_status": "BLOCKED",
+    "verified_identity": null,
+    "verified_at": "2026-09-05T19:52:56.783533+00:00"
+  }
+]

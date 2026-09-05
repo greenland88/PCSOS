@@ -1,0 +1,56 @@
+[
+  {
+    "symbol": "TBIL",
+    "generation_id": "817a943254870fed0ba3f8d0|9f03fe5e21fe9d020acc3535",
+    "verified_rows": 420,
+    "market_structure": {
+      "available": false,
+      "latest_swing_high": null,
+      "latest_swing_high_date": null,
+      "previous_swing_high": null,
+      "previous_swing_high_date": null,
+      "latest_swing_low": null,
+      "latest_swing_low_date": null,
+      "previous_swing_low": null,
+      "previous_swing_low_date": null,
+      "higher_high": null,
+      "higher_low": null,
+      "lower_high": null,
+      "lower_low": null,
+      "structure_state": null
+    },
+    "snapshot_available": false,
+    "confirmed_swing_counts": {
+      "high": 3,
+      "low": 1
+    },
+    "reason": "Existing market-structure engine requires at least two confirmed highs and two confirmed lows; not a daily data readiness failure"
+  },
+  {
+    "symbol": "TFLO",
+    "generation_id": "045c32832411896a21175b01|09094fa441fafba4e483a6d2",
+    "verified_rows": 420,
+    "market_structure": {
+      "available": false,
+      "latest_swing_high": null,
+      "latest_swing_high_date": null,
+      "previous_swing_high": null,
+      "previous_swing_high_date": null,
+      "latest_swing_low": null,
+      "latest_swing_low_date": null,
+      "previous_swing_low": null,
+      "previous_swing_low_date": null,
+      "higher_high": null,
+      "higher_low": null,
+      "lower_high": null,
+      "lower_low": null,
+      "structure_state": null
+    },
+    "snapshot_available": false,
+    "confirmed_swing_counts": {
+      "high": 1,
+      "low": 1
+    },
+    "reason": "Existing market-structure engine requires at least two confirmed highs and two confirmed lows; not a daily data readiness failure"
+  }
+]

@@ -1,0 +1,30 @@
+{
+  "ticker_count": 450,
+  "ticker_groups": {
+    "OHLC_AND_VOLUME": 417,
+    "OHLC_ONLY": 12,
+    "OHLC_AND_VOLUME+OHLC_ONLY": 12,
+    "VOLUME_ONLY": 6,
+    "OHLC_ONLY+VOLUME_ONLY": 2,
+    "OHLC_AND_VOLUME+VOLUME_ONLY": 1
+  },
+  "pair_difference_types": {
+    "OHLC_AND_VOLUME": 461,
+    "OHLC_ONLY": 36,
+    "IDENTICAL_OVERLAP_DIFFERENT_COVERAGE": 47,
+    "VOLUME_ONLY": 13
+  },
+  "file_source_evidence": {
+    "QFQ_MIGRATION_PATH_LINK": 900,
+    "SOURCE_IDENTITY_UNBOUND": 519
+  },
+  "uniform_scaling_pairs": 0,
+  "automatic_adjudications": 0,
+  "all_prior_physical_hashes_unchanged": true,
+  "identical_retained_generation_copy_files": 0,
+  "provider_adjustment_version_proven_files": 0,
+  "upstream_version_groups": {
+    "MIGRATION_CATALOG_WITHOUT_UPSTREAM_REVISION": 900,
+    "SOURCE_REVISION_UNBOUND": 519
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "before": "e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d",
+  "after": "e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d",
+  "canonical_manifest_unchanged": true,
+  "completed_at": "2026-09-05T20:19:43.723581+00:00",
+  "counters": {
+    "ordinary_reader_calls": 0,
+    "options_reader_calls": 34,
+    "provider_calls": 0,
+    "promotion_calls": 0,
+    "recovery_calls": 0,
+    "handle_resolution_calls": 1897,
+    "daily_frame_reads": 1863,
+    "options_frame_reads": 0,
+    "options_prepare_attempted": 0
+  }
+}

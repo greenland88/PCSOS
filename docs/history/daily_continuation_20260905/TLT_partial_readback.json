@@ -1,0 +1,22 @@
+{
+  "symbol": "TLT",
+  "kind": "PINNED_PARTITION_DIAGNOSTIC_NOT_FULL_WINDOW_READY",
+  "restored_session_present": true,
+  "missing_sessions": [
+    "2026-09-02",
+    "2026-09-03",
+    "2026-09-04"
+  ],
+  "generation_identities": [
+    {
+      "partition": "year=2025",
+      "generation": "178925756158397e8ccb5476",
+      "checksum": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb"
+    },
+    {
+      "partition": "year=2026",
+      "generation": "6c438f103754b1955e920ef3",
+      "checksum": "6c438f103754b1955e920ef38c3889678df793c681698359fc6ceaf6a21790e2"
+    }
+  ]
+}

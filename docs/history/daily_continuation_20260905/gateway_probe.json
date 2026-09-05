@@ -1,0 +1,22 @@
+{
+  "started_at": "2026-09-05T19:46:33.238408+00:00",
+  "elapsed_since_backoff_seconds": 1486.85385,
+  "source_id": "private_massive_gateway",
+  "symbol": "TLT",
+  "start": "2026-08-14",
+  "end": "2026-08-14",
+  "config_path": "H:/workspace/PCSOS/.env",
+  "loaded": true,
+  "max_retries": 2,
+  "timeout_seconds": 10.0,
+  "probe": {
+    "source_id": "private_massive_gateway",
+    "symbol": "TLT",
+    "dataset": "daily",
+    "min_date": "2026-08-14",
+    "max_date": "2026-08-14",
+    "row_count": 1,
+    "status": "API_COMPLETE"
+  },
+  "completed_at": "2026-09-05T19:46:33.581115+00:00"
+}

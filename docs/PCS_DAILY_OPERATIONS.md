@@ -117,3 +117,5 @@ portfolio_observed_at、event_known_at，执行相应 freshness 与事件覆盖�
 遇到合适真实样本时，顺带记录 ticker/session/source、加载及 promotion 回执、
 verified identity、候选数量、实际到达阶段和后续调用是否避免重复导入。
 不额外扩展日期搜索、修改条件、删数据制造缺口或重试已确认零行来源来完成验收。
+
+续轮最新执行证据及分阶段恢复队列见[日线续轮与只读扫描](history/2026-09-05_daily_recovery_continuation.md)。保持冻结 session 的恢复由 agent 读取原 checkpoint 的最新 resume_queue.json；日常新 session 不继承旧 timing 批准。

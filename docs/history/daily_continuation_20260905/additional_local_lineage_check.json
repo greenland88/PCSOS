@@ -1,0 +1,9 @@
+{
+  "request_ledger_path": "data\\manifests\\data_request_ledger.jsonl",
+  "exists": true,
+  "matching_daily_conflict_rows": 0,
+  "matching_ledger_keys": [],
+  "catalog_path": "data\\manifests\\canonical_data_catalog.parquet",
+  "matching_catalog_rows": 0,
+  "used_as_read_route": false
+}

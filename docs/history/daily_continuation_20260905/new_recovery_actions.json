@@ -1,0 +1,1624 @@
+{
+  "OST": [
+    {
+      "action": "DAILY_LOADER",
+      "requirements": {
+        "symbol": "OST",
+        "required_start": "2025-11-18",
+        "required_end": "2026-09-04",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-09-04",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": null
+      },
+      "receipt": {
+        "module": "pcs.data.control_plane",
+        "version": "1.0",
+        "symbol": "OST",
+        "as_of": "2026-09-04",
+        "status": "PARTIAL",
+        "data_timestamp": "2026-09-05T19:46:47.432632+00:00",
+        "calculation_version": "1.0",
+        "run_id": "ef7b73724791467e8ed88091da07dc73",
+        "request_id": "6f2e5d6ef8b443808864e9394910fd84",
+        "reason_codes": [
+          "CANONICAL_DAILY_STALE"
+        ],
+        "requirements": {
+          "symbol": "OST",
+          "required_start": "2025-11-18",
+          "required_end": "2026-09-04",
+          "datasets": [
+            "daily"
+          ],
+          "exact_contract_quote_keys": [],
+          "required_fields": [],
+          "decision_as_of": "2026-09-04",
+          "option_type": null,
+          "min_dte": null,
+          "max_dte": null,
+          "required_history_rows": null
+        },
+        "coverage_plan": {
+          "requirements": {
+            "symbol": "OST",
+            "required_start": "2025-11-18",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "OST",
+              "backend": "partitioned_parquet",
+              "path": "data/parquet/daily/symbol=OST/year=2022/OST_2022.parquet;data/parquet/daily/symbol=OST/year=2023/OST_2023.parquet;data/parquet/daily/symbol=OST/year=2024/OST_2024.parquet;data/parquet/daily/symbol=OST/year=2025/OST_2025.parquet",
+              "first_date": "2022-04-27",
+              "last_date": "2025-09-12",
+              "row_count": 848,
+              "source_version": "daily_universe_migration.csv",
+              "schema_version": "1",
+              "reason_codes": [
+                "CANONICAL_DAILY_STALE"
+              ],
+              "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "validation": {
+          "canonical": false
+        },
+        "remaining_blockers": [],
+        "source_inventory": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "stages": {
+          "daily": "BLOCKED"
+        },
+        "reused_periods": [],
+        "imported_periods": [],
+        "repaired_periods": [],
+        "blocked_periods": [
+          "daily"
+        ],
+        "initial_plan": {
+          "requirements": {
+            "symbol": "OST",
+            "required_start": "2025-11-18",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "OST",
+              "backend": "partitioned_parquet",
+              "path": "data/parquet/daily/symbol=OST/year=2022/OST_2022.parquet;data/parquet/daily/symbol=OST/year=2023/OST_2023.parquet;data/parquet/daily/symbol=OST/year=2024/OST_2024.parquet;data/parquet/daily/symbol=OST/year=2025/OST_2025.parquet",
+              "first_date": "2022-04-27",
+              "last_date": "2025-09-12",
+              "row_count": 848,
+              "source_version": "daily_universe_migration.csv",
+              "schema_version": "1",
+              "reason_codes": [
+                "CANONICAL_DAILY_STALE"
+              ],
+              "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "selected_source": [],
+        "provider_coverage": [],
+        "import_outcomes": [
+          {
+            "dataset": "daily",
+            "status": "BLOCKED",
+            "reason_codes": [
+              "DailyDataError"
+            ],
+            "detail": "gateway returned no daily data for OST"
+          }
+        ],
+        "promoted_partitions": [],
+        "blocked_partitions": [],
+        "final_canonical_status": "PARTIAL"
+      },
+      "source_result": "SOURCE_CONFIRMED_ZERO_ROWS",
+      "source_id": "private_massive_gateway",
+      "queried_at": "2026-09-05T19:46:47.432852+00:00",
+      "retry_condition": "explicit resume after source/quality blocker changes; no retry in this run"
+    }
+  ],
+  "TLPH": [
+    {
+      "action": "SOURCE_RETRY_AFTER_CONFIRMED_CHANGE",
+      "evidence": "Authorized continuation; bounded TLT probe succeeded after existing backoff: continuation_20260905/gateway_probe.json",
+      "at": "2026-09-05T19:46:47.447505+00:00"
+    },
+    {
+      "action": "DAILY_LOADER",
+      "requirements": {
+        "symbol": "TLPH",
+        "required_start": "2026-08-20",
+        "required_end": "2026-09-04",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-09-04",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": null
+      },
+      "receipt": {
+        "module": "pcs.data.control_plane",
+        "version": "1.0",
+        "symbol": "TLPH",
+        "as_of": "2026-09-04",
+        "status": "ALREADY_COMPLETE",
+        "data_timestamp": "2026-09-05T19:46:49.329964+00:00",
+        "calculation_version": "1.0",
+        "run_id": "2efadab10a88429a933b403d99ac1b20",
+        "request_id": "a640eb14e1674470a1a00dcb85b5df8b",
+        "reason_codes": [],
+        "requirements": {
+          "symbol": "TLPH",
+          "required_start": "2026-08-20",
+          "required_end": "2026-09-04",
+          "datasets": [
+            "daily"
+          ],
+          "exact_contract_quote_keys": [],
+          "required_fields": [],
+          "decision_as_of": "2026-09-04",
+          "option_type": null,
+          "min_dte": null,
+          "max_dte": null,
+          "required_history_rows": null
+        },
+        "coverage_plan": {
+          "requirements": {
+            "symbol": "TLPH",
+            "required_start": "2026-08-20",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "TLPH",
+              "backend": "partitioned_parquet",
+              "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=TLPH/year=2026/generations/60c2890340e350c4de23137a.parquet",
+              "first_date": "2011-01-01",
+              "last_date": "2026-09-04",
+              "row_count": 420,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REUSE_CANONICAL",
+              "reason": "validated canonical source exists"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "validation": {
+          "daily": {
+            "status": "READY",
+            "reason_codes": [],
+            "row_count": 12,
+            "duplicate_dates": 0,
+            "missing_sessions": []
+          }
+        },
+        "remaining_blockers": [],
+        "source_inventory": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "stages": {
+          "daily": "IMPORTED"
+        },
+        "reused_periods": [
+          "daily"
+        ],
+        "imported_periods": [
+          "daily"
+        ],
+        "repaired_periods": [],
+        "blocked_periods": [],
+        "initial_plan": {
+          "requirements": {
+            "symbol": "TLPH",
+            "required_start": "2026-08-20",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "reason_codes": [
+                "DAILY_STALE",
+                "CANONICAL_DAILY_STALE"
+              ],
+              "dataset": "daily",
+              "symbol": "TLPH",
+              "backend": "partitioned_parquet",
+              "path": "data/parquet/daily/symbol=TLPH/year=2011/TLPH_2011.parquet;data/parquet/daily/symbol=TLPH/year=2012/TLPH_2012.parquet;data/parquet/daily/symbol=TLPH/year=2013/TLPH_2013.parquet;data/parquet/daily/symbol=TLPH/year=2014/TLPH_2014.parquet;data/parquet/daily/symbol=TLPH/year=2015/TLPH_2015.parquet;data/parquet/daily/symbol=TLPH/year=2016/TLPH_2016.parquet;data/parquet/daily/symbol=TLPH/year=2017/TLPH_2017.parquet;data/parquet/daily/symbol=TLPH/year=2018/TLPH_2018.parquet;data/parquet/daily/symbol=TLPH/year=2019/TLPH_2019.parquet;data/parquet/daily/symbol=TLPH/year=2020/TLPH_2020.parquet;data/parquet/daily/symbol=TLPH/year=2021/TLPH_2021.parquet;data/parquet/daily/symbol=TLPH/year=2022/TLPH_2022.parquet;data/parquet/daily/symbol=TLPH/year=2023/TLPH_2023.parquet;data/parquet/daily/symbol=TLPH/year=2024/TLPH_2024.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLPH/year=2025/generations/1272b29d7c3eeb639b4b3766.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLPH/year=2026/generations/b451f9bc9164bb7ee071a97c.parquet",
+              "first_date": "2011-01-01",
+              "last_date": "2026-08-19",
+              "row_count": 408,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "selected_source": [],
+        "provider_coverage": [],
+        "import_outcomes": [
+          {
+            "dataset": "daily",
+            "status": "IMPORTED",
+            "result": {
+              "module": "pcs.data.incremental_update",
+              "version": "1.0",
+              "symbol": "TLPH",
+              "as_of": "2026-09-05T19:46:47.904220+00:00",
+              "status": "SUCCESS",
+              "data_timestamp": "2026-09-05T19:46:47.904229+00:00",
+              "calculation_version": "incremental_current_v1",
+              "run_id": "4d15d9729da146bc9a317d2258b4dff9",
+              "request_id": "d984a9bb85fb42ee86822942b7d135e4",
+              "current_data_asof": "2026-09-04",
+              "latest_daily_date": "2026-09-04",
+              "latest_options_date": null,
+              "daily_update": "UPDATED",
+              "options_update": "NO_OP",
+              "affected_partitions": [
+                "daily/symbol=TLPH/year=2026"
+              ],
+              "current_route": "daily",
+              "frozen_generations_touched": 0,
+              "current_derived_artifacts_invalidated": [
+                "TLPH:daily/symbol=TLPH/year=2026"
+              ],
+              "readiness_refresh_status": "SKIPPED_DAILY_ONLY",
+              "reason_codes": [
+                "DERIVED_INVALIDATION_MARKED"
+              ]
+            }
+          }
+        ],
+        "promoted_partitions": [],
+        "blocked_partitions": [],
+        "final_canonical_status": "ALREADY_COMPLETE"
+      },
+      "source_result": "IMPORTED",
+      "source_id": "private_massive_gateway",
+      "queried_at": "2026-09-05T19:46:49.465582+00:00",
+      "retry_condition": "explicit resume after source/quality blocker changes; no retry in this run"
+    }
+  ],
+  "TLRY": [
+    {
+      "action": "SOURCE_RETRY_AFTER_CONFIRMED_CHANGE",
+      "evidence": "Authorized continuation; bounded TLT probe succeeded after existing backoff: continuation_20260905/gateway_probe.json",
+      "at": "2026-09-05T19:46:49.567367+00:00"
+    },
+    {
+      "action": "DAILY_LOADER",
+      "requirements": {
+        "symbol": "TLRY",
+        "required_start": "2026-09-02",
+        "required_end": "2026-09-04",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-09-04",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": null
+      },
+      "receipt": {
+        "module": "pcs.data.control_plane",
+        "version": "1.0",
+        "symbol": "TLRY",
+        "as_of": "2026-09-04",
+        "status": "ALREADY_COMPLETE",
+        "data_timestamp": "2026-09-05T19:46:51.177806+00:00",
+        "calculation_version": "1.0",
+        "run_id": "2a4912a941bc4ef78a674c2cb29c1e59",
+        "request_id": "d57862b8002849909ef710d2f59ea3e5",
+        "reason_codes": [],
+        "requirements": {
+          "symbol": "TLRY",
+          "required_start": "2026-09-02",
+          "required_end": "2026-09-04",
+          "datasets": [
+            "daily"
+          ],
+          "exact_contract_quote_keys": [],
+          "required_fields": [],
+          "decision_as_of": "2026-09-04",
+          "option_type": null,
+          "min_dte": null,
+          "max_dte": null,
+          "required_history_rows": null
+        },
+        "coverage_plan": {
+          "requirements": {
+            "symbol": "TLRY",
+            "required_start": "2026-09-02",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "TLRY",
+              "backend": "partitioned_parquet",
+              "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=TLRY/year=2026/generations/c89ce039585ef5ef9fa39ec2.parquet",
+              "first_date": "2018-01-01",
+              "last_date": "2026-09-04",
+              "row_count": 420,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REUSE_CANONICAL",
+              "reason": "validated canonical source exists"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "validation": {
+          "daily": {
+            "status": "READY",
+            "reason_codes": [],
+            "row_count": 3,
+            "duplicate_dates": 0,
+            "missing_sessions": []
+          }
+        },
+        "remaining_blockers": [],
+        "source_inventory": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "stages": {
+          "daily": "IMPORTED"
+        },
+        "reused_periods": [
+          "daily"
+        ],
+        "imported_periods": [
+          "daily"
+        ],
+        "repaired_periods": [],
+        "blocked_periods": [],
+        "initial_plan": {
+          "requirements": {
+            "symbol": "TLRY",
+            "required_start": "2026-09-02",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "reason_codes": [
+                "DAILY_STALE",
+                "CANONICAL_DAILY_STALE"
+              ],
+              "dataset": "daily",
+              "symbol": "TLRY",
+              "backend": "partitioned_parquet",
+              "path": "data/parquet/daily/symbol=TLRY/year=2018/TLRY_2018.parquet;data/parquet/daily/symbol=TLRY/year=2019/TLRY_2019.parquet;data/parquet/daily/symbol=TLRY/year=2020/TLRY_2020.parquet;data/parquet/daily/symbol=TLRY/year=2021/TLRY_2021.parquet;data/parquet/daily/symbol=TLRY/year=2022/TLRY_2022.parquet;data/parquet/daily/symbol=TLRY/year=2023/TLRY_2023.parquet;data/parquet/daily/symbol=TLRY/year=2024/TLRY_2024.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLRY/year=2025/generations/8f8bb4b3f18bf4dcd9ea0e48.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLRY/year=2026/generations/69c0de5879682824d51be526.parquet",
+              "first_date": "2018-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 417,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "selected_source": [],
+        "provider_coverage": [],
+        "import_outcomes": [
+          {
+            "dataset": "daily",
+            "status": "IMPORTED",
+            "result": {
+              "module": "pcs.data.incremental_update",
+              "version": "1.0",
+              "symbol": "TLRY",
+              "as_of": "2026-09-05T19:46:50.026976+00:00",
+              "status": "SUCCESS",
+              "data_timestamp": "2026-09-05T19:46:50.026986+00:00",
+              "calculation_version": "incremental_current_v1",
+              "run_id": "7068d509702248f99d59944edd4a3d99",
+              "request_id": "3208d2e78c0242b4b8018564fdaeeb26",
+              "current_data_asof": "2026-09-04",
+              "latest_daily_date": "2026-09-04",
+              "latest_options_date": null,
+              "daily_update": "UPDATED",
+              "options_update": "NO_OP",
+              "affected_partitions": [
+                "daily/symbol=TLRY/year=2026"
+              ],
+              "current_route": "daily",
+              "frozen_generations_touched": 0,
+              "current_derived_artifacts_invalidated": [
+                "TLRY:daily/symbol=TLRY/year=2026"
+              ],
+              "readiness_refresh_status": "SKIPPED_DAILY_ONLY",
+              "reason_codes": [
+                "DERIVED_INVALIDATION_MARKED"
+              ]
+            }
+          }
+        ],
+        "promoted_partitions": [],
+        "blocked_partitions": [],
+        "final_canonical_status": "ALREADY_COMPLETE"
+      },
+      "source_result": "IMPORTED",
+      "source_id": "private_massive_gateway",
+      "queried_at": "2026-09-05T19:46:51.391730+00:00",
+      "retry_condition": "explicit resume after source/quality blocker changes; no retry in this run"
+    }
+  ],
+  "TLT": [
+    {
+      "action": "SOURCE_RETRY_AFTER_CONFIRMED_CHANGE",
+      "evidence": "Authorized continuation; bounded TLT probe succeeded after existing backoff: continuation_20260905/gateway_probe.json",
+      "at": "2026-09-05T19:46:51.497185+00:00"
+    },
+    {
+      "action": "DAILY_LOADER",
+      "requirements": {
+        "symbol": "TLT",
+        "required_start": "2026-08-14",
+        "required_end": "2026-08-14",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-08-14",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": null
+      },
+      "receipt": {
+        "module": "pcs.data.control_plane",
+        "version": "1.0",
+        "symbol": "TLT",
+        "as_of": "2026-08-14",
+        "status": "ALREADY_COMPLETE",
+        "data_timestamp": "2026-09-05T19:46:53.190900+00:00",
+        "calculation_version": "1.0",
+        "run_id": "149ed115656f48aeb01689d4b9f4529f",
+        "request_id": "8b20488e526b4bb5818fab1a4f098b5e",
+        "reason_codes": [],
+        "requirements": {
+          "symbol": "TLT",
+          "required_start": "2026-08-14",
+          "required_end": "2026-08-14",
+          "datasets": [
+            "daily"
+          ],
+          "exact_contract_quote_keys": [],
+          "required_fields": [],
+          "decision_as_of": "2026-08-14",
+          "option_type": null,
+          "min_dte": null,
+          "max_dte": null,
+          "required_history_rows": null
+        },
+        "coverage_plan": {
+          "requirements": {
+            "symbol": "TLT",
+            "required_start": "2026-08-14",
+            "required_end": "2026-08-14",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-08-14",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "TLT",
+              "backend": "partitioned_parquet",
+              "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2026/generations/6c438f103754b1955e920ef3.parquet",
+              "first_date": "2016-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 417,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REUSE_CANONICAL",
+              "reason": "validated canonical source exists"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "validation": {
+          "daily": {
+            "status": "READY",
+            "reason_codes": [],
+            "row_count": 1,
+            "duplicate_dates": 0,
+            "missing_sessions": []
+          }
+        },
+        "remaining_blockers": [],
+        "source_inventory": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "stages": {
+          "daily": "IMPORTED"
+        },
+        "reused_periods": [
+          "daily"
+        ],
+        "imported_periods": [
+          "daily"
+        ],
+        "repaired_periods": [],
+        "blocked_periods": [],
+        "initial_plan": {
+          "requirements": {
+            "symbol": "TLT",
+            "required_start": "2026-08-14",
+            "required_end": "2026-08-14",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-08-14",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "TLT",
+              "backend": "partitioned_parquet",
+              "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2026/generations/0f38c3021e84cfbfdc63aae2.parquet",
+              "first_date": "2016-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 416,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "missing_sessions": [
+                "2026-08-14"
+              ],
+              "coverage_gap": "DAILY_SESSION_MISSING",
+              "reason_codes": [
+                "DAILY_SESSION_MISSING"
+              ]
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "selected_source": [],
+        "provider_coverage": [],
+        "import_outcomes": [
+          {
+            "dataset": "daily",
+            "status": "IMPORTED",
+            "result": {
+              "module": "pcs.data.incremental_update",
+              "version": "1.0",
+              "symbol": "TLT",
+              "as_of": "2026-09-05T19:46:52.052720+00:00",
+              "status": "SUCCESS",
+              "data_timestamp": "2026-09-05T19:46:52.052728+00:00",
+              "calculation_version": "incremental_current_v1",
+              "run_id": "8cadad6873f2440da48fc53cb7bee549",
+              "request_id": "d16145aec8bb4f59b7a396a355a7b5a4",
+              "current_data_asof": "2026-08-14",
+              "latest_daily_date": "2026-08-14",
+              "latest_options_date": null,
+              "daily_update": "UPDATED",
+              "options_update": "NO_OP",
+              "affected_partitions": [
+                "daily/symbol=TLT/year=2026"
+              ],
+              "current_route": "daily",
+              "frozen_generations_touched": 0,
+              "current_derived_artifacts_invalidated": [
+                "TLT:daily/symbol=TLT/year=2026"
+              ],
+              "readiness_refresh_status": "SKIPPED_DAILY_ONLY",
+              "reason_codes": [
+                "DERIVED_INVALIDATION_MARKED"
+              ]
+            }
+          }
+        ],
+        "promoted_partitions": [],
+        "blocked_partitions": [],
+        "final_canonical_status": "ALREADY_COMPLETE"
+      },
+      "source_result": "IMPORTED",
+      "source_id": "private_massive_gateway",
+      "queried_at": "2026-09-05T19:46:53.333766+00:00",
+      "retry_condition": "explicit resume after source/quality blocker changes; no retry in this run"
+    },
+    {
+      "action": "DAILY_LOADER",
+      "requirements": {
+        "symbol": "TLT",
+        "required_start": "2026-09-02",
+        "required_end": "2026-09-04",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-09-04",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": null
+      },
+      "receipt": {
+        "module": "pcs.data.control_plane",
+        "version": "1.0",
+        "symbol": "TLT",
+        "as_of": "2026-09-04",
+        "status": "PARTIAL",
+        "data_timestamp": "2026-09-05T19:46:57.218444+00:00",
+        "calculation_version": "1.0",
+        "run_id": "c9dd97ec6ac84d3980b6725e35b1d929",
+        "request_id": "e140065aaf804f82a480165ff8ea3754",
+        "reason_codes": [
+          "DAILY_STALE",
+          "CANONICAL_DAILY_STALE"
+        ],
+        "requirements": {
+          "symbol": "TLT",
+          "required_start": "2026-09-02",
+          "required_end": "2026-09-04",
+          "datasets": [
+            "daily"
+          ],
+          "exact_contract_quote_keys": [],
+          "required_fields": [],
+          "decision_as_of": "2026-09-04",
+          "option_type": null,
+          "min_dte": null,
+          "max_dte": null,
+          "required_history_rows": null
+        },
+        "coverage_plan": {
+          "requirements": {
+            "symbol": "TLT",
+            "required_start": "2026-09-02",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "reason_codes": [
+                "DAILY_STALE",
+                "CANONICAL_DAILY_STALE"
+              ],
+              "dataset": "daily",
+              "symbol": "TLT",
+              "backend": "partitioned_parquet",
+              "path": "data/parquet/daily/symbol=TLT/year=2016/TLT_2016.parquet;data/parquet/daily/symbol=TLT/year=2017/TLT_2017.parquet;data/parquet/daily/symbol=TLT/year=2018/TLT_2018.parquet;data/parquet/daily/symbol=TLT/year=2019/TLT_2019.parquet;data/parquet/daily/symbol=TLT/year=2020/TLT_2020.parquet;data/parquet/daily/symbol=TLT/year=2021/TLT_2021.parquet;data/parquet/daily/symbol=TLT/year=2022/TLT_2022.parquet;data/parquet/daily/symbol=TLT/year=2023/TLT_2023.parquet;data/parquet/daily/symbol=TLT/year=2024/TLT_2024.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2025/generations/178925756158397e8ccb5476.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2026/generations/6c438f103754b1955e920ef3.parquet",
+              "first_date": "2016-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 417,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "validation": {
+          "canonical": false
+        },
+        "remaining_blockers": [],
+        "source_inventory": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "stages": {
+          "daily": "BLOCKED"
+        },
+        "reused_periods": [],
+        "imported_periods": [],
+        "repaired_periods": [],
+        "blocked_periods": [
+          "daily"
+        ],
+        "initial_plan": {
+          "requirements": {
+            "symbol": "TLT",
+            "required_start": "2026-09-02",
+            "required_end": "2026-09-04",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-09-04",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "reason_codes": [
+                "DAILY_STALE",
+                "CANONICAL_DAILY_STALE"
+              ],
+              "dataset": "daily",
+              "symbol": "TLT",
+              "backend": "partitioned_parquet",
+              "path": "data/parquet/daily/symbol=TLT/year=2016/TLT_2016.parquet;data/parquet/daily/symbol=TLT/year=2017/TLT_2017.parquet;data/parquet/daily/symbol=TLT/year=2018/TLT_2018.parquet;data/parquet/daily/symbol=TLT/year=2019/TLT_2019.parquet;data/parquet/daily/symbol=TLT/year=2020/TLT_2020.parquet;data/parquet/daily/symbol=TLT/year=2021/TLT_2021.parquet;data/parquet/daily/symbol=TLT/year=2022/TLT_2022.parquet;data/parquet/daily/symbol=TLT/year=2023/TLT_2023.parquet;data/parquet/daily/symbol=TLT/year=2024/TLT_2024.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2025/generations/178925756158397e8ccb5476.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2026/generations/6c438f103754b1955e920ef3.parquet",
+              "first_date": "2016-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 417,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "selected_source": [],
+        "provider_coverage": [],
+        "import_outcomes": [
+          {
+            "dataset": "daily",
+            "status": "BLOCKED",
+            "reason_codes": [
+              "MarketGatewayError"
+            ],
+            "detail": "gateway request failed: /v2/aggs/ticker/TLT/range/1/day/2026-09-02/2026-09-04: 429 Client Error: Too Many Requests for url: [REDACTED_REQUEST_URL]"
+          }
+        ],
+        "promoted_partitions": [],
+        "blocked_partitions": [],
+        "final_canonical_status": "PARTIAL"
+      },
+      "source_result": "SOURCE_RATE_LIMITED",
+      "source_id": "private_massive_gateway",
+      "queried_at": "2026-09-05T19:46:57.218651+00:00",
+      "retry_condition": "explicit resume after source/quality blocker changes; no retry in this run"
+    }
+  ]
+}

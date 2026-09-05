@@ -1,0 +1,29 @@
+{
+  "universe": 2953,
+  "session": "2026-09-04",
+  "warmup_rows": 200,
+  "before_ready": 2009,
+  "after_ready": 2011,
+  "new_ready": [
+    "TLPH",
+    "TLRY"
+  ],
+  "lost_ready": [],
+  "recovery_tickers_attempted": [
+    "OST",
+    "TLPH",
+    "TLRY",
+    "TLT"
+  ],
+  "new_zero_rows": [
+    "OST"
+  ],
+  "remaining_rate_or_unqueried": 404,
+  "remaining_rate_limited": 30,
+  "remaining_unqueried": 374,
+  "remaining_conflicts": 450,
+  "prior_zero_or_partial_not_requeried": 87,
+  "after_data_blocked": 942,
+  "code_commit": "c473f77badc80d23f545f04e3ad1ec47d08b01a1",
+  "program_changes": false
+}
