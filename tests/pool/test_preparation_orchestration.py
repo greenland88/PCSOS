@@ -82,6 +82,12 @@ def test_summarize_recovery_deduplicates_retried_partition_by_latest_status():
     assert summarize_recovery_results(results)["promotion_receipts"] == 0
 
 
+def test_summarize_recovery_accepts_symbol_keyed_mapping():
+    results = {"AAA": {"partition_results": ({"partition": "year=2025", "status": "REUSED"},)}}
+    assert summarize_recovery_results(results) == {"symbols": 1, "validated": 0, "reused": 1,
+        "promoted": 0, "failed": 0, "unprocessed": 0, "promotion_receipts": 0}
+
+
 def test_reconcile_rejects_code_or_configuration_identity_changes():
     before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r1", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
     after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r2", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}

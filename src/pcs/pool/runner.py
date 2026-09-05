@@ -479,10 +479,10 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
     daily_right = {s for s, row in right.items() if str(row.get("initial_daily_readiness", "")).upper() == "READY"}
     recovery_by_symbol: dict[str, Any] = {}
     if recovery_results is not None:
-        values = recovery_results.values() if isinstance(recovery_results, Mapping) else recovery_results
-        for item in values:
+        values = recovery_results.items() if isinstance(recovery_results, Mapping) else ((None, item) for item in recovery_results)
+        for map_key, item in values:
             if isinstance(item, Mapping):
-                symbol = str(item.get("symbol", "")).strip().upper()
+                symbol = str(item.get("symbol", map_key or "")).strip().upper()
                 if symbol:
                     evidence = dict(item)
                     nested = item.get("admission_result")
@@ -505,15 +505,15 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
 
 def summarize_recovery_results(recovery_results: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Count recovery outcomes from per-partition evidence, without plan data."""
-    values = recovery_results.values() if isinstance(recovery_results, Mapping) else recovery_results
+    values = recovery_results.items() if isinstance(recovery_results, Mapping) else ((None, item) for item in recovery_results)
     counts = {"symbols": 0, "validated": 0, "reused": 0, "promoted": 0,
               "failed": 0, "unprocessed": 0, "promotion_receipts": 0}
     latest: dict[tuple[str, str], Mapping[str, Any]] = {}
     symbols: set[str] = set()
-    for item in values:
+    for map_key, item in values:
         if not isinstance(item, Mapping):
             continue
-        symbol = str(item.get("symbol", "")).strip().upper()
+        symbol = str(item.get("symbol", map_key or "")).strip().upper()
         nested = item.get("admission_result") if isinstance(item.get("admission_result"), Mapping) else item
         if not symbol or not isinstance(nested, Mapping):
             continue
