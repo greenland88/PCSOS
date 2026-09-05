@@ -314,6 +314,8 @@ def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
         migration_manifest_path=tmp_path / "migration.csv")
     assert result["status"] == "MIGRATED_CANONICAL_INVALID"
     assert result["reason_codes"] == ("MIGRATED_CANONICAL_OHLCV_INVALID:HIGH_BELOW_LOW,HIGH_BELOW_OPEN_CLOSE",)
+    assert result["failed_partition"] == "year=2025"
+    assert result["partition_results"][0]["status"] == "FAILED"
     assert not list((path.parent / "generations").glob("*.parquet"))
 
 

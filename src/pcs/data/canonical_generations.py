@@ -163,9 +163,24 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
     if not paths:
         return {"symbol": s, "status": "MIGRATION_PHYSICAL_MISSING", "reason_codes": ("MIGRATION_PHYSICAL_MISSING",), "partitions": ()}
     validated = []
+    validation_results = []
+    validation_failed_partition = None
+    validation_unprocessed_partitions = []
     try:
-        for path in paths:
-            validated.append(_validate_migrated_daily_file(path, s, access))
+        for position, path in enumerate(paths):
+            try:
+                frame, meta = _validate_migrated_daily_file(path, s, access)
+            except (DataAccessError, DataQualityError, OSError, ValueError):
+                validation_failed_partition = path.parent.name if path.parent.name.startswith("year=") else str(path)
+                validation_unprocessed_partitions = [
+                    candidate.parent.name if candidate.parent.name.startswith("year=") else str(candidate)
+                    for candidate in paths[position + 1:]
+                ]
+                raise
+            validated.append((frame, meta))
+            validation_results.append({"partition": f"year={meta['year']}", "status": "VALIDATED",
+                                       "active_generation_before": None, "active_generation_after": None,
+                                       "reason_codes": ("MIGRATED_CANONICAL_VALIDATED",)})
         validated = _reconcile_migrated_candidates(validated)
         all_dates = pd.concat([frame[["symbol", "date"]] for frame, _ in validated], ignore_index=True)
         all_dates["date"] = pd.to_datetime(all_dates["date"], errors="coerce").dt.normalize()
@@ -182,7 +197,16 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
             needs_incremental = False
     except (DataAccessError, DataQualityError) as exc:
         return {"symbol": s, "status": "MIGRATED_CANONICAL_INVALID", "reason_codes": (str(exc).strip() or type(exc).__name__,),
-                "partitions": tuple(meta for _, meta in validated)}
+                "partitions": tuple(meta for _, meta in validated),
+                "promoted_partitions": tuple(), "already_admitted": tuple(),
+                "promotion_receipts": tuple(),
+                "failed_partition": validation_failed_partition,
+                "unprocessed_partitions": tuple(validation_unprocessed_partitions),
+                "partition_results": tuple(validation_results + ([{
+                    "partition": validation_failed_partition, "status": "FAILED",
+                    "active_generation_before": None, "active_generation_after": None,
+                    "reason_codes": (str(exc).strip() or type(exc).__name__,)}]
+                    if validation_failed_partition else []))}
     if read_only:
         validated_results = []
         try:
