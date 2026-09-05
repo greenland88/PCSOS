@@ -106,6 +106,11 @@ class PoolScanResult:
         "provider_calls": 0, "promotion_calls": 0, "recovery_calls": 0,
     })
     discovered_contracts: tuple[Mapping[str, Any], ...] = ()
+    # Preparation evidence is intentionally separate from ticker readiness:
+    # callers can reconcile partition commits without inferring them from the
+    # top-level scan status.
+    preparation_results: Mapping[str, Any] = field(default_factory=dict)
+    recovery_summary: Mapping[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

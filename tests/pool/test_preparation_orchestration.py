@@ -96,6 +96,22 @@ def test_summarize_recovery_accepts_symbol_keyed_mapping():
         "promoted": 0, "failed": 0, "unprocessed": 0, "promotion_receipts": 0}
 
 
+def test_pool_scan_result_keeps_sanitized_partition_recovery_evidence():
+    serialized = runner._serialize_preparation_result({
+        "symbol": "AAA", "result_status": "ADMISSION_INCOMPLETE",
+        "result": SimpleNamespace(to_dict=lambda: {"private": "live"}),
+        "admission_result": {
+            "status": "ADMISSION_INCOMPLETE",
+            "partition_results": ({"partition": "year=2025", "status": "PROMOTED",
+                                   "promotion_receipt": {"id": "r"}},),
+            "unprocessed_partitions": ("year=2026",),
+        },
+    })
+    assert "result" not in serialized
+    assert serialized["admission_result"]["partition_results"][0]["promotion_receipt"]["id"] == "r"
+    assert serialized["admission_result"]["unprocessed_partitions"] == ("year=2026",)
+
+
 def test_reconcile_rejects_code_or_configuration_identity_changes():
     before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r1", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
     after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r2", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}

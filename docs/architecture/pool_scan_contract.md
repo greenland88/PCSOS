@@ -30,6 +30,13 @@ non-comparable; do not attribute deltas to recovery. Recovery evidence may be
 attached per symbol, including nested `admission_result` values, but READY
 counts must still come from the independent scan result.
 
+`PoolScanResult.preparation_results` exposes sanitized per-symbol preparation
+records, including nested partition admission evidence and promotion
+read-backs; live provider result objects are excluded. Its
+`recovery_summary` counts only partition statuses and promotion receipts
+present in that evidence. These fields are audit output and do not change
+readiness or promotion semantics.
+
 ## Runtime and result invariants
 
 Handle resolution is single-flight and cached by the complete decision identity,

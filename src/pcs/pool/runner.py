@@ -544,6 +544,26 @@ def summarize_recovery_results(recovery_results: Mapping[str, Any] | Sequence[Ma
     return counts
 
 
+def _serialize_preparation_result(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Expose preparation evidence without leaking live data objects."""
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "result":
+            continue
+        if key == "admission_result" and isinstance(item, Mapping):
+            result[key] = dict(item)
+            continue
+        if hasattr(item, "to_dict"):
+            result[key] = item.to_dict()
+        elif isinstance(item, Mapping):
+            result[key] = dict(item)
+        elif isinstance(item, tuple):
+            result[key] = list(item)
+        else:
+            result[key] = item
+    return result
+
+
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
                  as_of: datetime | str = "latest",
                  mode: Literal["PREMARKET", "INTRADAY", "EOD"],
@@ -812,6 +832,12 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         "daily_frame_reads": runtime.counters.get("daily_frame_reads", 0),
         "options_frame_reads": runtime.counters.get("options_frame_reads", 0),
     }
+    preparation_results = {
+        symbol: _serialize_preparation_result(prep_results[symbol])
+        for symbol in prep_results
+        if isinstance(prep_results.get(symbol), Mapping)
+    }
+    recovery_summary = summarize_recovery_results(prep_results)
     stage_latency["validation"] = 0.0
     from .validation import validate_pool_result
     validation_started = perf_counter()
@@ -822,7 +848,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                             stage_latency_ms=stage_latency, counters=counters,
                             discovered_contracts=tuple(
                                 candidate for row in results
-                                for candidate in row.discovered_contracts))
+                                for candidate in row.discovered_contracts),
+                            preparation_results=preparation_results,
+                            recovery_summary=recovery_summary)
     validate_pool_result(result, spec.symbols)
     stage_latency["validation"] = (perf_counter() - validation_started) * 1000
     stage_latency["total"] = (perf_counter() - started) * 1000
@@ -830,7 +858,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                             stage_latency_ms=stage_latency, counters=counters,
                             discovered_contracts=tuple(
                                 candidate for row in results
-                                for candidate in row.discovered_contracts))
+                                for candidate in row.discovered_contracts),
+                            preparation_results=preparation_results,
+                            recovery_summary=recovery_summary)
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory)
