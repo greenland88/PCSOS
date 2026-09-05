@@ -365,7 +365,10 @@ def test_public_two_argument_status_contract(tmp_path):
     requirements = {"start": "2018-01-01", "end": "2025-01-01", "datasets": {"daily": {"required": True}}}
     status = get_market_data_status("TEST", requirements, access=access)
     ensured = ensure_market_data("TEST", requirements, access=access)
-    assert status.symbol == "TEST" and ensured.status == status.status
+    assert status.symbol == "TEST" and ensured.symbol == "TEST"
+    assert status.status == "PARTIAL"
+    assert ensured.status == "BLOCKED"
+    assert ensured.remaining_blockers
 
 
 def test_daily_safety_repair_requires_unique_target_and_writes_canonical(tmp_path):

@@ -326,7 +326,7 @@ def main():
     pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     pool.add_argument("--output-directory", default="pool_scan_runs",
                       help="directory for scan and reconciliation artifacts")
-    pool.add_argument("--decision-context-json", help="source-backed v1 event, portfolio and market context")
+    pool.add_argument("--decision-context-json", help="source-backed historical v1 or current EOD v2 decision context (optional for scanning)")
     pool.set_defaults(func=pool_scan)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")

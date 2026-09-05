@@ -138,3 +138,39 @@ RED rejection and read-only child injection. The existing
 `PROMOTION_EXPECTED_ACTIVE_MISMATCH`; the same failure was reproduced in a
 separate untouched checkout of `c62db50`. No canonical business scan, provider
 probe, import or research run was performed by this adapter change.
+
+
+## Current EOD decisions and scan-only use
+
+Scanning does not require an account snapshot. Without a decision context the
+runner performs daily timing and options discovery, preserves missing event
+coverage, and does not claim portfolio approval or trade readiness. Account
+capacity and sizing are deferred until a trade decision is requested.
+
+The same `--decision-context-json` adapter also accepts schema version 2 with
+`decision_mode: CURRENT_EOD`, a timezone-aware `decision_as_of`, and date-only
+`market_data_as_of`. The CLI `--as-of` must equal `decision_as_of` and mode must
+be EOD. The market date must be the exchange's last completed session,
+including weekends and holidays. Candidate dates/DTE use the decision date;
+quote reads and derived market context remain pinned to the completed session.
+No alternate strategy engine is introduced.
+
+Current portfolio records require timezone-aware `portfolio_observed_at`;
+current event records require timezone-aware `event_known_at`. Both must be on
+the UTC decision date and no later than the decision timestamp. This adapter
+supports same-day snapshots, not a claim of live broker connectivity. Events
+still require source-backed PIT metadata and coverage through expiration.
+Selection evidence records all four timestamps and the explicit decision mode.
+Schema version 1 remains historical PIT and rejects next-day account snapshots;
+when bound to a run, timezone-aware observations after its timestamp also fail.
+
+Options `required_start` and `required_end` are quote/trade dates, not expiration
+dates. September 4 quotes for October expiration require September 4 coverage
+and a Q3 trade-date partition, not Q4 quotes. The registered ClickHouse adapter
+filters TradeDate and the importer partitions by trade_date year/quarter.
+
+
+Run snapshots fingerprint the executing PCS Python source tree and effective
+option rules. These content identities replace unknown code/engine labels and
+remain independent of the canonical data manifest identity. A source digest is
+not a git commit; delivery evidence records the actual commit separately.

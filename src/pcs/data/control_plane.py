@@ -532,7 +532,7 @@ class ImportCoordinator:
                 outcomes.append({"dataset": action["dataset"], "status": "BLOCKED", "reason_codes": ["IMPORT_HANDLER_NOT_REGISTERED"]}); continue
             try:
                 value = handler(plan)
-                status = "IMPORTED" if not isinstance(value, dict) or value.get("status") in {"IMPORTED", "READY", "ALREADY_COMPLETE"} else "BLOCKED"
+                status = "IMPORTED" if not isinstance(value, dict) or value.get("status") in {"IMPORTED", "READY", "ALREADY_COMPLETE", "SUCCESS", "REUSED"} else "BLOCKED"
                 outcomes.append({"dataset": action["dataset"], "status": status, "result": value})
             except Exception as exc:
                 outcomes.append({"dataset": action["dataset"], "status": "BLOCKED", "reason_codes": [type(exc).__name__], "detail": str(exc)})
@@ -633,6 +633,8 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
         current_client = kwargs.get("clickhouse_client")
         if current_client is None:
             import os
+            from .massive_client import load_project_environment
+            load_project_environment()
             password = os.getenv("CLICKHOUSE_PASSWORD")
             if not password:
                 return {"status": "BLOCKED", "reason_codes": ["CLICKHOUSE_CREDENTIALS_MISSING"], "selected_source": "clickhouse_options"}
@@ -912,7 +914,8 @@ class MarketDataControlPlane:
                     # includes older dates.
                     current_year = pd.Timestamp.now(tz="UTC").year
                     existing_last = existing.get("options", {}).get("last_date")
-                    current_gap = bool(existing_last and pd.Timestamp(existing_last).year == current_year)
+                    current_gap = (pd.Timestamp(req.required_start).year == current_year or
+                                   bool(existing_last and pd.Timestamp(existing_last).year == current_year))
                     action = PlanAction.SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE if current_gap else PlanAction.IMPORT_HISTORICAL_OPTIONS
                 else: action = PlanAction.SYNC_CURRENT_OPTIONS_FROM_CLICKHOUSE if sources else PlanAction.BLOCKED_NO_AUTHORIZED_SOURCE
                 selected = sources
@@ -970,7 +973,9 @@ class MarketDataControlPlane:
             # It never uses adjacent dates/strikes or a legacy fallback.
             from .clickhouse import PCSClickHouseClient
             import os
-            client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", ""), os.getenv("CLICKHOUSE_PASSWORD", ""))
+            from .massive_client import load_project_environment
+            load_project_environment()
+            client = PCSClickHouseClient(os.getenv("CLICKHOUSE_URL", "http://db.base32.cn:8123/"), os.getenv("CLICKHOUSE_USER", "hisdata230"), os.getenv("CLICKHOUSE_PASSWORD", ""))
             dates = sorted({str(x.get("quote_date", x.get("trade_date")))[:10] for x in req.exact_contract_quote_keys})
             source = client.fetch_options_dates(req.symbol, dates)
             source["trade_date"] = pd.to_datetime(source["trade_date"]).dt.normalize()
@@ -1018,12 +1023,10 @@ class MarketDataControlPlane:
                     for code in (outcome.get("reason_codes", ()) or
                                  outcome.get("result", {}).get("reason_codes", ()))
                 ))
-                permission_reasons = tuple(code for code in outcome_reasons
-                                           if code == "CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER")
                 return replace(result,
-                    status=ImportStatus.BLOCKED.value if permission_reasons else result.status,
-                    reason_codes=tuple(dict.fromkeys((*result.reason_codes, *permission_reasons))),
-                    remaining_blockers=tuple(dict.fromkeys((*result.remaining_blockers, *permission_reasons))),
+                    status=ImportStatus.BLOCKED.value if outcome_reasons else result.status,
+                    reason_codes=tuple(dict.fromkeys((*outcome_reasons, *result.reason_codes))),
+                    remaining_blockers=tuple(dict.fromkeys((*result.remaining_blockers, *outcome_reasons))),
                     initial_plan=payload.get("initial_plan", {}),
                     selected_source=tuple(payload.get("selected_source", ())),
                     provider_coverage=tuple(payload.get("provider_coverage", ())),

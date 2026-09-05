@@ -28,7 +28,7 @@ def resolve_effective_market_session(requested_as_of, run_mode, exchange_calenda
     if mode == "HISTORICAL":
         return session
     if not bool(cal.is_session(session.date())):
-        session = pd.Timestamp(cal.previous_session(session))
+        session = pd.Timestamp(cal.date_to_session(session, direction="previous"))
     if mode in {"PREMARKET", "INTRADAY"}:
         return pd.Timestamp(cal.previous_session(session)).normalize()
     # EOD includes today's bar only after the exchange close.  A supplied

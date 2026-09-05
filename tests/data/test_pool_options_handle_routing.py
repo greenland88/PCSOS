@@ -47,14 +47,20 @@ def test_timing_ready_verified_options_produces_one_spread(monkeypatch):
     trend = SimpleNamespace(
         market_structure_engine=SimpleNamespace(short_term_phase="RECLAIM_CONFIRMED",
                                                 feature_max_date=day),
-        support=SimpleNamespace(current_atr=2.0))
+        available=True, warnings=(), support=SimpleNamespace(current_atr=2.0))
     monkeypatch.setattr("pcs.pool.runner.build_trend_snapshot", lambda *args, **kwargs: trend)
+    # This test isolates verified quote routing; upstream timing is controlled.
+    for name in ("interpret_trend", "score_trend", "evaluate_trend_gate", "evaluate_pullback_gate"):
+        monkeypatch.setattr("pcs.pool.runner." + name, lambda *a, **k: SimpleNamespace(
+            available=True, warnings=(), reasons=(), trend_state="A",
+            trend_gate_result="PASS", pullback_gate_result="PASS"))
+    from pcs.pool.options import load_pool_option_rules
     runtime = PoolRuntime(access=access, options_handle_resolver=lambda *args, **kwargs: "options")
     result = _evaluate_symbol("NVDA", run_id="r", asof=str(day.date()), access=access,
         benchmark=daily, benchmark_symbol="QQQ", options_reader=None,
-        option_rules={"dte_min": 30, "dte_max": 45, "safe_strike_atr": 2.3,
-                      "min_credit_width_ratio": .1}, daily_handle_resolver=lambda *a, **k: "daily",
+        option_rules=load_pool_option_rules(), daily_handle_resolver=lambda *a, **k: "daily",
         runtime=runtime, options_enabled=True)
     assert result.timing_status == TimingStatus.TIMING_ENTRY_READY
-    assert result.options_status == OptionsStatus.PASS
+    assert result.options_status == OptionsStatus.DISCOVERED
+    assert "CONTRACT_SELECTION_NOT_CONNECTED" in result.selection_reason_codes
     assert result.spread_count == 1

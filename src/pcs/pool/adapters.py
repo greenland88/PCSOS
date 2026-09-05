@@ -19,17 +19,68 @@ class PoolContextAdapters:
     DecisionEngine using canonical candidate construction and pinned frames.
     """
     def __init__(self, payload, rules):
-        if payload.get("schema_version") != 1 or not isinstance(payload.get("symbols"), dict):
+        if payload.get("schema_version") not in {1, 2} or not isinstance(payload.get("symbols"), dict):
             raise ValueError("POOL_CONTEXT_INVALID")
+        self.mode = payload.get("decision_mode", "HISTORICAL_PIT")
+        if self.mode not in {"HISTORICAL_PIT", "CURRENT_EOD"}:
+            raise ValueError("POOL_DECISION_MODE_INVALID")
+        if self.mode == "CURRENT_EOD" and payload.get("schema_version") != 2:
+            raise ValueError("CURRENT_CONTEXT_SCHEMA_REQUIRED")
         self.payload = payload
         self.rules = rules
         self.identity = hashlib.sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
+
+    def bind_run(self, as_of, mode):
+        self.run_as_of = pd.Timestamp(as_of)
+        if self.mode == "CURRENT_EOD":
+            decision = self._timestamp(self.payload.get("decision_as_of"))
+            if mode != "EOD" or decision != self._timestamp(as_of):
+                raise ValueError("CURRENT_DECISION_IDENTITY_MISMATCH")
+
+    @staticmethod
+    def _timestamp(value):
+        stamp = pd.Timestamp(value)
+        if pd.isna(stamp) or stamp.tzinfo is None:
+            raise ValueError("CONTEXT_TIMESTAMP_TIMEZONE_REQUIRED")
+        return stamp.tz_convert("UTC")
+
+    def temporal_identity(self, symbol, day):
+        if self.mode != "CURRENT_EOD":
+            return {"decision_mode": self.mode, "market_data_as_of": str(day)}
+        decision = self._timestamp(self.payload.get("decision_as_of"))
+        market_day = self.payload.get("market_data_as_of")
+        from .modes import resolve_effective_market_session
+        expected = resolve_effective_market_session(decision, "EOD", "XNYS")
+        if str(market_day) != str(expected.date()) or str(day)[:10] != str(market_day):
+            raise ValueError("MARKET_CONTEXT_STALE")
+        return {"decision_mode": self.mode, "decision_as_of": decision.isoformat(),
+                "market_data_as_of": market_day}
 
     def record(self, symbol, name, day):
         record = self.payload["symbols"].get(symbol, {}).get(name)
         if not isinstance(record, dict) or not record.get("source_id") or "data" not in record:
             raise ValueError(name.upper() + "_CONTEXT_MISSING")
+        if self.mode == "CURRENT_EOD":
+            identity = self.temporal_identity(symbol, day)
+            if name == "market":
+                if str(record.get("as_of"))[:10] != identity["market_data_as_of"]:
+                    raise ValueError("MARKET_CONTEXT_STALE")
+            else:
+                field = "portfolio_observed_at" if name == "portfolio" else "event_known_at"
+                stamp = self._timestamp(record.get(field))
+                decision = self._timestamp(identity["decision_as_of"])
+                # Current snapshots must have been observed on this UTC decision
+                # day and no later than the decision. Historical mode stays strict.
+                if stamp > decision or stamp.date() != decision.date():
+                    raise ValueError(name.upper() + "_CONTEXT_STALE")
+            return record
         stamp = pd.Timestamp(record.get("as_of"))
+        if hasattr(self, "run_as_of") and stamp.tzinfo is not None:
+            cutoff = self.run_as_of
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.tz_localize("UTC")
+            if stamp > cutoff:
+                raise ValueError(name.upper() + "_CONTEXT_FUTURE")
         if pd.isna(stamp) or stamp.date() != pd.Timestamp(day).date():
             raise ValueError(name.upper() + "_CONTEXT_STALE")
         return record
@@ -69,9 +120,15 @@ class PoolContextAdapters:
 
         def select(spread, **unused):
             contract = spread.to_dict()
+            decision_day = (str(self._timestamp(self.payload["decision_as_of"]).date())
+                            if self.mode == "CURRENT_EOD" else day)
+            contract["entry_date"] = decision_day
             event_status = self.event_status(symbol, SimpleNamespace(selected_contract=contract))
             result = {"status": "DATA_BLOCKED", "contract": contract, "reason_codes": [],
-                      "data_identity": {"context_sha256": self.identity, "quote_as_of": spread.quote_as_of,
+                      "data_identity": {**self.temporal_identity(symbol, day),
+                                        "portfolio_observed_at": self.payload["symbols"].get(symbol, {}).get("portfolio", {}).get("portfolio_observed_at"),
+                                        "event_known_at": self.payload["symbols"].get(symbol, {}).get("events", {}).get("event_known_at"),
+                                        "context_sha256": self.identity, "quote_as_of": spread.quote_as_of,
                                         "options_generation_id": spread.options_generation_id,
                                         "daily_handles": {key: str(getattr(value, "generation_id", getattr(value, "dataset_fingerprint", ""))) for key, value in handles.items()}}}
             if event_status != "EVENT_PASS":
@@ -81,7 +138,7 @@ class PoolContextAdapters:
             rows = canonical[(pd.to_datetime(canonical.expiration_date).dt.date == pd.Timestamp(spread.expiration).date()) & canonical.call_put.str.lower().isin(["p", "put"])]
             short = rows[rows.strike == spread.short_strike].iloc[0]
             long = rows[rows.strike == spread.long_strike].iloc[0]
-            row = {"date": day, "ticker": symbol, "expiration": spread.expiration,
+            row = {"date": decision_day, "ticker": symbol, "expiration": spread.expiration,
                    "short_strike": spread.short_strike, "long_strike": spread.long_strike,
                    "short_delta": spread.short_delta_diagnostic}
             for prefix, leg in (("short", short), ("long", long)):
@@ -106,7 +163,7 @@ class PoolContextAdapters:
             contract = row.selected_contract
             if not contract:
                 return "NOT_EVALUATED"
-            day = contract["entry_date"]
+            day = self.payload["market_data_as_of"] if self.mode == "CURRENT_EOD" else contract["entry_date"]
             record = self.record(symbol, "events", day)
             end = pd.Timestamp(record.get("coverage_end"))
             if pd.isna(end) or end.date() < pd.Timestamp(contract["expiration"]).date():
@@ -122,7 +179,7 @@ class PoolContextAdapters:
                     return "EVENT_PIT_METADATA_UNVERIFIED"
                 if pd.to_datetime(calendar.event_date, errors="raise").isna().any():
                     return "EVENT_CONTEXT_INVALID"
-            candidate = SimpleNamespace(ticker=symbol, entry_date=day,
+            candidate = SimpleNamespace(ticker=symbol, entry_date=(str(self._timestamp(self.payload["decision_as_of"]).date()) if self.mode == "CURRENT_EOD" else day),
                 expiration=contract["expiration"], event_risk=0)
             result = EventGate().evaluate(candidate, calendar)
             return "EVENT_PASS" if result.status == GateStatus.PASS else (next(iter(result.reason_codes), "EVENT_BLOCKED"))
@@ -133,7 +190,7 @@ class PoolContextAdapters:
         try:
             if not row.selected_contract:
                 return "NOT_EVALUATED"
-            record = self.record(symbol, "portfolio", row.selected_contract["entry_date"])
+            record = self.record(symbol, "portfolio", self.payload["market_data_as_of"] if self.mode == "CURRENT_EOD" else row.selected_contract["entry_date"])
             data = record["data"]
             required = {"planned_loss", "theoretical_max_loss", "bucket_risk", "ticker_risk", "account_capital"}
             if not required <= set(data):

@@ -67,6 +67,20 @@ def _validate_options_quote_session(chain: pd.DataFrame, expected_session) -> pd
     return normalized
 
 
+def _execution_identity(option_rules):
+    """Fingerprint the loaded source tree and effective option rules for audit."""
+    import hashlib
+    import json
+    source_root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(source_root.rglob("*.py")):
+        digest.update(path.relative_to(source_root).as_posix().encode())
+        digest.update(path.read_bytes())
+    code = "sha256:" + digest.hexdigest()
+    digest.update(json.dumps(option_rules, sort_keys=True, default=str).encode())
+    return code, "sha256:" + digest.hexdigest()
+
+
 def _candidate_record(candidate) -> dict:
     """Serialize the canonical candidate without retaining a live object."""
     if hasattr(candidate, "to_dict"):
@@ -174,6 +188,7 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
                     "promotion_receipts": tuple(getattr(result, "promoted_partitions", ()) or ()),
                     "admission_status": "ACTIVE_CANONICAL_STALE"}
         admission = admit_migrated_daily_symbol(symbol, decision_as_of=effective_daily_session,
+                                                required_start=req.required_start,
                                                 required_warmup_sessions=200, data_access=access)
         admission_status = str(admission.get("status", ""))
         admission_reasons = tuple(admission.get("reason_codes", ()) or ())
@@ -713,6 +728,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     spec = resolve_pool_universe(symbols, universe_id)
     run_id = uuid.uuid4().hex
     asof = _as_of(as_of)
+    if hasattr(contract_selector, "bind_run"):
+        contract_selector.bind_run(asof, mode)
     effective = resolve_effective_market_session(asof, mode, "XNYS")
     effective_asof = str(effective.date())
     access = data_access or PCSDataAccess()
@@ -808,11 +825,13 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     completed = effective if benchmark is not None else None
     if benchmark is not None and completed is not None:
         benchmark = benchmark[pd.to_datetime(benchmark["date"]).dt.normalize() <= completed].copy()
+    code_revision, engine_version = _execution_identity(option_rules)
     snapshot = PoolRunSnapshot(
         run_id, asof, mode,
         str(completed.date()) if completed is not None else None,
         f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
         benchmark_handles={benchmark_symbol: "PINNED" if benchmark is not None else "UNAVAILABLE"},
+        code_revision=code_revision, engine_version=engine_version,
         manifest_snapshot_id=runtime.manifest_snapshot_id,
         benchmark_status="READY" if benchmark is not None else (benchmark_blocker or "BLOCKED"))
     snapshot = PoolRunSnapshot(**{**snapshot.__dict__, "requested_as_of": asof,

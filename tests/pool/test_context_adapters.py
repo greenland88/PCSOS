@@ -71,7 +71,8 @@ def test_selector_rejects_incomplete_market_before_data_reads():
             daily=None, handle=None, chain=None, runtime=None, access=None)
 
 
-def test_builtin_selector_calls_real_engine_and_preserves_hard_stop(monkeypatch):
+@pytest.mark.parametrize("current", [False, True])
+def test_builtin_selector_calls_real_engine_and_preserves_hard_stop(monkeypatch, current):
     import pandas as pd
     import pcs.market_context as contexts
     import pcs.engine.decision_engine as engines
@@ -80,6 +81,11 @@ def test_builtin_selector_calls_real_engine_and_preserves_hard_stop(monkeypatch)
     payload, row = fixture()
     payload["symbols"]["NVDA"]["market"] = {"source_id": "fixture", "as_of": "2026-09-04",
         "data": MarketState(vix=15).model_dump()}
+    if current:
+        payload.update(schema_version=2, decision_mode="CURRENT_EOD",
+            decision_as_of="2026-09-05T16:00:00Z", market_data_as_of="2026-09-04")
+        payload["symbols"]["NVDA"]["portfolio"]["portfolio_observed_at"]="2026-09-05T15:55:00Z"
+        payload["symbols"]["NVDA"]["events"]["event_known_at"]="2026-09-05T15:50:00Z"
     # Fixture supplies already-tested upstream market/trend context. Actual
     # quote construction, hard gates, scoring and sizing execute below.
     monkeypatch.setattr(contexts, "build_market_context", lambda *a, **k: SimpleNamespace(
@@ -102,6 +108,10 @@ def test_builtin_selector_calls_real_engine_and_preserves_hard_stop(monkeypatch)
     adapter, result = select()
     assert result["status"] == "PASS", result
     assert result["decision"]["recommended_contracts"] > 0
+    assert result["contract"]["entry_date"] == ("2026-09-05" if current else "2026-09-04")
+    if current:
+        assert result["data_identity"]["market_data_as_of"] == "2026-09-04"
+        assert result["data_identity"]["portfolio_observed_at"] == "2026-09-05T15:55:00Z"
     row.selected_contract, row.selection_result = result["contract"], result
     assert adapter.portfolio_status("NVDA", row) == "PORTFOLIO_PASS"
     from pcs.pool.final_gates import finalize_ticker_result
@@ -136,3 +146,29 @@ def test_read_only_worker_injects_builtin_context(tmp_path, monkeypatch):
     assert isinstance(seen["contract_selector"], PoolContextAdapters)
     assert callable(seen["event_status_reader"]) and callable(seen["portfolio_status_reader"])
     assert seen["data_mode"] == "READ_ONLY" and seen["auto_prepare_data"] is False
+
+def test_current_eod_separates_snapshot_dates_and_rejects_future():
+    payload, row = fixture()
+    payload.update(schema_version=2, decision_mode='CURRENT_EOD',
+        decision_as_of='2026-09-05T16:00:00Z', market_data_as_of='2026-09-04')
+    payload['symbols']['NVDA']['portfolio']['portfolio_observed_at']='2026-09-05T15:55:00Z'
+    payload['symbols']['NVDA']['events']['event_known_at']='2026-09-05T15:50:00Z'
+    adapter=PoolContextAdapters(payload,load_rules())
+    adapter.bind_run('2026-09-05T16:00:00Z','EOD')
+    assert adapter.event_status('NVDA',row)=='EVENT_PASS'
+    assert adapter.portfolio_status('NVDA',row)=='PORTFOLIO_PASS'
+    with pytest.raises(ValueError,match='IDENTITY_MISMATCH'):
+        adapter.bind_run('2026-09-04T21:00:00Z','EOD')
+    payload['symbols']['NVDA']['portfolio']['portfolio_observed_at']='2026-09-05T16:01:00Z'
+    assert adapter.portfolio_status('NVDA',row)!='PORTFOLIO_PASS'
+
+
+def test_historical_context_rejects_next_day_account():
+    payload,row=fixture()
+    payload['symbols']['NVDA']['portfolio']['as_of']='2026-09-05T15:55:00Z'
+    assert PoolContextAdapters(payload,load_rules()).portfolio_status('NVDA',row)!='PORTFOLIO_PASS'
+
+
+def test_weekend_current_eod_uses_friday():
+    from pcs.pool.modes import resolve_effective_market_session
+    assert str(resolve_effective_market_session('2026-09-05T16:00:00Z','EOD','XNYS').date())=='2026-09-04'

@@ -141,7 +141,8 @@ def _reconcile_migrated_candidates(validated: list[tuple[pd.DataFrame, dict[str,
 
 def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = None,
                                 required_warmup_sessions: int = 200, data_access=None,
-                                migration_manifest_path=None, read_only: bool = False) -> dict[str, Any]:
+                                migration_manifest_path=None, read_only: bool = False,
+                                required_start: str | None = None) -> dict[str, Any]:
     """Validate and admit migrated daily files through immutable generations.
 
     The migration catalog is only an eligibility claim. Every physical file is
@@ -160,6 +161,13 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
     if str(matches.iloc[0].get("status", "")).strip().upper() != "SUCCESS":
         return {"symbol": s, "status": "MIGRATION_CATALOG_NOT_SUCCESS", "reason_codes": ("MIGRATION_CATALOG_NOT_SUCCESS",), "partitions": ()}
     paths = _migrated_daily_files(access, s)
+    if required_start is not None:
+        if decision_as_of is None or pd.Timestamp(required_start) > pd.Timestamp(decision_as_of):
+            raise ValueError("ADMISSION_WINDOW_INVALID")
+        first_year, last_year = pd.Timestamp(required_start).year, pd.Timestamp(decision_as_of).year
+        # Bound the logical partitions, never trim invalid rows from a partition.
+        # Older history remains unadmitted and must be validated if requested later.
+        paths = tuple(path for path in paths if first_year <= int(path.parent.name.split("=", 1)[1]) <= last_year)
     if not paths:
         return {"symbol": s, "status": "MIGRATION_PHYSICAL_MISSING", "reason_codes": ("MIGRATION_PHYSICAL_MISSING",), "partitions": ()}
     validated = []

@@ -69,3 +69,12 @@ preparation mode does not promise full options/event/portfolio readiness.
 
 See [system onboarding](system_onboarding.md) for the operating sequence and
 the difference between read-only scan deadlines and write transaction safety.
+
+
+Current pool preparation passes its explicit required_start/decision_as_of to
+admit_migrated_daily_symbol. Admission validates and promotes only intersecting
+year partitions; every selected partition is validated in full, without dropping
+bad rows. Invalid older partitions remain unadmitted, retain their evidence, and
+must pass validation if a later historical request needs them. Omitting
+required_start preserves full-history admission. Independent verified-handle
+resolution still decides whether the requested warmup is sufficient.

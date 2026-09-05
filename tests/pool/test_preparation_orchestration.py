@@ -503,3 +503,25 @@ def test_superseded_generation_does_not_inflate_warmup(tmp_path):
              "row_count": 79, "status": "SUCCESS"}]
     access._read_manifest = lambda _path: pd.DataFrame(rows)
     assert runner._daily_preflight(["AAA"], access, "2026-09-03")["AAA"].status == "PREP_REQUIRED"
+
+
+def test_bounded_admission_leaves_invalid_old_history_unadmitted(tmp_path):
+    access=PCSDataAccess.isolated(manifest_path=tmp_path/'manifest.csv',parquet_root=tmp_path/'parquet')
+    current=_frame()
+    old=current.copy(); old['date']=old['date']-pd.DateOffset(years=10)
+    old.loc[0,'high']=old.loc[0,'low']-1
+    for year,frame in [(2015,old),(2025,current)]:
+        path=access.parquet_root/'daily'/'symbol=AAA'/f'year={year}'/'data.parquet'
+        path.parent.mkdir(parents=True);frame.to_parquet(path,index=False)
+    catalog=tmp_path/'migration.csv'
+    pd.DataFrame([{'symbol':'AAA','status':'SUCCESS'}]).to_csv(catalog,index=False)
+    unbounded=admit_migrated_daily_symbol('AAA',decision_as_of='2025-09-17',
+        data_access=access,migration_manifest_path=catalog,read_only=True)
+    assert unbounded['failed_partition']=='year=2015'
+    bounded=admit_migrated_daily_symbol('AAA',decision_as_of='2025-09-17',required_start='2025-01-01',
+        data_access=access,migration_manifest_path=catalog)
+    assert bounded['status']=='ADMITTED_READY'
+    assert {r['partition'] for r in bounded['partition_results']}=={'year=2025'}
+    assert not list((access.parquet_root/'daily'/'symbol=AAA'/'year=2015'/'generations').glob('*'))
+    # Default admission remains full-history and still rejects that old file.
+    assert admit_migrated_daily_symbol('AAA',data_access=access,migration_manifest_path=catalog)['status']=='MIGRATED_CANONICAL_INVALID'

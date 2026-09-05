@@ -28,7 +28,7 @@ WEBSOCKET_BASE_URL = "ws://38.76.185.106:3000/stocks"
 
 def load_project_environment(env_file: str | Path = ".env") -> None:
     """Load missing project environment values without logging their contents."""
-    path = Path(env_file)
+    path = Path(os.environ.get("PCS_ENV_FILE", env_file))
     if not path.is_file():
         return
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -56,7 +56,7 @@ class GatewayConfig:
         load_project_environment(env_file)
         key = os.getenv("PCS_MARKET_DATA_API_KEY")
         if not key:
-            path = Path(env_file)
+            path = Path(os.environ.get("PCS_ENV_FILE", env_file))
             if path.is_file():
                 for raw_line in path.read_text(encoding="utf-8").splitlines():
                     name, separator, value = raw_line.partition("=")
