@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pcs.pool.runner as runner
-from pcs.pool.runner import reconcile_pool_scan_results
+from pcs.pool.runner import reconcile_pool_scan_results, summarize_recovery_results
 from pcs.pool.models import EligibilityStatus
 from pcs.pool.runtime import ManifestSnapshot
 from pcs.data.access import PCSDataAccess
@@ -61,6 +61,15 @@ def test_reconcile_normalizes_nested_preparation_admission_result():
         "status": "ADMISSION_INCOMPLETE", "promoted_partitions": ("year=2025",)}}])
     assert delta["recovery_by_symbol"]["AAA"]["admission_status"] == "ADMISSION_INCOMPLETE"
     assert delta["recovery_by_symbol"]["AAA"]["admission_promoted_partitions"] == ("year=2025",)
+
+
+def test_summarize_recovery_counts_only_partition_evidence():
+    results = [{"symbol": "AAA", "admission_result": {"partition_results": (
+        {"partition": "year=2025", "status": "PROMOTED", "promotion_receipt": {"id": "r"}},
+        {"partition": "year=2026", "status": "FAILED"},),
+        "unprocessed_partitions": ("year=2027",)}}]
+    assert summarize_recovery_results(results) == {"symbols": 1, "validated": 0, "reused": 0,
+        "promoted": 1, "failed": 1, "unprocessed": 1, "promotion_receipts": 1}
 
 
 def test_reconcile_rejects_code_or_configuration_identity_changes():

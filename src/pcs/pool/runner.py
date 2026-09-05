@@ -503,6 +503,43 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
             "before_count": len(left), "after_count": len(right)}
 
 
+def summarize_recovery_results(recovery_results: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Count recovery outcomes from per-partition evidence, without plan data."""
+    values = recovery_results.values() if isinstance(recovery_results, Mapping) else recovery_results
+    counts = {"symbols": 0, "validated": 0, "reused": 0, "promoted": 0,
+              "failed": 0, "unprocessed": 0, "promotion_receipts": 0}
+    seen: set[tuple[str, str, str]] = set()
+    symbols: set[str] = set()
+    for item in values:
+        if not isinstance(item, Mapping):
+            continue
+        symbol = str(item.get("symbol", "")).strip().upper()
+        nested = item.get("admission_result") if isinstance(item.get("admission_result"), Mapping) else item
+        if not symbol or not isinstance(nested, Mapping):
+            continue
+        symbols.add(symbol)
+        partition_results = nested.get("partition_results") or ()
+        for result in partition_results:
+            if not isinstance(result, Mapping):
+                continue
+            partition = str(result.get("partition", "")).strip()
+            status = str(result.get("status", "")).strip().lower()
+            key = (symbol, partition, status)
+            if not partition or key in seen:
+                continue
+            seen.add(key)
+            if status in counts:
+                counts[status] += 1
+            if status == "promoted" and result.get("promotion_receipt"):
+                counts["promotion_receipts"] += 1
+        for partition in nested.get("unprocessed_partitions") or ():
+            key = (symbol, str(partition), "unprocessed")
+            if key not in seen:
+                seen.add(key); counts["unprocessed"] += 1
+    counts["symbols"] = len(symbols)
+    return counts
+
+
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
                  as_of: datetime | str = "latest",
                  mode: Literal["PREMARKET", "INTRADAY", "EOD"],
@@ -796,4 +833,4 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     return result
 
 
-__all__ = ["run_pcs_pool", "reconcile_pool_scan_results"]
+__all__ = ["run_pcs_pool", "reconcile_pool_scan_results", "summarize_recovery_results"]
