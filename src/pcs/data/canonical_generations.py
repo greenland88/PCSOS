@@ -179,6 +179,9 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 raise
             validated.append((frame, meta))
             validation_results.append({"partition": f"year={meta['year']}", "status": "VALIDATED",
+                                       "candidate_path": meta.get("path"), "physical_sha256": meta.get("physical_sha256"),
+                                       "semantic_content_hash": meta.get("semantic_content_hash"),
+                                       "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
                                        "active_generation_before": None, "active_generation_after": None,
                                        "reason_codes": ("MIGRATED_CANONICAL_VALIDATED",)})
         validated = _reconcile_migrated_candidates(validated)
@@ -225,6 +228,9 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
             active = rows[active_values.notna() & ~active_values.str.lower().isin({"", "nan", "none", "<na>"})] if not rows.empty else rows
             generation = str(active.iloc[-1].get("active_generation")) if not active.empty else None
             validated_results.append({"partition": f"year={meta['year']}", "status": "VALIDATED",
+                                      "candidate_path": meta.get("path"), "physical_sha256": meta.get("physical_sha256"),
+                                      "semantic_content_hash": meta.get("semantic_content_hash"),
+                                      "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
                                       "active_generation_before": generation, "active_generation_after": generation,
                                       "reason_codes": ("MIGRATED_CANONICAL_VALIDATED",)})
         return {"symbol": s, "status": "MIGRATED_CANONICAL_VALIDATED", "reason_codes": ("MIGRATED_CANONICAL_FOUND", "MIGRATED_CANONICAL_VALIDATED"),
@@ -261,6 +267,9 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                         raise DataQualityError("MIGRATED_ACTIVE_CONTENT_CONFLICT")
                     already.append(f"year={year}")
                     partition_results.append({"partition": f"year={year}", "status": "REUSED",
+                                              "candidate_path": meta.get("path"), "physical_sha256": meta.get("physical_sha256"),
+                                              "semantic_content_hash": meta.get("semantic_content_hash"),
+                                              "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
                                               "active_generation_before": active_before,
                                               "active_generation_after": active_before,
                                               "reason_codes": ("MIGRATED_CANONICAL_ALREADY_ADMITTED",)})
@@ -276,6 +285,9 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 promoted.append(f"year={year}")
                 receipt_dict = promotion_receipts[-1]
                 partition_results.append({"partition": f"year={year}", "status": "PROMOTED",
+                                          "candidate_path": meta.get("path"), "physical_sha256": meta.get("physical_sha256"),
+                                          "semantic_content_hash": meta.get("semantic_content_hash"),
+                                          "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
                                           "active_generation_before": active_before,
                                           "active_generation_after": receipt_dict.get("manifest_active_generation_id") or str(record.get("active_generation", "")),
                                           "reason_codes": ("MIGRATED_CANONICAL_ADMITTED",),
@@ -283,6 +295,7 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
     except (DataAccessError, DataQualityError, OSError, ValueError) as exc:
         if failed_partition is not None:
             partition_results.append({"partition": failed_partition, "status": "FAILED",
+                                      "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
                                       "active_generation_before": active_before if 'active_before' in locals() else None,
                                       "active_generation_after": None,
                                       "reason_codes": (str(exc).strip() or type(exc).__name__,)})

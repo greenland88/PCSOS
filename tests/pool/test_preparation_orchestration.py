@@ -250,6 +250,10 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
     assert first_admission["partition_results"][0]["status"] == "PROMOTED"
     assert first_admission["partition_results"][0]["active_generation_before"] is None
     assert first_admission["partition_results"][0]["active_generation_after"]
+    assert first_admission["partition_results"][0]["candidate_path"]
+    assert first_admission["partition_results"][0]["physical_sha256"]
+    assert first_admission["partition_results"][0]["semantic_content_hash"]
+    assert first_admission["partition_results"][0]["source"] == "DAILY_UNIVERSE_MIGRATION_ADMISSION"
     readonly_admission = admit_migrated_daily_symbol(
         "AAA", decision_as_of="2025-09-17", data_access=access,
         migration_manifest_path=tmp_path / "migration.csv", read_only=True)
