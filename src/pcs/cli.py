@@ -217,6 +217,7 @@ def pool_scan(args):
             universe_id=args.universe_id, as_of=args.as_of, mode=args.mode,
             max_workers=args.max_workers, stage_timeout_seconds=args.stage_timeout_seconds,
             manifest_path=args.manifest_path, parquet_root=args.parquet_root, rules=args.rules,
+            output_directory=args.output_directory,
         )
         result = run_read_only_scan(request, timeout_seconds=args.scan_timeout_seconds)
         print(result.to_json(), flush=True)
@@ -239,6 +240,7 @@ def pool_scan(args):
         stage_timeout_seconds=args.stage_timeout_seconds,
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
         option_rules=load_pool_option_rules(args.rules),
+        output_directory=args.output_directory,
     )
     print(result.to_json())
 
@@ -318,6 +320,8 @@ def main():
                       help="hard process deadline for READ_ONLY scans (default: 300 seconds)")
     pool.add_argument("--parquet-root", default="data/parquet")
     pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
+    pool.add_argument("--output-directory", default="pool_scan_runs",
+                      help="directory for scan and reconciliation artifacts")
     pool.set_defaults(func=pool_scan)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")

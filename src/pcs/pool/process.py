@@ -27,6 +27,7 @@ class ReadOnlyScanRequest:
     manifest_path: str = "data/manifests/storage_manifest.csv"
     parquet_root: str = "data/parquet"
     rules: str = "config/pcs_rules.yaml"
+    output_directory: str | None = "pool_scan_runs"
 
 
 def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
@@ -43,6 +44,7 @@ def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
             data_access=PCSDataAccess(manifest_path=request.manifest_path,
                                       parquet_root=request.parquet_root),
             option_rules=load_pool_option_rules(request.rules),
+            output_directory=request.output_directory,
         )
         sender.send(("result", result))
     except Exception as exc:
@@ -57,8 +59,8 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
 
     ``timeout_seconds`` includes child startup and scan execution; cleanup adds
     at most two seconds. A completed result is retained even if a timed-out
-    thread keeps the child alive. No provider preparation or output writes are
-    accepted in this request schema.
+    thread keeps the child alive. Provider preparation is forbidden; optional
+    output writes are audit artifacts only and never canonical storage.
     """
     if not isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("scan timeout must be finite and positive")
