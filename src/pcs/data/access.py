@@ -1046,6 +1046,11 @@ class PCSDataAccess:
             frame.insert(0, "symbol", str(handle.ticker).upper())
         elif str(handle.dataset).lower() == "daily":
             frame["symbol"] = frame["symbol"].fillna(str(handle.ticker).upper()).astype(str).replace({"": str(handle.ticker).upper(), "nan": str(handle.ticker).upper()})
+        # Handle construction normalizes daily dates before deriving the
+        # composite identity.  Repeat that normalization on read-back so
+        # parquet object/date representations cannot change the checksum.
+        if str(handle.dataset).lower() == "daily" and "date" in frame.columns:
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
         if len(frame) != int(handle.row_count):
             raise DataCorrectnessError("DATASET_ROW_COUNT_MISMATCH")
         actual_checksum = self.semantic_content_hash(frame)
