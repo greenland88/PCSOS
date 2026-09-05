@@ -70,6 +70,37 @@ def test_failed_read_back_preserves_previous_active(tmp_path, monkeypatch):
     with pytest.raises(Exception): a.promote_generation(frame(bid=1.2),"options","ZZZ","year=2026/quarter=1",source_version="new")
     assert pd.read_csv(tmp_path/"manifest.csv").iloc[0].active_generation==old.generation_id
 
+def test_daily_rollback_matches_scalar_partition_and_restores_identity(tmp_path):
+    a=access(tmp_path)
+    old=a.promote_generation(daily_frame(dates=("2026-01-02", "2026-01-03")),"daily","ZZZ","year=2026",source_version="old")
+    new_frame=daily_frame(dates=("2026-01-02", "2026-01-03", "2026-01-04"))
+    new=a.promote_generation(new_frame,"daily","ZZZ","year=2026",source_version="new")
+    result=a.rollback_generation("daily","ZZZ","year=2026",expected_generation=new.generation_id)
+    row=pd.read_csv(tmp_path/"manifest.csv").iloc[0]
+    assert result["to_generation"]==old.generation_id
+    assert row.active_generation==old.generation_id and int(row.row_count)==len(daily_frame(dates=("2026-01-02", "2026-01-03")))
+    assert row.content_hash==a.semantic_content_hash(pd.read_parquet(old.path))
+
+def test_manifest_cache_is_not_updated_when_atomic_replace_fails(tmp_path, monkeypatch):
+    import pcs.data.access as access_module
+    a=access(tmp_path); a.promote_generation(daily_frame(),"daily","ZZZ","year=2026",source_version="old")
+    cached=a._manifest.copy(deep=True)
+    original=access_module.os.replace
+    def fail(source,target):
+        if str(target).endswith("manifest.csv"): raise PermissionError(13,"denied")
+        return original(source,target)
+    monkeypatch.setattr(access_module.os,"replace",fail)
+    with pytest.raises(Exception,match="MANIFEST_ATOMIC_REPLACE_FAILED"):
+        a.update_manifest("daily","ZZZ",daily_frame(dates=("2026-01-02","2026-01-04")),tmp_path/"x.parquet","fixture","year=2026",replace_existing=True,active_generation="new")
+    assert a._manifest.equals(cached)
+
+def test_same_partition_expected_active_generation_blocks_lost_update(tmp_path):
+    a=access(tmp_path); old=a.promote_generation(daily_frame(),"daily","ZZZ","year=2026",source_version="old")
+    newer=daily_frame(dates=("2026-01-02","2026-01-03","2026-01-04")); digest=a.semantic_content_hash(newer)
+    with pytest.raises(Exception,match="PROMOTION_EXPECTED_ACTIVE_MISMATCH"):
+        a.update_manifest("daily","ZZZ",newer,tmp_path/"candidate.parquet","fixture","year=2026",replace_existing=True,expected_active_generation="stale-generation",active_generation=digest[:24],content_hash=digest)
+    assert pd.read_csv(tmp_path/"manifest.csv").iloc[0].active_generation==old.generation_id
+
 def test_promotion_invalidates_old_generation_cache(tmp_path):
     a=access(tmp_path); r1=a.promote_generation(frame(),"options","ZZZ","year=2026/quarter=1",source_version="a"); a.generation_cache.put("options","ZZZ","year=2026/quarter=1",r1.generation_id,"old"); r2=a.promote_generation(frame(bid=1.2),"options","ZZZ","year=2026/quarter=1",source_version="b")
     assert a.generation_cache.get("options","ZZZ","year=2026/quarter=1",r1.generation_id) is None and r1.generation_id!=r2.generation_id

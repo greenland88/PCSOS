@@ -149,8 +149,27 @@ def _daily_requirements(symbol: str, effective_daily_session: str) -> MarketData
 
 def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_session: str) -> dict:
     """Prepare one daily dependency through the canonical control plane."""
+    symbol = str(symbol).strip().upper()
     req = _daily_requirements(symbol, effective_daily_session)
     try:
+        # An independently verified active generation is authoritative.  Do
+        # not let stale legacy migration files prevent its incremental refresh.
+        active_state = _daily_preflight((symbol,), access, effective_daily_session)[symbol]
+        if active_state.status == "READY":
+            return {"symbol": symbol, "attempted": False, "result": None,
+                    "result_status": "ALREADY_COMPLETE", "reason_codes": (),
+                    "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0,
+                    "admission_status": "ACTIVE_CANONICAL_READY"}
+        if active_state.status == "PREP_REQUIRED" and any(code in {"DAILY_STALE", "CANONICAL_DAILY_STALE"} for code in active_state.reason_codes):
+            result = ensure_market_data(symbol, req, access=access)
+            outcomes = tuple(getattr(result, "import_outcomes", ()) or ())
+            return {"symbol": symbol, "attempted": True, "result": result,
+                    "result_status": str(getattr(result, "status", "")),
+                    "reason_codes": tuple(getattr(result, "reason_codes", ()) or ()) or active_state.reason_codes,
+                    "provider_calls": sum(1 for item in outcomes if str(item.get("status", "")).upper() != "REUSED"),
+                    "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
+                    "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()),
+                    "admission_status": "ACTIVE_CANONICAL_STALE"}
         admission = admit_migrated_daily_symbol(symbol, decision_as_of=effective_daily_session,
                                                 required_warmup_sessions=200, data_access=access)
         admission_status = str(admission.get("status", ""))
@@ -168,7 +187,8 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
         reasons = tuple(dict.fromkeys((*admission_reasons, *(getattr(result, "reason_codes", ()) or ()))))
         return {"symbol": str(symbol).upper(), "attempted": True, "result": result,
                 "result_status": status or admission_status, "reason_codes": reasons,
-                "provider_calls": 0,
+                "provider_calls": sum(1 for item in (getattr(result, "import_outcomes", ()) or ())
+                                      if str(item.get("status", "")).upper() != "REUSED"),
                 "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
                 "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()) + len(admission.get("promoted_partitions", ()) or ()),
                 "admission_status": admission_status}
@@ -267,6 +287,16 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                                           required_end=str(day.date()), datasets=("daily",),
                                           decision_as_of=str(day.date()), required_history_rows=200)
             with _PREPARATION_LOCK:
+                active_state = _daily_preflight((symbol,), access, str(day.date()))[symbol]
+                if active_state.status == "READY":
+                    if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
+                        runtime.refresh_manifest_snapshot()
+                    return
+                if active_state.status == "PREP_REQUIRED" and any(code in {"DAILY_STALE", "CANONICAL_DAILY_STALE"} for code in active_state.reason_codes):
+                    ensure_market_data(symbol, prep, access=access)
+                    if runtime is not None and hasattr(runtime, "refresh_manifest_snapshot"):
+                        runtime.refresh_manifest_snapshot()
+                    return
                 # A verified canonical object with a missing pointer can be
                 # adopted locally before any provider path is considered.
                 try:

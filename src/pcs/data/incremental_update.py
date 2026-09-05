@@ -106,12 +106,17 @@ def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="dat
     changed: list[str] = []
     for year, new_rows in incoming.groupby(incoming.date.dt.year):
         target = _daily_partition(Path(parquet_root), symbol, int(year))
-        old = pd.read_parquet(target) if target.exists() else pd.DataFrame(columns=incoming.columns)
+        old = pd.DataFrame(columns=incoming.columns)
+        try:
+            record = access.active_generation_record("daily", symbol, f"year={int(year)}")
+            old = access.read_pinned_generation("daily", symbol, f"year={int(year)}", str(record["active_generation"]))
+        except (DataAccessError, FileNotFoundError, ValueError, KeyError):
+            if target.exists():
+                old = pd.read_parquet(target)
         merged = normalize_daily_frame(new_rows.copy() if old.empty else pd.concat([old, new_rows], ignore_index=True))
         if target.exists() and _sha256(old) == _sha256(merged):
             continue
-        _atomic_write(merged, target)
-        access.update_manifest("daily", symbol, merged, target, source_version, f"year={int(year)}", replace_existing=True)
+        access.promote_generation(merged, "daily", symbol, f"year={int(year)}", source_version=source_version)
         changed.append(f"daily/symbol={symbol}/year={int(year)}")
     latest = str(pd.to_datetime(incoming.date).max().date()) if len(incoming) else None
     return ("UPDATED" if changed else "NO_OP", changed, latest)

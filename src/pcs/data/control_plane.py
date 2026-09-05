@@ -766,7 +766,21 @@ class MarketDataControlPlane:
                 # sessions. Their first/last event dates must not be treated
                 # as a coverage gap around an otherwise valid research range.
                 spec = self.access.resolve_source(dataset, req.symbol) if dataset == "events" else self.access.resolve_source(dataset, req.symbol, req.required_start, req.required_end)
-                out[dataset] = {"present": True, **spec.to_dict()}
+                payload = {"present": True, **spec.to_dict()}
+                if dataset == "daily":
+                    # Planning must use the verified active generation, not a
+                    # newer legacy fixed-target file that is outside the
+                    # manifest generation boundary.
+                    manifest = self.access._read_manifest(self.access.manifest_path)
+                    rows = manifest[(manifest.dataset.astype(str) == "daily") &
+                                    manifest.symbol.astype(str).str.upper().eq(str(req.symbol).upper())]
+                    active = rows[rows.active_generation.notna() &
+                                  rows.active_generation.astype(str).str.strip().ne("") &
+                                  rows.active_generation.astype(str).str.lower().ne("nan")]
+                    if len(active):
+                        payload["last_date"] = str(pd.to_datetime(active.max_date, errors="coerce").max().date())
+                        payload["row_count"] = int(pd.to_numeric(active.row_count, errors="coerce").fillna(0).sum())
+                out[dataset] = payload
             except CanonicalFileAccessError as exc:
                 out[dataset] = {"present": True, "readable": False,
                                 "reason_code": exc.reason_code,

@@ -239,7 +239,7 @@ def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
         "AAA", decision_as_of="2025-09-17", data_access=access,
         migration_manifest_path=tmp_path / "migration.csv")
     assert result["status"] == "MIGRATED_CANONICAL_INVALID"
-    assert result["reason_codes"] == ("MIGRATED_CANONICAL_OHLCV_INVALID",)
+    assert result["reason_codes"] == ("MIGRATED_CANONICAL_OHLCV_INVALID:HIGH_BELOW_LOW,HIGH_BELOW_OPEN_CLOSE",)
     assert not list((path.parent / "generations").glob("*.parquet"))
 
 

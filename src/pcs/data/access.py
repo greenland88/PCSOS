@@ -1196,6 +1196,7 @@ class PCSDataAccess:
         manifest_committed = False
         try:
             self.update_manifest(dataset, symbol, merged, path, source_version, partition, replace_existing=True,
+                             expected_active_generation=previous_generation,
                              staging_generation_id=generation, promoted_generation_id=generation,
                              manifest_active_generation_id=generation, read_back_generation_id=generation,
                              active_generation=generation, previous_generation=previous_generation,
@@ -1271,12 +1272,12 @@ class PCSDataAccess:
         if not mask.any(): raise DataAccessError("ACTIVE_MANIFEST_RECORD_MISSING")
         return manifest.loc[mask].iloc[-1].to_dict()
 
-    def update_manifest(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, **generation):
+    def update_manifest(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, *, expected_active_generation=None, **generation):
         """Atomically perform the complete manifest read/merge/replace transaction."""
         with self._file_lock(self.manifest_path):
-            return self._update_manifest_locked(dataset, symbol, frame, path, source_version, partition, replace_existing, generation)
+            return self._update_manifest_locked(dataset, symbol, frame, path, source_version, partition, replace_existing, generation, expected_active_generation=expected_active_generation)
 
-    def _update_manifest_locked(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, generation=None):
+    def _update_manifest_locked(self, dataset, symbol, frame, path, source_version, partition=None, replace_existing=False, generation=None, *, expected_active_generation=None):
         generation = generation or {}
         fields = ["dataset","symbol","source_file","source_size","source_modified_time","row_count","min_date","max_date","year","quarter","parquet_path","schema_version","schema_fingerprint","dataset_fingerprint","price_basis","corporate_action_version","import_timestamp","status","lifecycle_status","superseded_by","active_generation","previous_generation","staging_generation_id","promoted_generation_id","manifest_active_generation_id","read_back_generation_id","content_hash","file_hash","created_at","promoted_at","source","source_lineage","partition_ids","provenance_id","previous_path"]
         now = datetime.now(timezone.utc).isoformat()
@@ -1294,6 +1295,19 @@ class PCSDataAccess:
         for field in fields:
             if field not in current:
                 current[field] = None
+        if expected_active_generation is not None and partition:
+            parts = dict(x.split("=", 1) for x in str(partition).split("/") if "=" in x)
+            mask = (current.dataset.astype(str).eq(str(dataset)) &
+                    current.symbol.astype(str).str.upper().eq(self._symbol(symbol)) &
+                    pd.to_numeric(current.year, errors="coerce").eq(pd.to_numeric(parts.get("year"), errors="coerce")))
+            if "quarter" in parts:
+                mask &= pd.to_numeric(current.quarter, errors="coerce").eq(pd.to_numeric(parts["quarter"], errors="coerce"))
+            else:
+                mask &= current.quarter.isna()
+            active = current.loc[mask, "active_generation"].astype(str).replace({"nan": "", "None": ""})
+            observed = str(active.iloc[-1]) if len(active) else ""
+            if observed != str(expected_active_generation):
+                raise DataAccessError("PROMOTION_EXPECTED_ACTIVE_MISMATCH")
         if replace_existing:
             row_year = pd.to_numeric(pd.Series([row["year"]]), errors="coerce").iloc[0]
             row_quarter = pd.to_numeric(pd.Series([row["quarter"]]), errors="coerce").iloc[0]
@@ -1320,14 +1334,18 @@ class PCSDataAccess:
             _atomic_replace_with_retry(tmp, self.manifest_path)
         finally:
             tmp.unlink(missing_ok=True)
-            self._manifest = updated
+        self._manifest = updated
 
     def rollback_generation(self, dataset: str, symbol: str, partition: str, *, expected_generation: str | None = None) -> dict[str, Any]:
         """Atomically switch a logical partition back to its previous generation."""
         with self._file_lock(self.manifest_path):
             current = self._read_manifest(self.manifest_path)
             parts = dict(x.split("=", 1) for x in str(partition).split("/"))
-            mask = (current.dataset.astype(str) == str(dataset)) & current.symbol.astype(str).str.upper().eq(self._symbol(symbol)) & current.year.astype(str).eq(str(parts.get("year"))) & current.quarter.astype(str).eq(str(parts.get("quarter")))
+            mask = (current.dataset.astype(str) == str(dataset)) & current.symbol.astype(str).str.upper().eq(self._symbol(symbol)) & current.year.astype(str).eq(str(parts.get("year")))
+            if "quarter" in parts:
+                mask &= current.quarter.astype(str).eq(str(parts.get("quarter")))
+            else:
+                mask &= current.quarter.isna()
             if not mask.any(): raise DataAccessError("CANONICAL_ROLLBACK_MANIFEST_MISSING")
             idx = current.index[mask][-1]; row = current.loc[idx]
             if expected_generation is not None and str(row.get("active_generation", "")) != str(expected_generation):
@@ -1337,7 +1355,25 @@ class PCSDataAccess:
             if not previous or not previous_generation or not Path(previous).exists(): raise DataAccessError("CANONICAL_ROLLBACK_PREVIOUS_GENERATION_UNAVAILABLE")
             old_generation, old_path = str(row.active_generation), str(row.parquet_path)
             current.loc[idx, "active_generation"] = previous_generation; current.loc[idx, "previous_generation"] = old_generation
-            current.loc[idx, "parquet_path"] = previous; current.loc[idx, "previous_path"] = old_path; current.loc[idx, "content_hash"] = self.semantic_content_hash(pd.read_parquet(previous)); current.loc[idx, "promoted_at"] = datetime.now(timezone.utc).isoformat()
+            previous_frame = pd.read_parquet(previous)
+            previous_hash = self.semantic_content_hash(previous_frame)
+            current.loc[idx, "parquet_path"] = previous; current.loc[idx, "previous_path"] = old_path
+            current.loc[idx, "content_hash"] = previous_hash; current.loc[idx, "file_hash"] = hashlib.sha256(Path(previous).read_bytes()).hexdigest()
+            current.loc[idx, "row_count"] = len(previous_frame)
+            date_col = "trade_date" if str(dataset).startswith("options") else "date"
+            current.loc[idx, "min_date"] = str(pd.to_datetime(previous_frame[date_col]).min().date())
+            current.loc[idx, "max_date"] = str(pd.to_datetime(previous_frame[date_col]).max().date())
+            try:
+                from .canonical_generations import canonical_snapshot_descriptor
+                descriptor = canonical_snapshot_descriptor(dataset=str(dataset), symbol=self._symbol(symbol), frame=previous_frame,
+                    file_hash=current.loc[idx, "file_hash"], byte_size=Path(previous).stat().st_size,
+                    schema_version=str(row.get("schema_version") or "2"), price_basis=str(row.get("price_basis") or "canonical_adjusted"),
+                    corporate_action_version=str(row.get("corporate_action_version") or "canonical_identity"), partition_key=str(partition))
+                current.loc[idx, "schema_fingerprint"] = descriptor["schema_fingerprint"]
+                current.loc[idx, "dataset_fingerprint"] = descriptor["dataset_fingerprint"]
+            except Exception:
+                pass
+            current.loc[idx, "promoted_at"] = datetime.now(timezone.utc).isoformat()
             tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.tmp")
             try:
                 current.to_csv(tmp, index=False)
