@@ -1220,6 +1220,11 @@ class PCSDataAccess:
             except (OSError, ValueError, DataQualityError):
                 pass
         previous_generation = str(rows.iloc[-1].get("active_generation", "")) if len(rows) else ""
+        # CSV/Parquet manifest readers materialize an empty active generation
+        # as NaN.  Normalize it before passing the optimistic-concurrency
+        # token to update_manifest; the expected-active check must still run.
+        if previous_generation.strip().lower() in {"nan", "none", "<na>"}:
+            previous_generation = ""
         previous_path = str(rows.iloc[-1].get("parquet_path", "")) if len(rows) else ""
         created_at=datetime.now(timezone.utc).isoformat()
         if not path.exists():
