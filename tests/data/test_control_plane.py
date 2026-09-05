@@ -8,6 +8,32 @@ def test_source_resolver_does_not_authorize_massive_options_contracts():
     assert all(item["source_id"] != "massive_option_contracts" for item in sources)
 
 
+def test_daily_interior_session_requires_loader_despite_later_active_date(tmp_path):
+    from pcs.data.access import PCSDataAccess
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    frame = pd.DataFrame({"symbol": ["TEST"] * 2,
+                          "date": pd.to_datetime(["2025-01-02", "2025-01-06"]),
+                          "open": [10.] * 2, "high": [11.] * 2,
+                          "low": [9.] * 2, "close": [10.] * 2, "volume": [100.] * 2})
+    access.promote_generation(frame, "daily", "TEST", "year=2025", source_version="test")
+    cp = MarketDataControlPlane(access)
+    req = MarketDataRequirements("TEST", "2025-01-03", "2025-01-03", ("daily",), decision_as_of="2025-01-03")
+    before = cp.plan(req)
+    assert before.existing["daily"]["missing_sessions"] == ["2025-01-03"]
+    assert before.actions[0]["action"] == PlanAction.REPAIR_DAILY_FROM_GATEWAY.value
+    called = []
+    def loader(plan):
+        called.append(plan.requirements)
+        repaired = pd.concat([frame, frame.iloc[:1].assign(date=pd.Timestamp("2025-01-03"))]).sort_values("date")
+        access.promote_generation(repaired, "daily", "TEST", "year=2025", source_version="test-repair")
+        return {"status": "SUCCESS"}
+    ImportCoordinator(cp, handlers={"daily": loader}).run(req)
+    assert called == [req]
+    assert cp.plan(req).actions[0]["action"] == PlanAction.REUSE_CANONICAL.value
+    ImportCoordinator(cp, handlers={"daily": loader}).run(req)
+    assert called == [req]
+
+
 def test_registered_sources_have_minimum_audit_metadata():
     registry = SourceResolver().registry
     for dataset, sources in registry.get("sources", {}).items():
@@ -320,6 +346,7 @@ def test_massive_daily_handler_uses_canonical_incremental_writer(tmp_path):
     handlers = __import__("pcs.data.control_plane", fromlist=["default_import_handlers"]).default_import_handlers(massive_client=Gateway(), access=access, parquet_root=tmp_path / "parquet", manifest_path=tmp_path / "manifest.csv")
     result = handlers["daily"](MarketDataRequirements("TEST", "2025-01-02", "2025-01-02", ("daily",)))
     assert result["daily_update"] == "UPDATED"
+    assert result["readiness_refresh_status"] == "SKIPPED_DAILY_ONLY"
 
 
 def test_promotion_failure_quarantines_and_removes_new_canonical(tmp_path):

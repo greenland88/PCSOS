@@ -26,6 +26,19 @@ def test_new_daily_date_changes_only_current_year(tmp_path):
     assert result["affected_partitions"] == ["daily/symbol=SPY/year=2026"]
 
 
+def test_daily_only_update_does_not_run_options_research_preflight(tmp_path, monkeypatch):
+    import pcs.research.ticker_readiness as readiness
+    monkeypatch.chdir(tmp_path)
+    def forbidden(*args, **kwargs):
+        pytest.fail("daily preparation entered options/research readiness")
+    monkeypatch.setattr(readiness, "preflight_ticker", forbidden)
+    result = update_ticker("SPY", daily_frame=daily([["2026-08-21", 1, 2, 1, 1.5, 10]]),
+                           refresh_research_readiness=False)
+    assert result["daily_update"] == "UPDATED"
+    assert result["readiness_refresh_status"] == "SKIPPED_DAILY_ONLY"
+    assert result["current_derived_artifacts_invalidated"]
+
+
 def test_daily_update_rejects_foreign_ticker_rows(tmp_path):
     incoming = daily([["2026-08-20", 1, 2, 1, 1.5, 10]]).assign(symbol="QQQ")
 

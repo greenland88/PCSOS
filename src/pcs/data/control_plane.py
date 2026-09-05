@@ -603,7 +603,8 @@ def default_import_handlers(*, daily_snapshot_path=None, archive_root=None,
             return update_ticker(req.symbol, daily_frame=frame,
                 parquet_root=kwargs.get("parquet_root", "data/parquet"),
                 manifest_path=kwargs.get("manifest_path", "data/manifests/storage_manifest.csv"),
-                source_version=f"massive_daily:{req.required_start}:{req.required_end}")
+                source_version=f"massive_daily:{req.required_start}:{req.required_end}",
+                refresh_research_readiness=False)
         if req.required_end and daily_snapshot_path is None:
             from .import_daily_snapshot import find_latest_daily_snapshot
             try:
@@ -775,6 +776,27 @@ class MarketDataControlPlane:
                     if len(active):
                         payload["last_date"] = str(pd.to_datetime(active.max_date, errors="coerce").max().date())
                         payload["row_count"] = int(pd.to_numeric(active.row_count, errors="coerce").fillna(0).sum())
+                        if req.required_start and req.required_end:
+                            # Coverage endpoints cannot prove interior sessions.
+                            # Inspect pinned active objects, never legacy files
+                            # which may contain unadmitted or conflicting rows.
+                            import exchange_calendars as xc
+                            start = max(pd.Timestamp(req.required_start),
+                                        pd.to_datetime(active.min_date).min())
+                            end = pd.Timestamp(req.required_end)
+                            expected = set(xc.get_calendar("XNYS").sessions_in_range(start, end).date) if start <= end else set()
+                            actual = set()
+                            intersecting = active[pd.to_datetime(active.min_date).le(end) &
+                                                  pd.to_datetime(active.max_date).ge(start)]
+                            for row in intersecting.itertuples():
+                                pinned = self.access.read_pinned_generation("daily", req.symbol,
+                                    str(row.partition_ids), str(row.active_generation))
+                                actual.update(pd.to_datetime(pinned.date).dt.date)
+                            missing = sorted(str(day) for day in expected - actual)
+                            if missing:
+                                payload["missing_sessions"] = missing
+                                payload["coverage_gap"] = "DAILY_SESSION_MISSING"
+                                payload.setdefault("reason_codes", []).append("DAILY_SESSION_MISSING")
                 if dataset == "options" and req.required_start == req.required_end and req.required_end:
                     from .strategy_readiness import resolve_active_verified_options_handle
                     try:

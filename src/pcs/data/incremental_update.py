@@ -167,7 +167,7 @@ def update_options_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="d
     return ("UPDATED" if changed else "NO_OP", changed, latest)
 
 
-def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest.csv", source_version="incremental", physical_dataset=None) -> dict[str, Any]:
+def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, options_frame: pd.DataFrame | None = None, parquet_root="data/parquet", manifest_path="data/manifests/storage_manifest.csv", options_manifest_path="data/manifests/storage_manifest.csv", source_version="incremental", physical_dataset=None, refresh_research_readiness: bool = True) -> dict[str, Any]:
     result = UpdateResult(symbol=symbol.upper(), as_of=datetime.now(timezone.utc).isoformat(), data_timestamp=datetime.now(timezone.utc).isoformat())
     try:
         if daily_frame is not None:
@@ -182,6 +182,9 @@ def update_ticker(symbol: str, *, daily_frame: pd.DataFrame | None = None, optio
             result.current_derived_artifacts_invalidated = invalidate_current_derived(symbol, result.affected_partitions)
             result.reason_codes.append("DERIVED_INVALIDATION_MARKED")
             try:
+                if not refresh_research_readiness:
+                    result.readiness_refresh_status = "SKIPPED_DAILY_ONLY"
+                    raise StopIteration
                 if Path(parquet_root) != Path("data/parquet"):
                     result.readiness_refresh_status = "SKIPPED_ISOLATED_STORE"
                     raise StopIteration
