@@ -90,3 +90,10 @@ def test_insufficient_physical_warmup_requests_source_but_does_not_claim_ready(m
     assert len(requested) == 1 and requested[0].required_start == days[0]
     assert requested[0].required_end == '2026-09-04'
     assert result['final']['status'] == 'BLOCKED'
+
+
+def test_rate_limit_is_not_zero_rows_and_exhausts_source_attempt():
+    receipt = {'status': 'BLOCKED', 'import_outcomes': [{'status': 'BLOCKED',
+        'detail': 'gateway request failed: 429 Client Error: Too Many Requests'}]}
+    assert operator.source_result(receipt) == 'SOURCE_RATE_LIMITED'
+    assert operator.source_attempted({'actions': [{'action': 'DAILY_LOADER', 'receipt': receipt}]})

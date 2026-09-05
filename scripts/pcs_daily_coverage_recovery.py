@@ -70,6 +70,8 @@ def source_result(outcome):
     text = ' '.join(str(o.get('detail', '')) for o in outcomes).lower()
     if 'gateway returned no daily data' in text:
         return 'SOURCE_CONFIRMED_ZERO_ROWS'
+    if '429 client error' in text or 'too many requests' in text:
+        return 'SOURCE_RATE_LIMITED'
     if '401 client error' in text or '403 client error' in text:
         return 'SOURCE_AUTHENTICATION_FAILED'
     if 'timed out' in text or 'timeout' in text:
@@ -295,6 +297,10 @@ def main():
                  'operator_sha256': digest(__file__), 'config_hashes': request['config_hashes']}
     with (root / 'invocations.jsonl').open('a', encoding='utf-8') as log:
         log.write(json.dumps(execution) + '\n')
+    if args.phase == 'recover' and (root / 'source_backoff.json').exists() and not args.retry_source:
+        print(json.dumps({'status': 'SOURCE_RATE_LIMIT_DEFERRED', 'checkpoint': str(root),
+                          'resume_condition': 'confirm quota/source change, then explicit scoped retry'}), flush=True)
+        return
     access = InspectionAccess()
     if args.phase == 'recover':
         try:
@@ -349,6 +355,11 @@ def main():
         record['last_execution'] = execution
         save(path, record)
         count += 1
+        if args.phase == 'recover' and record['actions'] and source_result(record['actions'][-1].get('receipt', {'status': 'UNKNOWN'})) == 'SOURCE_RATE_LIMITED':
+            save(root / 'source_backoff.json', {'status': 'SOURCE_RATE_LIMITED', 'symbol': symbol,
+                'observed_at': datetime.now(timezone.utc).isoformat(), 'receipt_checkpoint': str(path),
+                'resume_condition': 'confirm quota/source change; no further source calls in this invocation'})
+            break  # Checkpoint first; never interrupt a promotion. Admission remains available.
         if count % 50 == 0:
             print(json.dumps({'phase': args.phase, 'processed': count, 'symbol': symbol}), flush=True)
         if args.limit and count >= args.limit:
