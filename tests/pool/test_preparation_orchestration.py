@@ -362,6 +362,22 @@ def test_partial_admission_retry_reuses_committed_partition(tmp_path, monkeypatc
     assert len(list((access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "generations").glob("*.parquet"))) == 1
 
 
+def test_active_generation_missing_path_returns_specific_reason(tmp_path):
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    path = tmp_path / "missing.parquet"
+    pd.DataFrame([{"symbol": "AAA", "status": "SUCCESS"}]).to_csv(tmp_path / "migration.csv", index=False)
+    pd.DataFrame([{"dataset": "daily", "symbol": "AAA", "year": 2025,
+                   "active_generation": "generation-1", "parquet_path": str(path),
+                   "row_count": 220, "status": "SUCCESS"}]).to_csv(access.manifest_path, index=False)
+    candidate = access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "AAA_2025.parquet"
+    candidate.parent.mkdir(parents=True)
+    _frame().iloc[:220].to_parquet(candidate, index=False)
+    result = admit_migrated_daily_symbol("AAA", decision_as_of="2025-09-17", data_access=access,
+                                         migration_manifest_path=tmp_path / "migration.csv")
+    assert result["status"] == "MIGRATION_ADMISSION_FAILED"
+    assert result["reason_codes"] == ("ACTIVE_GENERATION_PATH_MISSING",)
+
+
 def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
     access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     frame = _frame()

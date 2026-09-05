@@ -262,7 +262,12 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 if not active.empty:
                     current = active.iloc[-1]
                     current_path = Path(str(current.get("parquet_path", "")))
-                    current_frame = pd.read_parquet(current_path)
+                    if not current_path.exists():
+                        raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
+                    try:
+                        current_frame = pd.read_parquet(current_path)
+                    except Exception as exc:
+                        raise DataAccessError("ACTIVE_GENERATION_UNREADABLE") from exc
                     if access.semantic_content_hash(current_frame) != meta["semantic_content_hash"] or len(current_frame) != meta["row_count"]:
                         raise DataQualityError("MIGRATED_ACTIVE_CONTENT_CONFLICT")
                     already.append(f"year={year}")
