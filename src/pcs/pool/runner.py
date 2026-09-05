@@ -483,7 +483,16 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
             if isinstance(item, Mapping):
                 symbol = str(item.get("symbol", "")).strip().upper()
                 if symbol:
-                    recovery_by_symbol[symbol] = dict(item)
+                    evidence = dict(item)
+                    nested = item.get("admission_result")
+                    if isinstance(nested, Mapping):
+                        evidence["admission_result"] = dict(nested)
+                        for key in ("status", "reason_codes", "promoted_partitions", "already_admitted",
+                                    "promotion_receipts", "failed_partition", "unprocessed_partitions",
+                                    "conflict_partitions", "partition_results"):
+                            if key in nested:
+                                evidence[f"admission_{key}"] = nested[key]
+                    recovery_by_symbol[symbol] = evidence
     return {"comparable": comparable, "identity": identity, "added": sorted(set(right)-set(left)),
             "removed": sorted(set(left)-set(right)), "ready_added": sorted(ready_right-ready_left),
             "ready_removed": sorted(ready_left-ready_right),

@@ -52,6 +52,17 @@ def test_reconcile_rejects_missing_identity_fields():
     assert reconcile_pool_scan_results(before, after)["comparable"] is False
 
 
+def test_reconcile_normalizes_nested_preparation_admission_result():
+    before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m"},
+              "ticker_results": [{"symbol": "AAA", "eligibility_status": "DATA_BLOCKED"}]}
+    after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m"},
+             "ticker_results": [{"symbol": "AAA", "eligibility_status": "PCS_ELIGIBLE"}]}
+    delta = reconcile_pool_scan_results(before, after, [{"symbol": "AAA", "admission_result": {
+        "status": "ADMISSION_INCOMPLETE", "promoted_partitions": ("year=2025",)}}])
+    assert delta["recovery_by_symbol"]["AAA"]["admission_status"] == "ADMISSION_INCOMPLETE"
+    assert delta["recovery_by_symbol"]["AAA"]["admission_promoted_partitions"] == ("year=2025",)
+
+
 class RoutedFixtureAccess:
     def __init__(self, tmp_path, ready=()):
         self.manifest_path = tmp_path / "manifest.csv"
