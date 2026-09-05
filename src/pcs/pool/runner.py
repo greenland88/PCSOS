@@ -170,6 +170,8 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
                     "provider_calls": sum(1 for item in outcomes if str(item.get("status", "")).upper() != "REUSED"),
                     "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
                     "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()),
+                    "promoted_partitions": tuple(getattr(result, "promoted_partitions", ()) or ()),
+                    "promotion_receipts": tuple(getattr(result, "promoted_partitions", ()) or ()),
                     "admission_status": "ACTIVE_CANONICAL_STALE"}
         admission = admit_migrated_daily_symbol(symbol, decision_as_of=effective_daily_session,
                                                 required_warmup_sessions=200, data_access=access)
@@ -192,6 +194,8 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
                                       if str(item.get("status", "")).upper() != "REUSED"),
                 "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
                 "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()) + len(admission.get("promoted_partitions", ()) or ()),
+                "promoted_partitions": tuple(getattr(result, "promoted_partitions", ()) or ()) + tuple(admission.get("promoted_partitions", ()) or ()),
+                "promotion_receipts": tuple(getattr(result, "promoted_partitions", ()) or ()) + tuple(admission.get("promotion_receipts", ()) or ()),
                 "admission_status": admission_status, "admission_result": admission}
     except Exception as exc:
         return {"symbol": str(symbol).upper(), "attempted": True, "result": None,

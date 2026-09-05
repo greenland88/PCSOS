@@ -121,6 +121,15 @@ def test_summarize_recovery_counts_control_plane_promotion_receipts():
         "promotion_receipts": 1}
 
 
+def test_preparation_result_promotes_control_plane_receipts_to_audit_fields():
+    result = SimpleNamespace(promoted_partitions=({"partition_ids": ["year=2026"]},))
+    evidence = runner._serialize_preparation_result({"result": result,
+        "promoted_partitions": tuple(result.promoted_partitions),
+        "promotion_receipts": tuple(result.promoted_partitions)})
+    assert evidence["promoted_partitions"][0]["partition_ids"] == ["year=2026"]
+    assert evidence["promotion_receipts"][0]["partition_ids"] == ["year=2026"]
+
+
 def test_reconcile_rejects_code_or_configuration_identity_changes():
     before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r1", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
     after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r2", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
