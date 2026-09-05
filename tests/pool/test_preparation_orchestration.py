@@ -239,6 +239,9 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
         "AAA", decision_as_of="2025-09-17", data_access=access,
         migration_manifest_path=tmp_path / "migration.csv")
     assert first_admission["status"] == "ADMITTED_READY"
+    assert first_admission["partition_results"][0]["status"] == "PROMOTED"
+    assert first_admission["partition_results"][0]["active_generation_before"] is None
+    assert first_admission["partition_results"][0]["active_generation_after"]
     readonly_admission = admit_migrated_daily_symbol(
         "AAA", decision_as_of="2025-09-17", data_access=access,
         migration_manifest_path=tmp_path / "migration.csv", read_only=True)
@@ -249,6 +252,11 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
     assert admit_migrated_daily_symbol(
         "AAA", decision_as_of="2025-09-17", data_access=access,
         migration_manifest_path=tmp_path / "migration.csv")["status"] == "ALREADY_ADMITTED"
+    second_admission = admit_migrated_daily_symbol(
+        "AAA", decision_as_of="2025-09-17", data_access=access,
+        migration_manifest_path=tmp_path / "migration.csv")
+    assert second_admission["partition_results"][0]["status"] == "REUSED"
+    assert second_admission["partition_results"][0]["active_generation_before"] == second_admission["partition_results"][0]["active_generation_after"]
     assert __import__("hashlib").sha256(access.manifest_path.read_bytes()).hexdigest() == manifest_hash
     second = resolve_active_verified_daily_handle("AAA", "2025-09-17", 200, data_access=access)
     assert second.generation_id == first.generation_id

@@ -184,14 +184,31 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
         return {"symbol": s, "status": "MIGRATED_CANONICAL_INVALID", "reason_codes": (str(exc).strip() or type(exc).__name__,),
                 "partitions": tuple(meta for _, meta in validated)}
     if read_only:
+        validated_results = []
+        try:
+            manifest = access._read_manifest(access.manifest_path)
+        except Exception:
+            manifest = pd.DataFrame()
+        for _, meta in validated:
+            rows = manifest[(manifest.get("dataset", pd.Series(dtype=str)).astype(str) == "daily") &
+                            manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(s) &
+                            pd.to_numeric(manifest.get("year", pd.Series(dtype=float)), errors="coerce").eq(int(meta["year"]))] if not manifest.empty else manifest
+            active_values = rows.get("active_generation", pd.Series(dtype=str)).astype(str).str.strip()
+            active = rows[active_values.notna() & ~active_values.str.lower().isin({"", "nan", "none", "<na>"})] if not rows.empty else rows
+            generation = str(active.iloc[-1].get("active_generation")) if not active.empty else None
+            validated_results.append({"partition": f"year={meta['year']}", "status": "VALIDATED",
+                                      "active_generation_before": generation, "active_generation_after": generation,
+                                      "reason_codes": ("MIGRATED_CANONICAL_VALIDATED",)})
         return {"symbol": s, "status": "MIGRATED_CANONICAL_VALIDATED", "reason_codes": ("MIGRATED_CANONICAL_FOUND", "MIGRATED_CANONICAL_VALIDATED"),
                 "partitions": tuple(meta for _, meta in validated), "needs_incremental": needs_incremental,
                 "promoted_partitions": tuple(), "already_admitted": tuple(),
                 "promotion_receipts": tuple(), "failed_partition": None,
-                "unprocessed_partitions": tuple()}
+                "unprocessed_partitions": tuple(),
+                "partition_results": tuple(validated_results)}
     promoted = []
     already = []
     promotion_receipts = []
+    partition_results = []
     failed_partition = None
     unprocessed_partitions = []
     try:
@@ -206,6 +223,7 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 active_values = rows.get("active_generation", pd.Series(dtype=str)).astype(str).str.strip()
                 active = rows[active_values.notna() & active_values.ne("") &
                               ~active_values.str.lower().isin({"nan", "none", "<na>"})] if not rows.empty else rows
+                active_before = str(active.iloc[-1].get("active_generation", "")).strip() if not active.empty else None
                 if not active.empty:
                     current = active.iloc[-1]
                     current_path = Path(str(current.get("parquet_path", "")))
@@ -213,6 +231,10 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                     if access.semantic_content_hash(current_frame) != meta["semantic_content_hash"] or len(current_frame) != meta["row_count"]:
                         raise DataQualityError("MIGRATED_ACTIVE_CONTENT_CONFLICT")
                     already.append(f"year={year}")
+                    partition_results.append({"partition": f"year={year}", "status": "REUSED",
+                                              "active_generation_before": active_before,
+                                              "active_generation_after": active_before,
+                                              "reason_codes": ("MIGRATED_CANONICAL_ALREADY_ADMITTED",)})
                     continue
                 receipt = access.promote_generation(frame, "daily", s, f"year={year}", source_version="DAILY_UNIVERSE_MIGRATION_ADMISSION")
                 if not hasattr(receipt, "generation_id"):
@@ -223,20 +245,31 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 if len(read_back) != meta["row_count"] or access.semantic_content_hash(read_back) != meta["semantic_content_hash"]:
                     raise DataQualityError("MIGRATION_ADMISSION_READ_BACK_MISMATCH")
                 promoted.append(f"year={year}")
+                receipt_dict = promotion_receipts[-1]
+                partition_results.append({"partition": f"year={year}", "status": "PROMOTED",
+                                          "active_generation_before": active_before,
+                                          "active_generation_after": receipt_dict.get("manifest_active_generation_id") or str(record.get("active_generation", "")),
+                                          "reason_codes": ("MIGRATED_CANONICAL_ADMITTED",),
+                                          "promotion_receipt": receipt_dict})
     except (DataAccessError, DataQualityError, OSError, ValueError) as exc:
         if failed_partition is not None:
+            partition_results.append({"partition": failed_partition, "status": "FAILED",
+                                      "active_generation_before": active_before if 'active_before' in locals() else None,
+                                      "active_generation_after": None,
+                                      "reason_codes": (str(exc).strip() or type(exc).__name__,)})
             unprocessed_partitions = [f"year={meta['year']}" for _, meta in validated[position + 1:]]
         return {"symbol": s, "status": "ADMISSION_INCOMPLETE" if promoted else "MIGRATION_ADMISSION_FAILED",
                 "reason_codes": (str(exc).strip() or type(exc).__name__,), "partitions": tuple(meta for _, meta in validated),
                 "promoted_partitions": tuple(promoted), "already_admitted": tuple(already),
                 "promotion_receipts": tuple(promotion_receipts), "failed_partition": failed_partition,
-                "unprocessed_partitions": tuple(unprocessed_partitions)}
+                "unprocessed_partitions": tuple(unprocessed_partitions), "partition_results": tuple(partition_results)}
     status = "ADMITTED_NEEDS_INCREMENTAL" if needs_incremental else "ALREADY_ADMITTED" if not promoted else "ADMITTED_READY"
     reasons = ("MIGRATED_CANONICAL_ALREADY_ADMITTED",) if not promoted else ("MIGRATED_CANONICAL_ADMITTED",)
     return {"symbol": s, "status": status, "reason_codes": reasons,
             "partitions": tuple(meta for _, meta in validated), "promoted_partitions": tuple(promoted),
             "already_admitted": tuple(already), "promotion_receipts": tuple(promotion_receipts),
-            "failed_partition": None, "unprocessed_partitions": tuple(), "needs_incremental": needs_incremental}
+            "failed_partition": None, "unprocessed_partitions": tuple(), "needs_incremental": needs_incremental,
+            "partition_results": tuple(partition_results)}
 
 def register_active_generation_provenance(*, dataset: str, symbol: str, generation_id: str,
                                           price_basis: str, corporate_action_version: str,
