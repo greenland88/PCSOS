@@ -14,11 +14,28 @@ import os
 import uuid
 import json
 import hashlib
+import time
 from contextlib import contextmanager
 from typing import Any
 
 import duckdb
 import pandas as pd
+
+
+def _atomic_replace_with_retry(source: Path, target: Path, *, attempts: int = 8) -> None:
+    """Replace a file with bounded retries for transient Windows sharing locks."""
+    delays = (0.02, 0.04, 0.08, 0.16, 0.32, 0.5, 0.5, 0.5)
+    for attempt in range(max(1, int(attempts))):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in {5, 32} and not isinstance(exc, PermissionError):
+                raise
+            if attempt + 1 >= len(delays) or attempt + 1 >= attempts:
+                raise DataAccessError("MANIFEST_ATOMIC_REPLACE_FAILED") from exc
+            time.sleep(delays[attempt])
 
 @dataclass(frozen=True)
 class PromotionReceipt:
@@ -362,6 +379,10 @@ class PCSDataAccess:
             except Exception:
                 pass
             handle.close()
+
+    @staticmethod
+    def _atomic_replace_manifest(source: Path, target: Path) -> None:
+        _atomic_replace_with_retry(source, target)
 
     @staticmethod
     def _norm(value):
@@ -1172,7 +1193,7 @@ class PCSDataAccess:
             schema_version="2", price_basis="canonical_adjusted",
             corporate_action_version="canonical_identity", partition_key=str(partition))
         dataset_fingerprint = str(descriptor["dataset_fingerprint"])
-        manifest_before = self.manifest_path.read_bytes() if self.manifest_path.exists() else None
+        manifest_committed = False
         try:
             self.update_manifest(dataset, symbol, merged, path, source_version, partition, replace_existing=True,
                              staging_generation_id=generation, promoted_generation_id=generation,
@@ -1185,13 +1206,18 @@ class PCSDataAccess:
                              corporate_action_version="canonical_identity",
                              partition_ids=str(partition), source_lineage=json.dumps({"source":source_version,"partition":str(partition)}, sort_keys=True),
                              created_at=created_at, lifecycle_status="ACTIVE")
+            manifest_committed = True
             read_back = pd.read_parquet(path)
             read_back_checksum = self.semantic_content_hash(read_back)
             if read_back_checksum != digest or len(read_back) != len(merged):
                 raise DataQualityError("READ_BACK_CHECKSUM_OR_ROW_COUNT_MISMATCH")
-        except Exception:
-            if manifest_before is None: self.manifest_path.unlink(missing_ok=True)
-            else: self.manifest_path.write_bytes(manifest_before)
+        except Exception as exc:
+            if manifest_committed:
+                try:
+                    self.rollback_generation(dataset, symbol, partition,
+                                             expected_generation=generation)
+                except DataAccessError as rollback_exc:
+                    raise DataAccessError("PROMOTION_ROLLBACK_STALE") from rollback_exc
             raise
         read_back_generation = generation
         self.generation_cache.invalidate_partition(dataset, symbol, partition, except_generation=generation)
@@ -1291,12 +1317,12 @@ class PCSDataAccess:
         tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             updated.to_csv(tmp, index=False)
-            os.replace(tmp, self.manifest_path)
+            _atomic_replace_with_retry(tmp, self.manifest_path)
         finally:
             tmp.unlink(missing_ok=True)
             self._manifest = updated
 
-    def rollback_generation(self, dataset: str, symbol: str, partition: str) -> dict[str, Any]:
+    def rollback_generation(self, dataset: str, symbol: str, partition: str, *, expected_generation: str | None = None) -> dict[str, Any]:
         """Atomically switch a logical partition back to its previous generation."""
         with self._file_lock(self.manifest_path):
             current = self._read_manifest(self.manifest_path)
@@ -1304,13 +1330,21 @@ class PCSDataAccess:
             mask = (current.dataset.astype(str) == str(dataset)) & current.symbol.astype(str).str.upper().eq(self._symbol(symbol)) & current.year.astype(str).eq(str(parts.get("year"))) & current.quarter.astype(str).eq(str(parts.get("quarter")))
             if not mask.any(): raise DataAccessError("CANONICAL_ROLLBACK_MANIFEST_MISSING")
             idx = current.index[mask][-1]; row = current.loc[idx]
+            if expected_generation is not None and str(row.get("active_generation", "")) != str(expected_generation):
+                raise DataAccessError("PROMOTION_ROLLBACK_STALE")
             previous = str(row.get("previous_path", ""))
             previous_generation = str(row.get("previous_generation", ""))
             if not previous or not previous_generation or not Path(previous).exists(): raise DataAccessError("CANONICAL_ROLLBACK_PREVIOUS_GENERATION_UNAVAILABLE")
             old_generation, old_path = str(row.active_generation), str(row.parquet_path)
             current.loc[idx, "active_generation"] = previous_generation; current.loc[idx, "previous_generation"] = old_generation
             current.loc[idx, "parquet_path"] = previous; current.loc[idx, "previous_path"] = old_path; current.loc[idx, "content_hash"] = self.semantic_content_hash(pd.read_parquet(previous)); current.loc[idx, "promoted_at"] = datetime.now(timezone.utc).isoformat()
-            tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.tmp"); current.to_csv(tmp, index=False); os.replace(tmp, self.manifest_path); self._manifest = current
+            tmp = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                current.to_csv(tmp, index=False)
+                _atomic_replace_with_retry(tmp, self.manifest_path)
+            finally:
+                tmp.unlink(missing_ok=True)
+            self._manifest = current
             return {"status": "ROLLED_BACK", "from_generation": old_generation, "to_generation": previous_generation}
 
     def record_provenance(self, record: dict[str, Any], path: str | Path | None = None) -> Path:
@@ -1332,7 +1366,7 @@ class PCSDataAccess:
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
             try:
-                updated.to_csv(tmp, index=False); os.replace(tmp, target)
+                updated.to_csv(tmp, index=False); _atomic_replace_with_retry(tmp, target)
             finally: tmp.unlink(missing_ok=True)
         return target
 

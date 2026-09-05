@@ -79,10 +79,15 @@ def _validate_migrated_daily_file(path: Path, symbol: str, access: PCSDataAccess
     if dates.isna().any() or dates.duplicated().any() or not dates.is_monotonic_increasing:
         raise DataQualityError("MIGRATED_CANONICAL_DATE_ORDER_INVALID")
     numeric = frame[list(required[1:])].apply(pd.to_numeric, errors="coerce")
-    if numeric.isna().any().any() or numeric.abs().eq(float("inf")).any().any():
-        raise DataQualityError("MIGRATED_CANONICAL_OHLCV_INVALID")
-    if (numeric.volume < 0).any() or (numeric.high < numeric.low).any() or (numeric.high < numeric[["open", "close"]].max(axis=1)).any() or (numeric.low > numeric[["open", "close"]].min(axis=1)).any():
-        raise DataQualityError("MIGRATED_CANONICAL_OHLCV_INVALID")
+    invalid_reasons = []
+    if numeric.isna().any().any(): invalid_reasons.append("OHLCV_NAN")
+    if numeric.abs().eq(float("inf")).any().any(): invalid_reasons.append("OHLCV_INFINITY")
+    if (numeric.volume < 0).any(): invalid_reasons.append("NEGATIVE_VOLUME")
+    if (numeric.high < numeric.low).any(): invalid_reasons.append("HIGH_BELOW_LOW")
+    if (numeric.high < numeric[["open", "close"]].max(axis=1)).any(): invalid_reasons.append("HIGH_BELOW_OPEN_CLOSE")
+    if (numeric.low > numeric[["open", "close"]].min(axis=1)).any(): invalid_reasons.append("LOW_ABOVE_OPEN_CLOSE")
+    if invalid_reasons:
+        raise DataQualityError("MIGRATED_CANONICAL_OHLCV_INVALID:" + ",".join(invalid_reasons))
     try:
         partition_year = int(path.parent.name.split("=", 1)[1])
     except (IndexError, ValueError) as exc:
@@ -99,6 +104,39 @@ def _validate_migrated_daily_file(path: Path, symbol: str, access: PCSDataAccess
                    "row_count": len(frame), "min_date": str(dates.min().date()),
                    "max_date": str(dates.max().date()), "dataset_fingerprint": descriptor["dataset_fingerprint"],
                    "schema_fingerprint": descriptor["schema_fingerprint"]}
+
+
+def _reconcile_migrated_candidates(validated: list[tuple[pd.DataFrame, dict[str, Any]]]):
+    """Choose one authoritative candidate per year without changing OHLCV."""
+    selected = []
+    for year in sorted({int(meta["year"]) for _, meta in validated}):
+        candidates = [(frame, meta) for frame, meta in validated if int(meta["year"]) == year]
+        if len(candidates) == 1:
+            selected.append(candidates[0]); continue
+        keep = candidates[0]
+        for candidate in candidates[1:]:
+            left, right = keep[0], candidate[0]
+            if keep[1]["semantic_content_hash"] == candidate[1]["semantic_content_hash"]:
+                # Byte-identical semantic content is physical redundancy only.
+                continue
+            def rows_by_date(frame):
+                out = frame.copy()
+                out["date"] = pd.to_datetime(out["date"]).dt.normalize()
+                return out.set_index("date")[["open", "high", "low", "close", "volume"]]
+            lmap, rmap = rows_by_date(left), rows_by_date(right)
+            overlap = lmap.index.intersection(rmap.index)
+            if len(overlap):
+                same_overlap = lmap.loc[overlap].equals(rmap.loc[overlap])
+                if not same_overlap:
+                    raise DataQualityError("MIGRATED_ACTIVE_CONTENT_CONFLICT")
+            if lmap.index.isin(rmap.index).all() and len(rmap) >= len(lmap):
+                keep = candidate
+            elif rmap.index.isin(lmap.index).all():
+                continue
+            else:
+                raise DataQualityError("MIGRATED_CANONICAL_CROSS_PARTITION_DUPLICATE_DATE")
+        selected.append(keep)
+    return selected
 
 
 def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = None,
@@ -128,6 +166,7 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
     try:
         for path in paths:
             validated.append(_validate_migrated_daily_file(path, s, access))
+        validated = _reconcile_migrated_candidates(validated)
         all_dates = pd.concat([frame[["symbol", "date"]] for frame, _ in validated], ignore_index=True)
         all_dates["date"] = pd.to_datetime(all_dates["date"], errors="coerce").dt.normalize()
         if all_dates["date"].duplicated().any():
@@ -195,11 +234,11 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
     active object and records only its independent provenance fingerprints.
     """
     access = data_access or PCSDataAccess(); s = str(symbol).strip().upper()
-    manifest_before = access.manifest_path.read_bytes() if access.manifest_path.exists() else b""
-    before_hash = hashlib.sha256(manifest_before).hexdigest()
     with access._file_lock(access.manifest_path):
+        before_hash = hashlib.sha256(access.manifest_path.read_bytes()).hexdigest() if access.manifest_path.exists() else ""
         current = access._read_manifest(access.manifest_path)
-        if hashlib.sha256(access.manifest_path.read_bytes()).hexdigest() != before_hash:
+        current_hash = hashlib.sha256(access.manifest_path.read_bytes()).hexdigest() if access.manifest_path.exists() else ""
+        if current_hash != before_hash:
             raise DataAccessError("PROVENANCE_PLAN_STALE")
         matches = current[(current.dataset.astype(str) == str(dataset)) & current.symbol.astype(str).str.upper().eq(s) &
                           current.active_generation.astype(str).eq(str(generation_id))]
@@ -227,7 +266,7 @@ def register_active_generation_provenance(*, dataset: str, symbol: str, generati
         tmp = access.manifest_path.with_name(f".{access.manifest_path.name}.{uuid.uuid4().hex}.tmp")
         try:
             current.to_csv(tmp, index=False)
-            os.replace(tmp, access.manifest_path)
+            access._atomic_replace_manifest(tmp)
         finally:
             tmp.unlink(missing_ok=True)
         access._manifest = current

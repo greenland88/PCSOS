@@ -7,6 +7,7 @@ from time import perf_counter
 from dataclasses import asdict, dataclass, replace
 from typing import Literal, Sequence
 import uuid
+import os
 from threading import RLock
 from pathlib import Path
 from math import isfinite
@@ -178,9 +179,14 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
 
 
 def _bounded_daily_preparation(symbols, access, effective_daily_session, *, max_workers, timeout_seconds):
+    # Windows cannot safely replace the shared CSV manifest while several
+    # preparation threads are committing generations.  Keep the canonical
+    # promotion path single-writer on that platform; provider/read-only scans
+    # remain bounded by the caller's worker setting.
+    preparation_workers = 1 if os.name == "nt" else max_workers
     outcomes = run_symbol_workers(
         symbols, lambda symbol: _prepare_daily_symbol(symbol, access, effective_daily_session),
-        max_workers=max_workers, timeout_seconds=timeout_seconds, include_error_details=True,
+        max_workers=preparation_workers, timeout_seconds=timeout_seconds, include_error_details=True,
     )
     results = {}
     for outcome in outcomes:
