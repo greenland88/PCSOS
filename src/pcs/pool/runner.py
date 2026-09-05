@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from time import perf_counter
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, replace, is_dataclass
 from typing import Any, Literal, Mapping, Sequence
 import uuid
 import os
@@ -21,6 +21,7 @@ from pcs.data.strategy_readiness import (resolve_active_verified_daily_handle,
 from pcs.data.control_plane import MarketDataRequirements, ensure_market_data
 from pcs.data.canonical_generations import admit_migrated_daily_symbol
 from pcs.trend.snapshot import build_trend_snapshot
+from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.interpretation import interpret_trend
 from pcs.trend.scoring import score_trend
 from pcs.entry.trend_gate import evaluate_trend_gate
@@ -34,6 +35,34 @@ from .concurrency import run_symbol_workers
 from .options import discover_spreads, load_pool_option_rules
 
 _PREPARATION_LOCK = RLock()
+
+
+def _evidence_record(value):
+    """Serialize real result objects and lightweight test doubles safely."""
+    if value is None:
+        return None
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return dict(value)
+    values = getattr(value, "__dict__", None)
+    return dict(values) if values is not None else None
+
+
+def _trend_rule_context(config: TrendIndicatorConfig) -> dict[str, Any]:
+    """Keep the persisted rule context compact and limited to used gates."""
+    keys = (
+        "pivot_left_bars", "pivot_right_bars", "minimum_swing_price_change_pct",
+        "pullback_no_pullback_max_pct", "pullback_shallow_max_pct",
+        "pullback_healthy_min_pct", "pullback_healthy_max_pct",
+        "pullback_sma20_near_atr", "pullback_sma50_near_atr",
+        "pullback_extended_above_sma20_atr", "pullback_extended_above_sma50_atr",
+        "pullback_breakdown_below_sma50_atr", "support_nearby_atr",
+        "support_nearby_pct", "support_cluster_tolerance_atr", "rsi_overheated",
+        "rsi_hard_block", "upper_wick_rejection_atr",
+        "upper_rejection_close_location", "minimum_confirmation_rvol",
+    )
+    return {key: getattr(config, key) for key in keys}
 
 
 @dataclass(frozen=True)
@@ -294,12 +323,15 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                      refresh_policy="INCREMENTAL_IF_NEEDED", runtime=None,
                      options_prepare=None, options_enabled=None, mode="EOD",
                      contract_selector=None, market_state_reader=None,
-                     portfolio_context_reader=None, event_calendar_reader=None, resume_row=None):
+                     portfolio_context_reader=None, event_calendar_reader=None, resume_row=None,
+                     evidence_window=60):
     started = perf_counter()
     selected_contract = None
     selection_result = None
     selection_reasons = ()
     selection_identity = None
+    trend = None
+    trend_config = None
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
     if entry.status != EligibilityStatus.PCS_ELIGIBLE:
@@ -334,8 +366,11 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             timing_warnings = []
             trend_gate = pullback_gate = interpretation = trend_score = trend = None
             try:
+                trend_config = TrendIndicatorConfig()
                 trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
-                                             as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol)
+                                             config=trend_config,
+                                             as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol,
+                                             evidence_window=evidence_window)
                 interpretation = interpret_trend(trend)
                 trend_score = score_trend(trend, interpretation)
                 trend_gate = evaluate_trend_gate(trend_score, interpretation, trend)
@@ -471,6 +506,16 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 "timing_computed_at": (resume_row.candidate_state["timing_computed_at"] if resume_row
                                        else datetime.now(timezone.utc).isoformat()),
                 "timing_reason_codes": list(timing_reasons), "close": close, "atr": atr,
+                **({
+                "price_indicator_series": list(getattr(trend, "evidence_series", ()) or ()),
+                "trend_evidence": {
+                    "market_structure": _evidence_record(getattr(trend, "market_structure", None)),
+                    "support": _evidence_record(getattr(trend, "support", None)),
+                    "relative_strength": _evidence_record(getattr(trend, "relative_strength", None)),
+                    "market_structure_engine": _evidence_record(engine),
+                },
+                "applicable_rules": _trend_rule_context(trend_config),
+                } if trend is not None else {}),
                 "daily_identity": list(runtime._handle_key(handle)),
                 "options_identity": option_identity,
                 "options_evaluation_reused": False,
@@ -884,7 +929,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
                  max_scan_workers=None, stage_timeout_seconds: float | None = 60.0,
                  timeout_seconds: float | None = None, baseline_run_id: str | None = None,
-                 recovery_run_id: str | None = None) -> PoolScanResult:
+                 recovery_run_id: str | None = None, evidence_window: int = 60) -> PoolScanResult:
     """Scan pinned daily/options inputs; preparation requires explicit opt-in."""
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
@@ -900,6 +945,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         raise ValueError("max_workers must be positive")
     if max_data_workers < 1:
         raise ValueError("max_data_workers must be positive")
+    if not isinstance(evidence_window, int) or evidence_window <= 0:
+        raise ValueError("evidence_window must be a positive integer")
     if stage_timeout_seconds is not None and timeout_seconds is not None:
         raise ValueError("specify only one timeout")
     stage_timeout_seconds = timeout_seconds if timeout_seconds is not None else stage_timeout_seconds
@@ -1060,18 +1107,23 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     def scan_symbol(symbol):
         resume = None
         if mode == "EOD" and options_reader is None and benchmark is not None:
-            handle = runtime.resolve_daily(symbol, effective_asof, 200, resolver=daily_resolver)
-            identity = {"symbol": symbol, "session": effective_asof, "mode": mode,
-                "code_revision": code_revision, "rules_identity": engine_version,
-                "daily": list(runtime._handle_key(handle)),
-                "daily_manifest": str(getattr(handle, "manifest_identity", "")),
-                "benchmark": list(runtime._handle_key(benchmark_handle)),
-                "benchmark_manifest": str(getattr(benchmark_handle, "manifest_identity", "")),
-                "static_metadata": (static_metadata_reader(symbol) if static_metadata_reader else None)}
-            checkpoint_identities[symbol] = identity
-            # Missing immutable identity is never compatible evidence.
-            if getattr(handle, "checksum", None) and getattr(handle, "generation_id", None):
-                resume = checkpoints.resume(symbol, identity)
+            try:
+                handle = runtime.resolve_daily(symbol, effective_asof, 200, resolver=daily_resolver)
+                identity = {"symbol": symbol, "session": effective_asof, "mode": mode,
+                    "code_revision": code_revision, "rules_identity": engine_version,
+                    "daily": list(runtime._handle_key(handle)),
+                    "daily_manifest": str(getattr(handle, "manifest_identity", "")),
+                    "benchmark": list(runtime._handle_key(benchmark_handle)),
+                    "benchmark_manifest": str(getattr(benchmark_handle, "manifest_identity", "")),
+                    "static_metadata": (static_metadata_reader(symbol) if static_metadata_reader else None)}
+                checkpoint_identities[symbol] = identity
+                # Missing immutable identity is never compatible evidence.
+                if getattr(handle, "checksum", None) and getattr(handle, "generation_id", None):
+                    resume = checkpoints.resume(symbol, identity)
+            except Exception:
+                # The canonical evaluator owns the fail-closed reason code;
+                # checkpoint lookup must never mask it as WORKER_FAILED.
+                pass
         if resume is not None:
             return replace(resume, run_id=run_id, as_of=asof, event_status="NOT_EVALUATED",
                 portfolio_status="NOT_EVALUATED", final_action=FinalAction.WAIT,
@@ -1084,7 +1136,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             refresh_policy=refresh_policy, options_prepare=None,
             options_enabled=(options_reader is not None), mode=mode,
             contract_selector=contract_selector, market_state_reader=market_state_reader,
-            portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader)
+            portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader,
+            evidence_window=evidence_window)
 
     scan = runtime.run_stage(tuple(queued_symbols), scan_symbol,
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
@@ -1120,7 +1173,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 static_metadata_reader=static_metadata_reader, daily_handle_resolver=daily_handle_resolver,
                 auto_prepare_data=False, options_enabled=True, mode=mode, resume_row=candidate,
                 contract_selector=contract_selector, market_state_reader=market_state_reader,
-                portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader)
+                portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader,
+                evidence_window=evidence_window)
         try:
             row = _continue_candidate(row, runtime=runtime, rules=option_rules,
                 allow_prepare=auto_prepare_data, evaluate=evaluate, save=save, deadline=options_deadline,
@@ -1251,7 +1305,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory, baseline_run_id=baseline_run_id,
-                               recovery_run_id=recovery_run_id)
+                               recovery_run_id=recovery_run_id, evidence_window=evidence_window)
     return result
 
 

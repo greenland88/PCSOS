@@ -20,6 +20,7 @@ from .validation import validate_pool_result
 from .concurrency import WorkerOutcome, run_symbol_workers
 from .modes import completed_daily_cutoff, resolve_effective_market_session
 from .intraday import ExecutionTimingSnapshot, build_intraday_overlay, run_intraday_overlay
+from .ai_evidence import read_ai_evidence, upgrade_current_pool_artifacts
 
 __all__ = [
     "EligibilityStatus", "FinalAction", "PoolRunSnapshot", "PoolScanResult",
@@ -34,4 +35,5 @@ __all__ = [
     "WorkerOutcome", "run_symbol_workers",
     "completed_daily_cutoff", "resolve_effective_market_session",
     "ExecutionTimingSnapshot", "build_intraday_overlay", "run_intraday_overlay",
+    "read_ai_evidence", "upgrade_current_pool_artifacts",
 ]

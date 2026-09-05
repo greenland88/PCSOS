@@ -164,7 +164,8 @@ def _write_parquet_atomic(path: Path, rows) -> str:
 
 def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
                            *, baseline_run_id: str | None = None,
-                           recovery_run_id: str | None = None) -> Path:
+                           recovery_run_id: str | None = None,
+                           evidence_window: int = 60) -> Path:
     """Write the U1 snapshot/results and manifest; later stages are explicit."""
     output_root = Path(output_directory)
     root = output_root / result.snapshot.run_id
@@ -266,5 +267,14 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
         "counters": dict(result.counters), "recovery_summary": dict(result.recovery_summary),
         "artifact_hashes": files,
     }
+    from .ai_evidence import write_ai_artifacts
+    files.update(write_ai_artifacts(root, result.ticker_results,
+                                    asdict(result.snapshot), evidence_window=evidence_window))
+    manifest["artifact_hashes"] = files
+    manifest["ai_evidence"] = {"schema": "pcs.ai_evidence_packet", "version": "1",
+                                "window_sessions": evidence_window,
+                                "summary": "full_pool_summary.json",
+                                "index": "ai_evidence_index.json",
+                                "detail": "ai_evidence_packets.jsonl"}
     _write_atomic(root / "run_manifest.json", json.dumps(manifest, sort_keys=True, indent=2))
     return root

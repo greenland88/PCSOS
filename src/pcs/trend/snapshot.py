@@ -31,6 +31,9 @@ class TrendSnapshotResult:
     support: SupportResult
     warnings: tuple[str, ...] = ()
     market_structure_engine: MarketStructureEngineResult | None = None
+    # Read-only serialization of values already computed for this snapshot.
+    # It is intentionally bounded and is not part of any strategy decision.
+    evidence_series: tuple[dict, ...] = ()
 
 
 def build_trend_snapshot(
@@ -43,6 +46,7 @@ def build_trend_snapshot(
     precomputed_indicators: pd.DataFrame | None = None,
     precomputed_swings: tuple[ConfirmedSwing, ...] | None = None,
     precomputed_relative_strength: dict | None = None,
+    evidence_window: int = 60,
 ) -> TrendSnapshotResult:
     config = config or TrendIndicatorConfig()
     config.validate()
@@ -84,6 +88,20 @@ def build_trend_snapshot(
         type("SnapshotProxy", (), {"available": ma_structure.available and market_structure.available, "ma_structure": ma_structure,
                                     "market_structure": market_structure, "pullback": pullback})(),
         source, cutoff)
+    if not isinstance(evidence_window, int) or evidence_window <= 0:
+        raise TrendIndicatorValidationError("evidence_window must be a positive integer")
+    evidence_frame = pd.concat([asof_source.reset_index(drop=True),
+                                asof_indicators.reset_index(drop=True)], axis=1)
+    evidence_columns = [column for column in
+                        ("date", "open", "high", "low", "close", "volume",
+                         "sma20", "sma50", "sma200", "atr14", "adx14", "rsi14")
+                        if column in evidence_frame.columns]
+    evidence_rows = evidence_frame[evidence_columns].tail(evidence_window)
+    evidence_series = tuple(
+        {key: (None if pd.isna(value) else (str(value) if key == "date" else float(value)))
+         for key, value in row.items()}
+        for row in evidence_rows.to_dict(orient="records")
+    )
     return TrendSnapshotResult(
         available=not warnings,
         as_of_date=cutoff,
@@ -91,6 +109,7 @@ def build_trend_snapshot(
         benchmark=benchmark,
         warnings=warnings,
         **results, market_structure_engine=market_engine,
+        evidence_series=evidence_series,
     )
 
 

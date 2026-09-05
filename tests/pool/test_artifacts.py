@@ -6,8 +6,9 @@ import pandas as pd
 
 from pcs.pool.artifacts import persist_pool_artifacts
 from pcs.pool.models import (EligibilityStatus, PoolRunSnapshot, PoolScanResult,
-                             OptionsStatus, TickerScanResult)
+                             OptionsStatus, TickerScanResult, TimingStatus, FinalAction)
 from pcs.pool.options import SpreadCandidate
+from pcs.pool.ai_evidence import read_ai_evidence, upgrade_current_pool_artifacts
 
 
 def test_artifacts_are_manifested_and_atomic(tmp_path: Path):
@@ -27,6 +28,52 @@ def test_artifacts_are_manifested_and_atomic(tmp_path: Path):
     assert (root / "preparation_recovery.json").exists()
     assert manifest["stage_status"]["OPTIONS_SHORTLIST"] == "NOT_RUN"
     assert not list(root.glob("*.tmp"))
+
+
+def test_ai_evidence_has_compact_pool_view_and_on_demand_detail(tmp_path: Path):
+    snap = PoolRunSnapshot("ai-run", "2025-01-01", "EOD", "2024-12-31", "u1")
+    selected = TickerScanResult(
+        "AAA", "ai-run", snap.as_of, EligibilityStatus.PCS_ELIGIBLE,
+        timing_status=TimingStatus.TIMING_ENTRY_READY, options_status=OptionsStatus.PASS,
+        final_action=FinalAction.PCS_TRADE_READY, reason_codes=("timing_pass",),
+        candidate_state={"close": 101, "atr": 2, "price_indicator_series":
+                         [{"date": "2025-01-01", "close": 101, "atr14": 2}],
+                         "daily_identity": ["daily", "AAA"],
+                         "code_identity": "code-v1", "rules_identity": "rules-v1"})
+    rejected = TickerScanResult(
+        "BBB", "ai-run", snap.as_of, EligibilityStatus.PCS_ELIGIBLE,
+        timing_status=TimingStatus.WAIT, final_action=FinalAction.REJECTED,
+        reason_codes=("UNDERLYING_STRUCTURAL_REJECT",),
+        candidate_state={"timing_reason_codes": ["UNDERLYING_STRUCTURAL_REJECT"]})
+    blocked = TickerScanResult(
+        "CCC", "ai-run", snap.as_of, EligibilityStatus.DATA_BLOCKED,
+        final_action=FinalAction.DATA_FAILED, reason_codes=("DATASET_CHECKSUM_MISMATCH",))
+    root = persist_pool_artifacts(PoolScanResult(snap, (selected, rejected, blocked), {}), tmp_path)
+    manifest = json.loads((root / "run_manifest.json").read_text())
+    summary = json.loads((root / "full_pool_summary.json").read_text())
+    assert [row["symbol"] for row in summary] == ["AAA", "BBB", "CCC"]
+    assert manifest["ai_evidence"]["index"] == "ai_evidence_index.json"
+    assert read_ai_evidence(root, "AAA")["system_verdict"]["final_action"] == "PCS_TRADE_READY"
+    assert read_ai_evidence(root, "AAA")["price_and_indicators"]["sequence"]["status"] == "PROVIDED"
+    assert read_ai_evidence(root, "BBB")["outcome_class"] == "STRATEGY_REJECTED"
+    assert read_ai_evidence(root, "CCC")["outcome_class"] == "DATA_BLOCKED"
+    assert read_ai_evidence(root, "CCC")["price_and_indicators"]["sequence"]["status"] == "UNKNOWN"
+
+
+def test_ai_evidence_upgrade_reuses_hash_valid_legacy_artifact(tmp_path: Path):
+    snap = PoolRunSnapshot("legacy", "2025-01-01", "EOD", "2024-12-31", "u1")
+    row = TickerScanResult("AAA", "legacy", snap.as_of, EligibilityStatus.PCS_ELIGIBLE)
+    root = persist_pool_artifacts(PoolScanResult(snap, (row,), {}), tmp_path)
+    for name in ("full_pool_summary.json", "focus_index.json", "ai_evidence_index.json", "ai_evidence_packets.jsonl"):
+        (root / name).unlink()
+    manifest = json.loads((root / "run_manifest.json").read_text())
+    for name in list(manifest["artifact_hashes"]):
+        if name.startswith("ai_evidence") or name in {"full_pool_summary.json", "focus_index.json"}:
+            manifest["artifact_hashes"].pop(name)
+    manifest.pop("ai_evidence", None)
+    root.joinpath("run_manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8")
+    upgrade_current_pool_artifacts(root)
+    assert read_ai_evidence(root, "AAA")["price_and_indicators"]["sequence"]["status"] == "UNKNOWN"
 
 
 def test_discovered_contracts_are_persisted_without_reconstruction(tmp_path: Path):
