@@ -63,6 +63,12 @@ def test_reconcile_normalizes_nested_preparation_admission_result():
     assert delta["recovery_by_symbol"]["AAA"]["admission_promoted_partitions"] == ("year=2025",)
 
 
+def test_reconcile_rejects_code_or_configuration_identity_changes():
+    before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r1", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
+    after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r2", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
+    assert reconcile_pool_scan_results(before, after)["comparable"] is False
+
+
 class RoutedFixtureAccess:
     def __init__(self, tmp_path, ready=()):
         self.manifest_path = tmp_path / "manifest.csv"
