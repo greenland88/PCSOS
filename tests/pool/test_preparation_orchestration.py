@@ -33,6 +33,17 @@ def test_reconcile_pool_scan_results_requires_matching_identity():
     assert delta["changed"][0]["symbol"] == "AAA"
 
 
+def test_reconcile_attaches_recovery_receipts_and_daily_readiness_delta():
+    before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m"},
+              "ticker_results": [{"symbol": "AAA", "eligibility_status": "DATA_BLOCKED", "initial_daily_readiness": "PREP_REQUIRED"}]}
+    after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m"},
+             "ticker_results": [{"symbol": "AAA", "eligibility_status": "PCS_ELIGIBLE", "initial_daily_readiness": "READY"}]}
+    receipt = {"symbol": "AAA", "status": "ADMISSION_INCOMPLETE", "promoted_partitions": ("year=2025",), "unprocessed_partitions": ("year=2026",)}
+    delta = reconcile_pool_scan_results(before, after, [receipt])
+    assert delta["daily_ready_added"] == ["AAA"]
+    assert delta["recovery_by_symbol"]["AAA"]["promoted_partitions"] == ("year=2025",)
+
+
 class RoutedFixtureAccess:
     def __init__(self, tmp_path, ready=()):
         self.manifest_path = tmp_path / "manifest.csv"

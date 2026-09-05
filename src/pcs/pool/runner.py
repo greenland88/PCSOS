@@ -456,8 +456,9 @@ def _as_of(value) -> str:
     return pd.Timestamp(value).isoformat()
 
 
-def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
-    """Build an explicit ticker-level delta for comparable pool scans."""
+def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, Any],
+                                recovery_results: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Build an explicit ticker-level delta and optionally attach recovery evidence."""
     def rows(value):
         return {str(row.get("symbol", "")).upper(): row for row in value.get("ticker_results", ())}
     left, right = rows(before), rows(after)
@@ -473,9 +474,22 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
                             "after": {k: b.get(k) for k in (*keys, "reason_codes")}})
     ready_left = {s for s, row in left.items() if row.get("eligibility_status") == "PCS_ELIGIBLE"}
     ready_right = {s for s, row in right.items() if row.get("eligibility_status") == "PCS_ELIGIBLE"}
+    daily_left = {s for s, row in left.items() if str(row.get("initial_daily_readiness", "")).upper() == "READY"}
+    daily_right = {s for s, row in right.items() if str(row.get("initial_daily_readiness", "")).upper() == "READY"}
+    recovery_by_symbol: dict[str, Any] = {}
+    if recovery_results is not None:
+        values = recovery_results.values() if isinstance(recovery_results, Mapping) else recovery_results
+        for item in values:
+            if isinstance(item, Mapping):
+                symbol = str(item.get("symbol", "")).strip().upper()
+                if symbol:
+                    recovery_by_symbol[symbol] = dict(item)
     return {"comparable": comparable, "identity": identity, "added": sorted(set(right)-set(left)),
             "removed": sorted(set(left)-set(right)), "ready_added": sorted(ready_right-ready_left),
-            "ready_removed": sorted(ready_left-ready_right), "changed": changed,
+            "ready_removed": sorted(ready_left-ready_right),
+            "daily_ready_added": sorted(daily_right-daily_left),
+            "daily_ready_removed": sorted(daily_left-daily_right),
+            "recovery_by_symbol": recovery_by_symbol, "changed": changed,
             "before_count": len(left), "after_count": len(right)}
 
 
