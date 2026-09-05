@@ -24,6 +24,7 @@ def test_artifacts_are_manifested_and_atomic(tmp_path: Path):
     assert (root / "universe_snapshot.parquet").exists()
     assert (root / "options_shortlist.parquet").exists()
     assert (root / "final_decisions.parquet").exists()
+    assert (root / "preparation_recovery.json").exists()
     assert manifest["stage_status"]["OPTIONS_SHORTLIST"] == "NOT_RUN"
     assert not list(root.glob("*.tmp"))
 

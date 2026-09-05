@@ -37,6 +37,11 @@ read-backs; live provider result objects are excluded. Its
 present in that evidence. These fields are audit output and do not change
 readiness or promotion semantics.
 
+When an output directory is requested, the same fields are persisted in
+`preparation_recovery.json` and the run manifest records its recovery summary;
+this makes a later READ_ONLY comparison reproducible without reopening live
+provider objects.
+
 ## Runtime and result invariants
 
 Handle resolution is single-flight and cached by the complete decision identity,

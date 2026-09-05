@@ -60,6 +60,12 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
         root / "options_shortlist.parquet", option_rows if option_rows else empty_schema)
     summary = json.dumps(dict(result.summary), sort_keys=True, indent=2)
     files["aggregate_summary.json"] = _write_atomic(root / "aggregate_summary.json", summary)
+    recovery_payload = json.dumps(
+        {"summary": dict(result.recovery_summary),
+         "by_symbol": dict(result.preparation_results)},
+        default=str, sort_keys=True, indent=2)
+    files["preparation_recovery.json"] = _write_atomic(
+        root / "preparation_recovery.json", recovery_payload)
     transitions = []
     failures = []
     for row in result.ticker_results:
@@ -97,7 +103,8 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path)
                           "EVENT_GATE": "COMPLETE" if any(row.event_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN",
                           "PORTFOLIO_GATE": "COMPLETE" if any(row.portfolio_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN"},
         "input_symbol_count": len(result.ticker_results), "summary": dict(result.summary),
-        "counters": dict(result.counters), "artifact_hashes": files,
+        "counters": dict(result.counters), "recovery_summary": dict(result.recovery_summary),
+        "artifact_hashes": files,
     }
     _write_atomic(root / "run_manifest.json", json.dumps(manifest, sort_keys=True, indent=2))
     return root
