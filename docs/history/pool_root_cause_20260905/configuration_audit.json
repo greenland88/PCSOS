@@ -1,0 +1,32 @@
+{
+  "source_path": "H:/workspace/PCSOS/.env",
+  "source_exists": true,
+  "worktree_dotenv_exists": false,
+  "before_loading": {
+    "CLICKHOUSE_PASSWORD": false,
+    "CLICKHOUSE_USER": false,
+    "CLICKHOUSE_URL": false,
+    "PCS_MARKET_DATA_API_KEY": false
+  },
+  "after_loading": {
+    "CLICKHOUSE_PASSWORD": true,
+    "CLICKHOUSE_USER": true,
+    "CLICKHOUSE_URL": false,
+    "PCS_MARKET_DATA_API_KEY": true
+  },
+  "child_inherited": {
+    "CLICKHOUSE_PASSWORD": true,
+    "CLICKHOUSE_USER": true,
+    "CLICKHOUSE_URL": false,
+    "PCS_MARKET_DATA_API_KEY": true
+  },
+  "bounded_health_probe_observed_earlier": {
+    "http_status": 200,
+    "status": "PASS",
+    "max_attempts": 1,
+    "connect_timeout_seconds": 5,
+    "read_timeout_seconds": 10,
+    "total_timeout_seconds": 15
+  },
+  "credentials_copied": false
+}

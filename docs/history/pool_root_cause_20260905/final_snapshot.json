@@ -1,0 +1,19 @@
+{
+  "as_of": "2026-09-05T12:36:56.667418-04:00",
+  "benchmark_handles": {
+    "QQQ": "PINNED"
+  },
+  "benchmark_status": "READY",
+  "code_revision": "sha256:38f2d4e9c7ce8a0bc9ac50ac3f9789ff539bf64671adae1a91b312f6392f5d7c",
+  "effective_daily_session": "2026-09-04",
+  "engine_version": "sha256:f00ef7adafc8d02668fe8a26a2e9038a9d595ab0e0f6a0b3daf69c40eb9cb21c",
+  "last_completed_daily_session": "2026-09-04",
+  "manifest_snapshot_id": "f7797b2912a0de32414e42048b09bb56bc3a5ac6604251c38c086d1ce473323d",
+  "mode": "EOD",
+  "profile_versions": {},
+  "refresh_policy": "FULL",
+  "requested_as_of": "2026-09-05T12:36:56.667418-04:00",
+  "run_id": "455faf98607f45848ade9348628f4a37",
+  "symbol_handles": {},
+  "universe_snapshot_id": "global_pcs_candidates:c2ede1f139e783e3-fd5a6552aff369df:GLOBAL_CANDIDATE_UNIVERSE:2953:fd5a6552aff369df7709de84b089631cecdd70c3a34a269b005314dca502bd56"
+}

@@ -1,0 +1,86 @@
+[
+  {
+    "symbol": "GOOGL",
+    "old_session": "2026-09-03",
+    "new_session": "2026-09-04",
+    "old_status": "READY",
+    "new_status": "PREP_REQUIRED",
+    "new_reason_codes": [
+      "DAILY_STALE"
+    ],
+    "attribution": "SESSION_ADVANCE_FRESHNESS",
+    "rollback_evidence": "NOT_OBSERVED",
+    "recovered_verified_status": "READY",
+    "recovered_generation_id": "ad108f70ee4cf5e2081574e1|7b6b18f8da1bdf22f8532134"
+  },
+  {
+    "symbol": "HOOD",
+    "old_session": "2026-09-03",
+    "new_session": "2026-09-04",
+    "old_status": "READY",
+    "new_status": "PREP_REQUIRED",
+    "new_reason_codes": [
+      "DAILY_STALE"
+    ],
+    "attribution": "SESSION_ADVANCE_FRESHNESS",
+    "rollback_evidence": "NOT_OBSERVED",
+    "recovered_verified_status": "READY",
+    "recovered_generation_id": "258c5200287037ee17a60320|4d7533dfa3b522458ea04995"
+  },
+  {
+    "symbol": "META",
+    "old_session": "2026-09-03",
+    "new_session": "2026-09-04",
+    "old_status": "READY",
+    "new_status": "PREP_REQUIRED",
+    "new_reason_codes": [
+      "DAILY_STALE"
+    ],
+    "attribution": "SESSION_ADVANCE_FRESHNESS",
+    "rollback_evidence": "NOT_OBSERVED",
+    "recovered_verified_status": "READY",
+    "recovered_generation_id": "f9972a8d24216fe2504e6273|03c0f2881e04442ea91638e1"
+  },
+  {
+    "symbol": "SOXL",
+    "old_session": "2026-09-03",
+    "new_session": "2026-09-04",
+    "old_status": "READY",
+    "new_status": "PREP_REQUIRED",
+    "new_reason_codes": [
+      "DAILY_STALE"
+    ],
+    "attribution": "SESSION_ADVANCE_FRESHNESS",
+    "rollback_evidence": "NOT_OBSERVED",
+    "recovered_verified_status": "READY",
+    "recovered_generation_id": "f6d3cedaaa8b575d025fcc2c|c3db847963b82797b0410032"
+  },
+  {
+    "symbol": "SPY",
+    "old_session": "2026-09-03",
+    "new_session": "2026-09-04",
+    "old_status": "READY",
+    "new_status": "PREP_REQUIRED",
+    "new_reason_codes": [
+      "DAILY_STALE"
+    ],
+    "attribution": "SESSION_ADVANCE_FRESHNESS",
+    "rollback_evidence": "NOT_OBSERVED",
+    "recovered_verified_status": "READY",
+    "recovered_generation_id": "4d71d1788243ec312e79f511|ca59a4d061823cb97e7e6655"
+  },
+  {
+    "symbol": "TSLA",
+    "old_session": "2026-09-03",
+    "new_session": "2026-09-04",
+    "old_status": "READY",
+    "new_status": "PREP_REQUIRED",
+    "new_reason_codes": [
+      "DAILY_STALE"
+    ],
+    "attribution": "SESSION_ADVANCE_FRESHNESS",
+    "rollback_evidence": "NOT_OBSERVED",
+    "recovered_verified_status": "READY",
+    "recovered_generation_id": "eaaa008947c827a4bdd6643c|84fdb11dbc2ea36a00206dd0"
+  }
+]

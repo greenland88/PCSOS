@@ -1,0 +1,14 @@
+{
+  "symbol": "AUPH",
+  "requested_start": "2026-08-28",
+  "requested_end": "2026-09-04",
+  "source_min_date": "2026-08-28",
+  "source_max_date": "2026-09-03",
+  "physical_rows": 900,
+  "unique_contract_keys": 900,
+  "put_rows": 450,
+  "call_rows": 450,
+  "status": "READY",
+  "reason_codes": [],
+  "source_table": "firstrate.options_kline_1d"
+}

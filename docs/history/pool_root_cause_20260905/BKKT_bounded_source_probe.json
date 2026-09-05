@@ -1,0 +1,14 @@
+{
+  "symbol": "BKKT",
+  "requested_start": "2026-08-28",
+  "requested_end": "2026-09-04",
+  "source_min_date": "2026-08-28",
+  "source_max_date": "2026-09-03",
+  "physical_rows": 2824,
+  "unique_contract_keys": 2824,
+  "put_rows": 1412,
+  "call_rows": 1412,
+  "status": "READY",
+  "reason_codes": [],
+  "source_table": "firstrate.options_kline_1d"
+}

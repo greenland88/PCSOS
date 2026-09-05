@@ -1,0 +1,718 @@
+{
+  "symbol": "AAP",
+  "attempted": true,
+  "result": {
+    "module": "pcs.data.control_plane",
+    "version": "1.0",
+    "symbol": "AAP",
+    "as_of": "2026-09-04",
+    "status": "ALREADY_COMPLETE",
+    "data_timestamp": "2026-09-05T16:36:44.283888+00:00",
+    "calculation_version": "1.0",
+    "run_id": "c175c208e14e4ed7bafe310586cb2c80",
+    "request_id": "530b37a809f1499380d81c5ce742a948",
+    "reason_codes": [],
+    "requirements": {
+      "symbol": "AAP",
+      "required_start": "2025-07-11",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": 200
+    },
+    "coverage_plan": {
+      "requirements": {
+        "symbol": "AAP",
+        "required_start": "2025-07-11",
+        "required_end": "2026-09-04",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-09-04",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": 200
+      },
+      "existing": {
+        "daily": {
+          "present": true,
+          "dataset": "daily",
+          "symbol": "AAP",
+          "backend": "partitioned_parquet",
+          "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=AAP/year=2025/generations/30833d1b0452db26c863668b.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=AAP/year=2026/generations/60caefdd7c0aa6ed6533645c.parquet",
+          "first_date": "2001-01-01",
+          "last_date": "2026-09-04",
+          "row_count": 420,
+          "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+          "schema_version": "2"
+        }
+      },
+      "actions": [
+        {
+          "dataset": "daily",
+          "action": "REUSE_CANONICAL",
+          "reason": "validated canonical source exists"
+        }
+      ],
+      "required_option_periods": [],
+      "canonical_complete_periods": [],
+      "periods_to_import": [],
+      "periods_to_repair": [],
+      "periods_blocked": []
+    },
+    "validation": {
+      "daily": {
+        "status": "READY",
+        "reason_codes": [],
+        "row_count": 291,
+        "duplicate_dates": 0,
+        "missing_sessions": []
+      }
+    },
+    "remaining_blockers": [],
+    "source_inventory": [
+      {
+        "source_id": "purchased_qfq",
+        "type": "FILE",
+        "enabled": true,
+        "authorized": true,
+        "adapter": "pcs.data.import_daily_snapshot.capabilities",
+        "capabilities": [
+          "DAILY_HISTORY"
+        ],
+        "authority": "historical_daily_primary",
+        "priority": 1
+      },
+      {
+        "source_id": "daily_snapshot",
+        "type": "FILE",
+        "enabled": true,
+        "authorized": true,
+        "adapter": "pcs.data.import_daily_snapshot.capabilities",
+        "capabilities": [
+          "DAILY_HISTORY"
+        ],
+        "authority": "daily_snapshot",
+        "priority": 2
+      },
+      {
+        "source_id": "private_massive_gateway",
+        "type": "API",
+        "enabled": true,
+        "authorized": true,
+        "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+        "capabilities": [
+          "DAILY_HISTORY",
+          "DAILY_CURRENT",
+          "OPTION_CONTRACT_REFERENCE"
+        ],
+        "credential_env": [
+          "PCS_MARKET_DATA_API_KEY"
+        ],
+        "priority": 3
+      },
+      {
+        "source_id": "yahoo_daily",
+        "type": "API",
+        "enabled": true,
+        "authorized": true,
+        "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+        "capabilities": [
+          "DAILY_HISTORY",
+          "DAILY_CURRENT"
+        ],
+        "priority": 4
+      }
+    ],
+    "stages": {
+      "daily": "REUSED"
+    },
+    "reused_periods": [
+      "daily"
+    ],
+    "imported_periods": [],
+    "repaired_periods": [],
+    "blocked_periods": [],
+    "initial_plan": {
+      "requirements": {
+        "symbol": "AAP",
+        "required_start": "2025-07-11",
+        "required_end": "2026-09-04",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-09-04",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": 200
+      },
+      "existing": {
+        "daily": {
+          "present": true,
+          "reason_codes": [
+            "DAILY_STALE",
+            "CANONICAL_DAILY_STALE"
+          ],
+          "dataset": "daily",
+          "symbol": "AAP",
+          "backend": "partitioned_parquet",
+          "path": "data/parquet/daily/symbol=AAP/year=2001/AAP_2001.parquet;data/parquet/daily/symbol=AAP/year=2002/AAP_2002.parquet;data/parquet/daily/symbol=AAP/year=2003/AAP_2003.parquet;data/parquet/daily/symbol=AAP/year=2004/AAP_2004.parquet;data/parquet/daily/symbol=AAP/year=2005/AAP_2005.parquet;data/parquet/daily/symbol=AAP/year=2006/AAP_2006.parquet;data/parquet/daily/symbol=AAP/year=2007/AAP_2007.parquet;data/parquet/daily/symbol=AAP/year=2008/AAP_2008.parquet;data/parquet/daily/symbol=AAP/year=2009/AAP_2009.parquet;data/parquet/daily/symbol=AAP/year=2010/AAP_2010.parquet;data/parquet/daily/symbol=AAP/year=2011/AAP_2011.parquet;data/parquet/daily/symbol=AAP/year=2012/AAP_2012.parquet;data/parquet/daily/symbol=AAP/year=2013/AAP_2013.parquet;data/parquet/daily/symbol=AAP/year=2014/AAP_2014.parquet;data/parquet/daily/symbol=AAP/year=2015/AAP_2015.parquet;data/parquet/daily/symbol=AAP/year=2016/AAP_2016.parquet;data/parquet/daily/symbol=AAP/year=2017/AAP_2017.parquet;data/parquet/daily/symbol=AAP/year=2018/AAP_2018.parquet;data/parquet/daily/symbol=AAP/year=2019/AAP_2019.parquet;data/parquet/daily/symbol=AAP/year=2020/AAP_2020.parquet;data/parquet/daily/symbol=AAP/year=2021/AAP_2021.parquet;data/parquet/daily/symbol=AAP/year=2022/AAP_2022.parquet;data/parquet/daily/symbol=AAP/year=2023/AAP_2023.parquet;data/parquet/daily/symbol=AAP/year=2024/AAP_2024.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=AAP/year=2025/generations/c95cd0b6f2974d482878d01b.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=AAP/year=2026/generations/c33e276a4fbb0330bde9290a.parquet",
+          "first_date": "2001-01-01",
+          "last_date": "2026-09-02",
+          "row_count": 418,
+          "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+          "schema_version": "2",
+          "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+        }
+      },
+      "actions": [
+        {
+          "dataset": "daily",
+          "action": "REPAIR_DAILY_FROM_GATEWAY",
+          "selected_sources": [
+            {
+              "source_id": "purchased_qfq",
+              "type": "FILE",
+              "enabled": true,
+              "authorized": true,
+              "adapter": "pcs.data.import_daily_snapshot.capabilities",
+              "capabilities": [
+                "DAILY_HISTORY"
+              ],
+              "authority": "historical_daily_primary",
+              "priority": 1
+            },
+            {
+              "source_id": "daily_snapshot",
+              "type": "FILE",
+              "enabled": true,
+              "authorized": true,
+              "adapter": "pcs.data.import_daily_snapshot.capabilities",
+              "capabilities": [
+                "DAILY_HISTORY"
+              ],
+              "authority": "daily_snapshot",
+              "priority": 2
+            },
+            {
+              "source_id": "private_massive_gateway",
+              "type": "API",
+              "enabled": true,
+              "authorized": true,
+              "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+              "capabilities": [
+                "DAILY_HISTORY",
+                "DAILY_CURRENT",
+                "OPTION_CONTRACT_REFERENCE"
+              ],
+              "credential_env": [
+                "PCS_MARKET_DATA_API_KEY"
+              ],
+              "priority": 3
+            },
+            {
+              "source_id": "yahoo_daily",
+              "type": "API",
+              "enabled": true,
+              "authorized": true,
+              "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+              "capabilities": [
+                "DAILY_HISTORY",
+                "DAILY_CURRENT"
+              ],
+              "priority": 4
+            }
+          ],
+          "reason": "canonical gap"
+        }
+      ],
+      "required_option_periods": [],
+      "canonical_complete_periods": [],
+      "periods_to_import": [],
+      "periods_to_repair": [],
+      "periods_blocked": []
+    },
+    "selected_source": [],
+    "provider_coverage": [],
+    "import_outcomes": [
+      {
+        "dataset": "daily",
+        "status": "IMPORTED",
+        "result": {
+          "module": "pcs.data.incremental_update",
+          "version": "1.0",
+          "symbol": "AAP",
+          "as_of": "2026-09-05T16:36:42.491585+00:00",
+          "status": "SUCCESS",
+          "data_timestamp": "2026-09-05T16:36:42.491593+00:00",
+          "calculation_version": "incremental_current_v1",
+          "run_id": "f976ab2a087d43ba9321716a12622a8d",
+          "request_id": "974a949d33ab47eba975608d258c25b1",
+          "current_data_asof": "2026-09-04",
+          "latest_daily_date": "2026-09-04",
+          "latest_options_date": null,
+          "daily_update": "UPDATED",
+          "options_update": "NO_OP",
+          "affected_partitions": [
+            "daily/symbol=AAP/year=2025",
+            "daily/symbol=AAP/year=2026"
+          ],
+          "current_route": "daily",
+          "frozen_generations_touched": 0,
+          "current_derived_artifacts_invalidated": [
+            "AAP:daily/symbol=AAP/year=2025",
+            "AAP:daily/symbol=AAP/year=2026"
+          ],
+          "readiness_refresh_status": "REFRESHED",
+          "reason_codes": [
+            "DERIVED_INVALIDATION_MARKED"
+          ]
+        }
+      }
+    ],
+    "promoted_partitions": [],
+    "blocked_partitions": [],
+    "final_canonical_status": "ALREADY_COMPLETE"
+  },
+  "result_status": "ALREADY_COMPLETE",
+  "reason_codes": [
+    "MIGRATED_CANONICAL_ADMITTED"
+  ],
+  "provider_calls": 1,
+  "provider_coverage_count": 0,
+  "promotion_calls": 2,
+  "promoted_partitions": [
+    "year=2025",
+    "year=2026"
+  ],
+  "promotion_receipts": [
+    {
+      "dataset_type": "daily",
+      "ticker": "AAP",
+      "staging_generation_id": "c95cd0b6f2974d482878d01b",
+      "promoted_generation_id": "c95cd0b6f2974d482878d01b",
+      "manifest_active_generation_id": "c95cd0b6f2974d482878d01b",
+      "read_back_generation_id": "c95cd0b6f2974d482878d01b",
+      "promoted_partitions": [
+        "year=2025"
+      ],
+      "partition_ids": [
+        "year=2025"
+      ],
+      "checksum": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+      "read_back_checksum": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+      "row_count": 250,
+      "read_back_row_count": 250,
+      "manifest_version": "storage_manifest_v1",
+      "source_lineage": [
+        {
+          "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+          "partition": "year=2025"
+        }
+      ],
+      "created_at": "2026-09-05T16:36:40.902006+00:00",
+      "promotion_timestamp": "2026-09-05T16:36:41.134420+00:00",
+      "path": "data\\parquet\\daily\\symbol=AAP\\year=2025\\generations\\c95cd0b6f2974d482878d01b.parquet",
+      "dataset_fingerprint": "945ba57a1ce9d665d04684834fec19fa285b21ce5fac813c3e51646a786149d2",
+      "snapshot_descriptor": {
+        "dataset": "daily",
+        "symbol": "AAP",
+        "timeframe": "daily",
+        "date_column": "date",
+        "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+        "schema_version": "2",
+        "price_basis": "canonical_adjusted",
+        "corporate_action_version": "canonical_identity",
+        "row_count": 250,
+        "min_date": "2025-01-02",
+        "max_date": "2025-12-31",
+        "trading_session_count": 250,
+        "partitions": [
+          {
+            "logical_partition_key": "year=2025",
+            "file_sha256": "877b58026b00fdeee1af21120321a3954ac14b2f053fc2db03be6bfffcdf4324",
+            "byte_size": 13756,
+            "row_count": 250,
+            "min_date": "2025-01-02",
+            "max_date": "2025-12-31"
+          }
+        ],
+        "dataset_fingerprint": "945ba57a1ce9d665d04684834fec19fa285b21ce5fac813c3e51646a786149d2"
+      },
+      "logical_dataset": "daily",
+      "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+      "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+    },
+    {
+      "dataset_type": "daily",
+      "ticker": "AAP",
+      "staging_generation_id": "c33e276a4fbb0330bde9290a",
+      "promoted_generation_id": "c33e276a4fbb0330bde9290a",
+      "manifest_active_generation_id": "c33e276a4fbb0330bde9290a",
+      "read_back_generation_id": "c33e276a4fbb0330bde9290a",
+      "promoted_partitions": [
+        "year=2026"
+      ],
+      "partition_ids": [
+        "year=2026"
+      ],
+      "checksum": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+      "read_back_checksum": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+      "row_count": 168,
+      "read_back_row_count": 168,
+      "manifest_version": "storage_manifest_v1",
+      "source_lineage": [
+        {
+          "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+          "partition": "year=2026"
+        }
+      ],
+      "created_at": "2026-09-05T16:36:41.318479+00:00",
+      "promotion_timestamp": "2026-09-05T16:36:41.551745+00:00",
+      "path": "data\\parquet\\daily\\symbol=AAP\\year=2026\\generations\\c33e276a4fbb0330bde9290a.parquet",
+      "dataset_fingerprint": "60e613723b49feca6fc1cebfb2c84732454a7ef03946b9ce5830d6d816723f65",
+      "snapshot_descriptor": {
+        "dataset": "daily",
+        "symbol": "AAP",
+        "timeframe": "daily",
+        "date_column": "date",
+        "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+        "schema_version": "2",
+        "price_basis": "canonical_adjusted",
+        "corporate_action_version": "canonical_identity",
+        "row_count": 168,
+        "min_date": "2026-01-02",
+        "max_date": "2026-09-02",
+        "trading_session_count": 168,
+        "partitions": [
+          {
+            "logical_partition_key": "year=2026",
+            "file_sha256": "e62cdcec713b3acfa353a6eba5b764bb851f8c8cebd6b7958b1d159ea71f6241",
+            "byte_size": 10653,
+            "row_count": 168,
+            "min_date": "2026-01-02",
+            "max_date": "2026-09-02"
+          }
+        ],
+        "dataset_fingerprint": "60e613723b49feca6fc1cebfb2c84732454a7ef03946b9ce5830d6d816723f65"
+      },
+      "logical_dataset": "daily",
+      "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+      "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+    }
+  ],
+  "admission_status": "ADMITTED_NEEDS_INCREMENTAL",
+  "admission_result": {
+    "symbol": "AAP",
+    "status": "ADMITTED_NEEDS_INCREMENTAL",
+    "reason_codes": [
+      "MIGRATED_CANONICAL_ADMITTED"
+    ],
+    "partitions": [
+      {
+        "path": "data\\parquet\\daily\\symbol=AAP\\year=2025\\AAP_2025.parquet",
+        "year": 2025,
+        "physical_sha256": "7217456d3b9356dd238c4b74c1332c0e665a200eb94891ed2803c7c03555b4c8",
+        "semantic_content_hash": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+        "row_count": 250,
+        "min_date": "2025-01-02",
+        "max_date": "2025-12-31",
+        "dataset_fingerprint": "3046631167b99665b2ecc697890577bfff1b8457745ad0dd3877f1a8e7080e2f",
+        "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374"
+      },
+      {
+        "path": "data\\parquet\\daily\\symbol=AAP\\year=2026\\AAP_2026.parquet",
+        "year": 2026,
+        "physical_sha256": "4f76c4147e2c0dae97d7c68115137f7f05b1a65f0a4f25d03d6cd3be94491be7",
+        "semantic_content_hash": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+        "row_count": 168,
+        "min_date": "2026-01-02",
+        "max_date": "2026-09-02",
+        "dataset_fingerprint": "dff0bc374702725db616f3b8ee2d294bac3a200638a32a4db7c5f29c8ad7e87d",
+        "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374"
+      }
+    ],
+    "promoted_partitions": [
+      "year=2025",
+      "year=2026"
+    ],
+    "already_admitted": [],
+    "promotion_receipts": [
+      {
+        "dataset_type": "daily",
+        "ticker": "AAP",
+        "staging_generation_id": "c95cd0b6f2974d482878d01b",
+        "promoted_generation_id": "c95cd0b6f2974d482878d01b",
+        "manifest_active_generation_id": "c95cd0b6f2974d482878d01b",
+        "read_back_generation_id": "c95cd0b6f2974d482878d01b",
+        "promoted_partitions": [
+          "year=2025"
+        ],
+        "partition_ids": [
+          "year=2025"
+        ],
+        "checksum": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+        "read_back_checksum": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+        "row_count": 250,
+        "read_back_row_count": 250,
+        "manifest_version": "storage_manifest_v1",
+        "source_lineage": [
+          {
+            "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+            "partition": "year=2025"
+          }
+        ],
+        "created_at": "2026-09-05T16:36:40.902006+00:00",
+        "promotion_timestamp": "2026-09-05T16:36:41.134420+00:00",
+        "path": "data\\parquet\\daily\\symbol=AAP\\year=2025\\generations\\c95cd0b6f2974d482878d01b.parquet",
+        "dataset_fingerprint": "945ba57a1ce9d665d04684834fec19fa285b21ce5fac813c3e51646a786149d2",
+        "snapshot_descriptor": {
+          "dataset": "daily",
+          "symbol": "AAP",
+          "timeframe": "daily",
+          "date_column": "date",
+          "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+          "schema_version": "2",
+          "price_basis": "canonical_adjusted",
+          "corporate_action_version": "canonical_identity",
+          "row_count": 250,
+          "min_date": "2025-01-02",
+          "max_date": "2025-12-31",
+          "trading_session_count": 250,
+          "partitions": [
+            {
+              "logical_partition_key": "year=2025",
+              "file_sha256": "877b58026b00fdeee1af21120321a3954ac14b2f053fc2db03be6bfffcdf4324",
+              "byte_size": 13756,
+              "row_count": 250,
+              "min_date": "2025-01-02",
+              "max_date": "2025-12-31"
+            }
+          ],
+          "dataset_fingerprint": "945ba57a1ce9d665d04684834fec19fa285b21ce5fac813c3e51646a786149d2"
+        },
+        "logical_dataset": "daily",
+        "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+        "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+      },
+      {
+        "dataset_type": "daily",
+        "ticker": "AAP",
+        "staging_generation_id": "c33e276a4fbb0330bde9290a",
+        "promoted_generation_id": "c33e276a4fbb0330bde9290a",
+        "manifest_active_generation_id": "c33e276a4fbb0330bde9290a",
+        "read_back_generation_id": "c33e276a4fbb0330bde9290a",
+        "promoted_partitions": [
+          "year=2026"
+        ],
+        "partition_ids": [
+          "year=2026"
+        ],
+        "checksum": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+        "read_back_checksum": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+        "row_count": 168,
+        "read_back_row_count": 168,
+        "manifest_version": "storage_manifest_v1",
+        "source_lineage": [
+          {
+            "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+            "partition": "year=2026"
+          }
+        ],
+        "created_at": "2026-09-05T16:36:41.318479+00:00",
+        "promotion_timestamp": "2026-09-05T16:36:41.551745+00:00",
+        "path": "data\\parquet\\daily\\symbol=AAP\\year=2026\\generations\\c33e276a4fbb0330bde9290a.parquet",
+        "dataset_fingerprint": "60e613723b49feca6fc1cebfb2c84732454a7ef03946b9ce5830d6d816723f65",
+        "snapshot_descriptor": {
+          "dataset": "daily",
+          "symbol": "AAP",
+          "timeframe": "daily",
+          "date_column": "date",
+          "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+          "schema_version": "2",
+          "price_basis": "canonical_adjusted",
+          "corporate_action_version": "canonical_identity",
+          "row_count": 168,
+          "min_date": "2026-01-02",
+          "max_date": "2026-09-02",
+          "trading_session_count": 168,
+          "partitions": [
+            {
+              "logical_partition_key": "year=2026",
+              "file_sha256": "e62cdcec713b3acfa353a6eba5b764bb851f8c8cebd6b7958b1d159ea71f6241",
+              "byte_size": 10653,
+              "row_count": 168,
+              "min_date": "2026-01-02",
+              "max_date": "2026-09-02"
+            }
+          ],
+          "dataset_fingerprint": "60e613723b49feca6fc1cebfb2c84732454a7ef03946b9ce5830d6d816723f65"
+        },
+        "logical_dataset": "daily",
+        "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+        "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+      }
+    ],
+    "failed_partition": null,
+    "unprocessed_partitions": [],
+    "needs_incremental": true,
+    "conflict_partitions": [],
+    "partition_results": [
+      {
+        "partition": "year=2025",
+        "status": "PROMOTED",
+        "candidate_path": "data\\parquet\\daily\\symbol=AAP\\year=2025\\AAP_2025.parquet",
+        "physical_sha256": "7217456d3b9356dd238c4b74c1332c0e665a200eb94891ed2803c7c03555b4c8",
+        "semantic_content_hash": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+        "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+        "active_generation_before": null,
+        "active_generation_after": "c95cd0b6f2974d482878d01b",
+        "reason_codes": [
+          "MIGRATED_CANONICAL_ADMITTED"
+        ],
+        "promotion_receipt": {
+          "dataset_type": "daily",
+          "ticker": "AAP",
+          "staging_generation_id": "c95cd0b6f2974d482878d01b",
+          "promoted_generation_id": "c95cd0b6f2974d482878d01b",
+          "manifest_active_generation_id": "c95cd0b6f2974d482878d01b",
+          "read_back_generation_id": "c95cd0b6f2974d482878d01b",
+          "promoted_partitions": [
+            "year=2025"
+          ],
+          "partition_ids": [
+            "year=2025"
+          ],
+          "checksum": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+          "read_back_checksum": "c95cd0b6f2974d482878d01b5f3f419f5d35a746a72904f59c1dcc4440c64eaa",
+          "row_count": 250,
+          "read_back_row_count": 250,
+          "manifest_version": "storage_manifest_v1",
+          "source_lineage": [
+            {
+              "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+              "partition": "year=2025"
+            }
+          ],
+          "created_at": "2026-09-05T16:36:40.902006+00:00",
+          "promotion_timestamp": "2026-09-05T16:36:41.134420+00:00",
+          "path": "data\\parquet\\daily\\symbol=AAP\\year=2025\\generations\\c95cd0b6f2974d482878d01b.parquet",
+          "dataset_fingerprint": "945ba57a1ce9d665d04684834fec19fa285b21ce5fac813c3e51646a786149d2",
+          "snapshot_descriptor": {
+            "dataset": "daily",
+            "symbol": "AAP",
+            "timeframe": "daily",
+            "date_column": "date",
+            "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+            "schema_version": "2",
+            "price_basis": "canonical_adjusted",
+            "corporate_action_version": "canonical_identity",
+            "row_count": 250,
+            "min_date": "2025-01-02",
+            "max_date": "2025-12-31",
+            "trading_session_count": 250,
+            "partitions": [
+              {
+                "logical_partition_key": "year=2025",
+                "file_sha256": "877b58026b00fdeee1af21120321a3954ac14b2f053fc2db03be6bfffcdf4324",
+                "byte_size": 13756,
+                "row_count": 250,
+                "min_date": "2025-01-02",
+                "max_date": "2025-12-31"
+              }
+            ],
+            "dataset_fingerprint": "945ba57a1ce9d665d04684834fec19fa285b21ce5fac813c3e51646a786149d2"
+          },
+          "logical_dataset": "daily",
+          "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+          "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+        }
+      },
+      {
+        "partition": "year=2026",
+        "status": "PROMOTED",
+        "candidate_path": "data\\parquet\\daily\\symbol=AAP\\year=2026\\AAP_2026.parquet",
+        "physical_sha256": "4f76c4147e2c0dae97d7c68115137f7f05b1a65f0a4f25d03d6cd3be94491be7",
+        "semantic_content_hash": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+        "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+        "active_generation_before": null,
+        "active_generation_after": "c33e276a4fbb0330bde9290a",
+        "reason_codes": [
+          "MIGRATED_CANONICAL_ADMITTED"
+        ],
+        "promotion_receipt": {
+          "dataset_type": "daily",
+          "ticker": "AAP",
+          "staging_generation_id": "c33e276a4fbb0330bde9290a",
+          "promoted_generation_id": "c33e276a4fbb0330bde9290a",
+          "manifest_active_generation_id": "c33e276a4fbb0330bde9290a",
+          "read_back_generation_id": "c33e276a4fbb0330bde9290a",
+          "promoted_partitions": [
+            "year=2026"
+          ],
+          "partition_ids": [
+            "year=2026"
+          ],
+          "checksum": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+          "read_back_checksum": "c33e276a4fbb0330bde9290a8c30d3cc28474fc51d0079c3a70dc7d3028b13cc",
+          "row_count": 168,
+          "read_back_row_count": 168,
+          "manifest_version": "storage_manifest_v1",
+          "source_lineage": [
+            {
+              "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+              "partition": "year=2026"
+            }
+          ],
+          "created_at": "2026-09-05T16:36:41.318479+00:00",
+          "promotion_timestamp": "2026-09-05T16:36:41.551745+00:00",
+          "path": "data\\parquet\\daily\\symbol=AAP\\year=2026\\generations\\c33e276a4fbb0330bde9290a.parquet",
+          "dataset_fingerprint": "60e613723b49feca6fc1cebfb2c84732454a7ef03946b9ce5830d6d816723f65",
+          "snapshot_descriptor": {
+            "dataset": "daily",
+            "symbol": "AAP",
+            "timeframe": "daily",
+            "date_column": "date",
+            "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+            "schema_version": "2",
+            "price_basis": "canonical_adjusted",
+            "corporate_action_version": "canonical_identity",
+            "row_count": 168,
+            "min_date": "2026-01-02",
+            "max_date": "2026-09-02",
+            "trading_session_count": 168,
+            "partitions": [
+              {
+                "logical_partition_key": "year=2026",
+                "file_sha256": "e62cdcec713b3acfa353a6eba5b764bb851f8c8cebd6b7958b1d159ea71f6241",
+                "byte_size": 10653,
+                "row_count": 168,
+                "min_date": "2026-01-02",
+                "max_date": "2026-09-02"
+              }
+            ],
+            "dataset_fingerprint": "60e613723b49feca6fc1cebfb2c84732454a7ef03946b9ce5830d6d816723f65"
+          },
+          "logical_dataset": "daily",
+          "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+          "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+        }
+      }
+    ]
+  },
+  "verified_status": "READY",
+  "generation_id": "30833d1b0452db26c863668b|60caefdd7c0aa6ed6533645c"
+}

@@ -1,0 +1,231 @@
+{
+  "module": "pcs.data.control_plane",
+  "version": "1.0",
+  "symbol": "AUPH",
+  "as_of": "2026-09-04",
+  "status": "BLOCKED",
+  "data_timestamp": "2026-09-05T16:24:53.008299+00:00",
+  "calculation_version": "1.0",
+  "run_id": "767b01b0ee324d64bde83a7e68a0c2e4",
+  "request_id": "9d63ddbb296642128ac23c2188187d7a",
+  "reason_codes": [
+    "AUTHORIZED_SOURCE_NO_ROWS",
+    "DATASET_GAP"
+  ],
+  "requirements": {
+    "symbol": "AUPH",
+    "required_start": "2026-09-04",
+    "required_end": "2026-09-04",
+    "datasets": [
+      "options"
+    ],
+    "exact_contract_quote_keys": [],
+    "required_fields": [],
+    "decision_as_of": "2026-09-04",
+    "option_type": "PUT",
+    "min_dte": 30,
+    "max_dte": 45,
+    "required_history_rows": 0
+  },
+  "coverage_plan": {
+    "requirements": {
+      "symbol": "AUPH",
+      "required_start": "2026-09-04",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "options"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": "PUT",
+      "min_dte": 30,
+      "max_dte": 45,
+      "required_history_rows": 0
+    },
+    "existing": {
+      "options": {
+        "present": false,
+        "reason_code": "DATASET_UNAVAILABLE",
+        "detail": "canonical route unavailable: requested_dataset=options symbol=AUPH legacy_fallback_used=NO reason=DATA_NOT_INGESTED_OR_CANONICAL_MANIFEST_MISSING"
+      }
+    },
+    "actions": [
+      {
+        "dataset": "options",
+        "action": "IMPORT_HISTORICAL_ZIP_WITH_CLICKHOUSE_OVERLAP",
+        "selected_sources": [
+          {
+            "source_id": "purchased_option_zip",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.onboarding.HistoricalTxtZipAdapter",
+            "capabilities": [
+              "OPTION_HISTORY_QUOTES"
+            ],
+            "priority": 1
+          },
+          {
+            "source_id": "clickhouse_options",
+            "type": "DATABASE_API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.clickhouse.PCSClickHouseClient",
+            "capabilities": [
+              "OPTION_HISTORY_QUOTES",
+              "OPTION_EOD_QUOTES",
+              "COVERAGE_PROBE"
+            ],
+            "priority": 2
+          }
+        ],
+        "reason": "canonical gap"
+      }
+    ],
+    "required_option_periods": [
+      "2026Q3"
+    ],
+    "canonical_complete_periods": [],
+    "periods_to_import": [
+      "2026Q3"
+    ],
+    "periods_to_repair": [],
+    "periods_blocked": []
+  },
+  "validation": {
+    "canonical": false
+  },
+  "remaining_blockers": [
+    "AUTHORIZED_SOURCE_NO_ROWS"
+  ],
+  "source_inventory": [
+    {
+      "source_id": "purchased_option_zip",
+      "type": "FILE",
+      "enabled": true,
+      "authorized": true,
+      "adapter": "pcs.data.onboarding.HistoricalTxtZipAdapter",
+      "capabilities": [
+        "OPTION_HISTORY_QUOTES"
+      ],
+      "priority": 1
+    },
+    {
+      "source_id": "clickhouse_options",
+      "type": "DATABASE_API",
+      "enabled": true,
+      "authorized": true,
+      "adapter": "pcs.data.clickhouse.PCSClickHouseClient",
+      "capabilities": [
+        "OPTION_HISTORY_QUOTES",
+        "OPTION_EOD_QUOTES",
+        "COVERAGE_PROBE"
+      ],
+      "priority": 2
+    }
+  ],
+  "stages": {
+    "options": "NOT_RUN"
+  },
+  "reused_periods": [],
+  "imported_periods": [],
+  "repaired_periods": [],
+  "blocked_periods": [],
+  "initial_plan": {
+    "requirements": {
+      "symbol": "AUPH",
+      "required_start": "2026-09-04",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "options"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": "PUT",
+      "min_dte": 30,
+      "max_dte": 45,
+      "required_history_rows": 0
+    },
+    "existing": {
+      "options": {
+        "present": false,
+        "reason_code": "DATASET_UNAVAILABLE",
+        "detail": "canonical route unavailable: requested_dataset=options symbol=AUPH legacy_fallback_used=NO reason=DATA_NOT_INGESTED_OR_CANONICAL_MANIFEST_MISSING"
+      }
+    },
+    "actions": [
+      {
+        "dataset": "options",
+        "action": "IMPORT_HISTORICAL_ZIP_WITH_CLICKHOUSE_OVERLAP",
+        "selected_sources": [
+          {
+            "source_id": "purchased_option_zip",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.onboarding.HistoricalTxtZipAdapter",
+            "capabilities": [
+              "OPTION_HISTORY_QUOTES"
+            ],
+            "priority": 1
+          },
+          {
+            "source_id": "clickhouse_options",
+            "type": "DATABASE_API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.clickhouse.PCSClickHouseClient",
+            "capabilities": [
+              "OPTION_HISTORY_QUOTES",
+              "OPTION_EOD_QUOTES",
+              "COVERAGE_PROBE"
+            ],
+            "priority": 2
+          }
+        ],
+        "reason": "canonical gap"
+      }
+    ],
+    "required_option_periods": [
+      "2026Q3"
+    ],
+    "canonical_complete_periods": [],
+    "periods_to_import": [
+      "2026Q3"
+    ],
+    "periods_to_repair": [],
+    "periods_blocked": []
+  },
+  "selected_source": [
+    "clickhouse_options"
+  ],
+  "provider_coverage": [],
+  "import_outcomes": [
+    {
+      "dataset": "options",
+      "status": "BLOCKED",
+      "result": {
+        "symbol": "AUPH",
+        "requested_start": "2026-09-04",
+        "requested_end": "2026-09-04",
+        "source_min_date": null,
+        "source_max_date": null,
+        "physical_rows": 0,
+        "unique_contract_keys": 0,
+        "put_rows": 0,
+        "call_rows": 0,
+        "status": "BLOCKED",
+        "reason_codes": [
+          "AUTHORIZED_SOURCE_NO_ROWS"
+        ],
+        "source_table": "firstrate.options_kline_1d",
+        "selected_source": "clickhouse_options"
+      }
+    }
+  ],
+  "promoted_partitions": [],
+  "blocked_partitions": [],
+  "final_canonical_status": "PARTIAL"
+}
