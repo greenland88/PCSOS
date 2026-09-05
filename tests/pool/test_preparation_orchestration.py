@@ -262,6 +262,44 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
     assert second.generation_id == first.generation_id
 
 
+def test_partial_admission_retry_reuses_committed_partition(tmp_path, monkeypatch):
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    records = []
+    for year, count in ((2025, 220), (2026, 247)):
+        dates = pd.date_range(f"{year}-01-01", periods=count, freq="D")
+        frame = _frame().iloc[:count].copy()
+        frame["date"] = dates
+        path = access.parquet_root / "daily" / "symbol=AAA" / f"year={year}" / f"AAA_{year}.parquet"
+        path.parent.mkdir(parents=True)
+        frame.to_parquet(path, index=False)
+        records.append({"symbol": "AAA", "status": "SUCCESS"})
+    migration = tmp_path / "migration.csv"
+    pd.DataFrame(records).drop_duplicates("symbol").to_csv(migration, index=False)
+    original = access.promote_generation
+    calls = []
+
+    def fail_second(frame, dataset, symbol, partition, **kwargs):
+        calls.append(partition)
+        if len(calls) == 2:
+            raise ValueError("INJECTED_PROMOTION_FAILURE")
+        return original(frame, dataset, symbol, partition, **kwargs)
+
+    monkeypatch.setattr(access, "promote_generation", fail_second)
+    first = admit_migrated_daily_symbol("AAA", decision_as_of="2026-09-04", data_access=access,
+                                        migration_manifest_path=migration)
+    assert first["status"] == "ADMISSION_INCOMPLETE"
+    assert first["promoted_partitions"] == ("year=2025",)
+    assert first["failed_partition"] == "year=2026"
+    assert first["unprocessed_partitions"] == ()
+    monkeypatch.setattr(access, "promote_generation", original)
+    second = admit_migrated_daily_symbol("AAA", decision_as_of="2026-09-04", data_access=access,
+                                         migration_manifest_path=migration)
+    assert second["status"] == "ADMITTED_READY"
+    assert second["already_admitted"] == ("year=2025",)
+    assert second["promoted_partitions"] == ("year=2026",)
+    assert len(list((access.parquet_root / "daily" / "symbol=AAA" / "year=2025" / "generations").glob("*.parquet"))) == 1
+
+
 def test_corrupt_migrated_daily_file_is_not_admitted(tmp_path):
     access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     frame = _frame()
