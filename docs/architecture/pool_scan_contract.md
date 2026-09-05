@@ -2,6 +2,8 @@
 
 The canonical implementation is `pcs.pool.runner.run_pcs_pool`, exposed by the
 `pool-scan` CLI. Extend that path; do not create an alternate scanner.
+For natural-language daily operation and its fixed environment, use
+[PCS daily operations](../PCS_DAILY_OPERATIONS.md).
 
 ## Execution and data boundaries
 

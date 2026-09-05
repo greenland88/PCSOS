@@ -14,6 +14,7 @@ task contract required by the work:
 - replay validation and parallel outputs: [`docs/architecture/validation_run_safety.md`](docs/architecture/validation_run_safety.md);
 - parameter experiments: also [`docs/research/PARAMETER_EXPERIMENT_STANDARD.md`](docs/research/PARAMETER_EXPERIMENT_STANDARD.md) and `config/research/parameter_experiment_policy.yaml`;
 - Pool Scan: [`docs/architecture/pool_scan_contract.md`](docs/architecture/pool_scan_contract.md);
+- routine natural-language PCS operations: [PCS daily operations](docs/PCS_DAILY_OPERATIONS.md). The agent executes the authorized scan/preparation; do not hand commands to the user. Routine operation does not authorize code or strategy repairs;
 - a new module or materially changed interface: [`docs/architecture/agent_ready_interfaces.md`](docs/architecture/agent_ready_interfaces.md).
 
 Use [`docs/README.md`](docs/README.md) to locate other contracts. Read
