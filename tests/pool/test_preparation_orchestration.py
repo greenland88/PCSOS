@@ -72,6 +72,16 @@ def test_summarize_recovery_counts_only_partition_evidence():
         "promoted": 1, "failed": 1, "unprocessed": 1, "promotion_receipts": 1}
 
 
+def test_summarize_recovery_deduplicates_retried_partition_by_latest_status():
+    results = [{"symbol": "AAA", "partition_results": (
+        {"partition": "year=2025", "status": "PROMOTED", "promotion_receipt": {"id": "r"}},)},
+        {"symbol": "AAA", "partition_results": (
+        {"partition": "year=2025", "status": "REUSED"},)}]
+    assert summarize_recovery_results(results)["promoted"] == 0
+    assert summarize_recovery_results(results)["reused"] == 1
+    assert summarize_recovery_results(results)["promotion_receipts"] == 0
+
+
 def test_reconcile_rejects_code_or_configuration_identity_changes():
     before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r1", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
     after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r2", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}

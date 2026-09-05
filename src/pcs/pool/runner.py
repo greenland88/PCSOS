@@ -508,7 +508,7 @@ def summarize_recovery_results(recovery_results: Mapping[str, Any] | Sequence[Ma
     values = recovery_results.values() if isinstance(recovery_results, Mapping) else recovery_results
     counts = {"symbols": 0, "validated": 0, "reused": 0, "promoted": 0,
               "failed": 0, "unprocessed": 0, "promotion_receipts": 0}
-    seen: set[tuple[str, str, str]] = set()
+    latest: dict[tuple[str, str], Mapping[str, Any]] = {}
     symbols: set[str] = set()
     for item in values:
         if not isinstance(item, Mapping):
@@ -524,18 +524,19 @@ def summarize_recovery_results(recovery_results: Mapping[str, Any] | Sequence[Ma
                 continue
             partition = str(result.get("partition", "")).strip()
             status = str(result.get("status", "")).strip().lower()
-            key = (symbol, partition, status)
-            if not partition or key in seen:
+            if not partition:
                 continue
-            seen.add(key)
-            if status in counts:
-                counts[status] += 1
-            if status == "promoted" and result.get("promotion_receipt"):
-                counts["promotion_receipts"] += 1
+            latest[(symbol, partition)] = result
         for partition in nested.get("unprocessed_partitions") or ():
-            key = (symbol, str(partition), "unprocessed")
-            if key not in seen:
-                seen.add(key); counts["unprocessed"] += 1
+            partition = str(partition).strip()
+            if partition and (symbol, partition) not in latest:
+                latest[(symbol, partition)] = {"status": "unprocessed"}
+    for result in latest.values():
+        status = str(result.get("status", "")).strip().lower()
+        if status in counts:
+            counts[status] += 1
+        if status == "promoted" and result.get("promotion_receipt"):
+            counts["promotion_receipts"] += 1
     counts["symbols"] = len(symbols)
     return counts
 
