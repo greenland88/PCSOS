@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from time import perf_counter
 from dataclasses import asdict, dataclass, replace
-from typing import Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 import uuid
 import os
 import traceback
@@ -456,6 +456,26 @@ def _as_of(value) -> str:
     return pd.Timestamp(value).isoformat()
 
 
+def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    """Build an explicit ticker-level delta for comparable pool scans."""
+    def rows(value):
+        return {str(row.get("symbol", "")).upper(): row for row in value.get("ticker_results", ())}
+    left, right = rows(before), rows(after)
+    fields = ("effective_daily_session", "universe_snapshot_id", "mode", "manifest_snapshot_id")
+    identity = {f: (before.get("snapshot", {}).get(f), after.get("snapshot", {}).get(f)) for f in fields}
+    comparable = all(a == b for a, b in identity.values() if a is not None and b is not None)
+    keys = ("eligibility_status", "initial_daily_readiness", "timing_status", "options_status", "final_action")
+    changed = []
+    for symbol in sorted(set(left) & set(right)):
+        a, b = left[symbol], right[symbol]
+        if any(a.get(k) != b.get(k) or a.get("reason_codes", ()) != b.get("reason_codes", ()) for k in keys):
+            changed.append({"symbol": symbol, "before": {k: a.get(k) for k in (*keys, "reason_codes")},
+                            "after": {k: b.get(k) for k in (*keys, "reason_codes")}})
+    return {"comparable": comparable, "identity": identity, "added": sorted(set(right)-set(left)),
+            "removed": sorted(set(left)-set(right)), "changed": changed,
+            "before_count": len(left), "after_count": len(right)}
+
+
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
                  as_of: datetime | str = "latest",
                  mode: Literal["PREMARKET", "INTRADAY", "EOD"],
@@ -749,4 +769,4 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     return result
 
 
-__all__ = ["run_pcs_pool"]
+__all__ = ["run_pcs_pool", "reconcile_pool_scan_results"]

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pcs.pool.runner as runner
+from pcs.pool.runner import reconcile_pool_scan_results
 from pcs.pool.models import EligibilityStatus
 from pcs.pool.runtime import ManifestSnapshot
 from pcs.data.access import PCSDataAccess
@@ -19,6 +20,16 @@ def _frame():
     return pd.DataFrame({"symbol": "AAA", "date": dates, "open": close,
                          "high": close + 1, "low": close - 1,
                          "close": close, "volume": 1000})
+
+
+def test_reconcile_pool_scan_results_requires_matching_identity():
+    before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m1"},
+              "ticker_results": [{"symbol": "AAA", "eligibility_status": "DATA_BLOCKED", "reason_codes": ["X"]}]}
+    after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m2"},
+             "ticker_results": [{"symbol": "AAA", "eligibility_status": "PCS_ELIGIBLE", "reason_codes": []}, {"symbol": "BBB"}]}
+    delta = reconcile_pool_scan_results(before, after)
+    assert not delta["comparable"] and delta["added"] == ["BBB"] and delta["removed"] == []
+    assert delta["changed"][0]["symbol"] == "AAA"
 
 
 class RoutedFixtureAccess:
