@@ -196,12 +196,16 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
         else:
             needs_incremental = False
     except (DataAccessError, DataQualityError) as exc:
+        conflict_partitions = tuple(sorted({f"year={meta['year']}" for _, meta in validated
+                                             if sum(1 for _, candidate in validated
+                                                    if int(candidate['year']) == int(meta['year'])) > 1}))
         return {"symbol": s, "status": "MIGRATED_CANONICAL_INVALID", "reason_codes": (str(exc).strip() or type(exc).__name__,),
                 "partitions": tuple(meta for _, meta in validated),
                 "promoted_partitions": tuple(), "already_admitted": tuple(),
                 "promotion_receipts": tuple(),
                 "failed_partition": validation_failed_partition,
                 "unprocessed_partitions": tuple(validation_unprocessed_partitions),
+                "conflict_partitions": conflict_partitions,
                 "partition_results": tuple(validation_results + ([{
                     "partition": validation_failed_partition, "status": "FAILED",
                     "active_generation_before": None, "active_generation_after": None,
@@ -228,6 +232,7 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 "promoted_partitions": tuple(), "already_admitted": tuple(),
                 "promotion_receipts": tuple(), "failed_partition": None,
                 "unprocessed_partitions": tuple(),
+                "conflict_partitions": tuple(),
                 "partition_results": tuple(validated_results)}
     promoted = []
     already = []
@@ -286,14 +291,15 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 "reason_codes": (str(exc).strip() or type(exc).__name__,), "partitions": tuple(meta for _, meta in validated),
                 "promoted_partitions": tuple(promoted), "already_admitted": tuple(already),
                 "promotion_receipts": tuple(promotion_receipts), "failed_partition": failed_partition,
-                "unprocessed_partitions": tuple(unprocessed_partitions), "partition_results": tuple(partition_results)}
+                "unprocessed_partitions": tuple(unprocessed_partitions), "conflict_partitions": tuple(),
+                "partition_results": tuple(partition_results)}
     status = "ADMITTED_NEEDS_INCREMENTAL" if needs_incremental else "ALREADY_ADMITTED" if not promoted else "ADMITTED_READY"
     reasons = ("MIGRATED_CANONICAL_ALREADY_ADMITTED",) if not promoted else ("MIGRATED_CANONICAL_ADMITTED",)
     return {"symbol": s, "status": status, "reason_codes": reasons,
             "partitions": tuple(meta for _, meta in validated), "promoted_partitions": tuple(promoted),
             "already_admitted": tuple(already), "promotion_receipts": tuple(promotion_receipts),
             "failed_partition": None, "unprocessed_partitions": tuple(), "needs_incremental": needs_incremental,
-            "partition_results": tuple(partition_results)}
+            "conflict_partitions": tuple(), "partition_results": tuple(partition_results)}
 
 def register_active_generation_provenance(*, dataset: str, symbol: str, generation_id: str,
                                           price_basis: str, corporate_action_version: str,
