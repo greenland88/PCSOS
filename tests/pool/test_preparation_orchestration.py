@@ -227,6 +227,11 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
         "AAA", decision_as_of="2025-09-17", data_access=access,
         migration_manifest_path=tmp_path / "migration.csv")
     assert first_admission["status"] == "ADMITTED_READY"
+    readonly_admission = admit_migrated_daily_symbol(
+        "AAA", decision_as_of="2025-09-17", data_access=access,
+        migration_manifest_path=tmp_path / "migration.csv", read_only=True)
+    assert readonly_admission["promoted_partitions"] == tuple()
+    assert readonly_admission["failed_partition"] is None
     first = resolve_active_verified_daily_handle("AAA", "2025-09-17", 200, data_access=access)
     manifest_hash = __import__("hashlib").sha256(access.manifest_path.read_bytes()).hexdigest()
     assert admit_migrated_daily_symbol(

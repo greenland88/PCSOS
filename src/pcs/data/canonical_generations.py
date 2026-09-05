@@ -185,7 +185,10 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 "partitions": tuple(meta for _, meta in validated)}
     if read_only:
         return {"symbol": s, "status": "MIGRATED_CANONICAL_VALIDATED", "reason_codes": ("MIGRATED_CANONICAL_FOUND", "MIGRATED_CANONICAL_VALIDATED"),
-                "partitions": tuple(meta for _, meta in validated), "needs_incremental": needs_incremental}
+                "partitions": tuple(meta for _, meta in validated), "needs_incremental": needs_incremental,
+                "promoted_partitions": tuple(), "already_admitted": tuple(),
+                "promotion_receipts": tuple(), "failed_partition": None,
+                "unprocessed_partitions": tuple()}
     promoted = []
     already = []
     promotion_receipts = []
