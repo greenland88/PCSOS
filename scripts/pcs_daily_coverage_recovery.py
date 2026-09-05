@@ -82,7 +82,11 @@ def source_result(outcome):
 
 
 def source_attempted(record):
-    for action in record['actions']:
+    actions = record['actions']
+    resets = [i for i, action in enumerate(actions) if action['action'] == 'SOURCE_RETRY_AFTER_CONFIRMED_CHANGE']
+    if resets:
+        actions = actions[resets[-1] + 1:]
+    for action in actions:
         if action['action'] != 'DAILY_LOADER':
             continue
         outcomes = action.get('receipt', {}).get('import_outcomes', [])
@@ -161,7 +165,11 @@ def recover(record, access, request):
     if (record['primary'] == 'A' or needs_admission) and not any(a['action'] == 'ADMISSION' for a in record['actions']):
         receipt = admit_migrated_daily_symbol(symbol, decision_as_of=request['session'], required_start=request['required_start'], data_access=access)
         record['actions'].append({'action': 'ADMISSION', 'receipt': receipt})
-        if receipt['status'] not in {'ADMITTED_READY', 'ADMITTED_NEEDS_INCREMENTAL', 'ALREADY_ADMITTED'}:
+    admissions = [a['receipt'] for a in record['actions'] if a['action'] == 'ADMISSION']
+    if admissions and admissions[-1]['status'] not in {'ADMITTED_READY', 'ADMITTED_NEEDS_INCREMENTAL', 'ALREADY_ADMITTED'}:
+        # Incomplete warmup is a request for more source history, not a
+        # validation conflict. Keep the final 200-session gate unchanged.
+        if set(admissions[-1].get('reason_codes', [])) != {'INSUFFICIENT_FEATURE_WARMUP'}:
             record['final'] = verify(symbol, access, request)
             return record
     if source_attempted(record):
@@ -248,7 +256,12 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--phase', choices=['inspect', 'admit', 'recover', 'conflicts', 'verify'], default='inspect')
     parser.add_argument('--limit', type=int)
+    parser.add_argument('--symbols', nargs='+', help='Resume only these frozen-request symbols; never changes the denominator')
+    parser.add_argument('--retry-source', action='store_true', help='One explicit new attempt after confirmed source change')
+    parser.add_argument('--retry-reason', help='Auditable evidence of the confirmed source change')
     args = parser.parse_args()
+    if args.retry_source and (args.phase != 'recover' or not args.symbols or not args.retry_reason):
+        parser.error('--retry-source requires --phase recover, --symbols and --retry-reason')
     root = Path(args.output)
     load_project_environment()
     request_path = root / 'request.json'
@@ -292,6 +305,11 @@ def main():
         except Exception:
             pass  # Normal control-plane failure handling remains authoritative.
     symbols = list(dict.fromkeys(['QQQ', 'SPY'] + request['symbols']))
+    if args.symbols:
+        selected = {symbol.upper() for symbol in args.symbols}
+        if not selected <= set(symbols):
+            raise RuntimeError('SYMBOL_OUTSIDE_FROZEN_REQUEST')
+        symbols = [symbol for symbol in symbols if symbol in selected]
     count = 0
     for symbol in symbols:
         if (root / 'PAUSE').exists():
@@ -312,6 +330,10 @@ def main():
             if args.phase == 'recover':
                 if (record['primary'] not in {'A', 'B', 'C'} and not record['before'].get('missing_sessions')) or record['final']['status'] == 'READY':
                     continue
+                if args.retry_source and source_attempted(record):
+                    record['actions'].append({'action': 'SOURCE_RETRY_AFTER_CONFIRMED_CHANGE',
+                        'evidence': args.retry_reason, 'at': datetime.now(timezone.utc).isoformat()})
+                    save(path, record)
                 try:
                     record = recover(record, access, request)
                 except Exception as exc:

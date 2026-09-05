@@ -24,6 +24,15 @@ def test_zero_rows_not_retried_but_reuse_without_provider_is_resumable():
     assert not operator.source_attempted(record)
 
 
+def test_explicit_source_change_preserves_old_attempt_and_allows_one_new_attempt():
+    old = {'action': 'DAILY_LOADER', 'receipt': {'import_outcomes': [{'status': 'BLOCKED'}]}}
+    record = {'actions': [old, {'action': 'SOURCE_RETRY_AFTER_CONFIRMED_CHANGE', 'evidence': 'new source coverage receipt'}]}
+    assert not operator.source_attempted(record)
+    record['actions'].append({'action': 'DAILY_LOADER', 'receipt': {'import_outcomes': [{'status': 'BLOCKED'}]}})
+    assert operator.source_attempted(record)
+    assert record['actions'][0] == old
+
+
 def test_benchmark_cache_stops_reuse_when_active_generation_changes(tmp_path, monkeypatch):
     import pandas as pd
     from types import SimpleNamespace
@@ -58,4 +67,26 @@ def test_old_year_active_and_exhausted_source_do_not_skip_physical_admission(mon
     result = operator.recover(record, access, {'session': '2026-09-04', 'required_start': '2025-07-11'})
     assert admitted == ['TEST']
     assert [a['action'] for a in result['actions']] == ['DAILY_LOADER', 'ADMISSION']
+    assert result['final']['status'] == 'BLOCKED'
+
+
+def test_insufficient_physical_warmup_requests_source_but_does_not_claim_ready(monkeypatch):
+    import pandas as pd
+    from types import SimpleNamespace
+    state = pd.DataFrame([{'dataset': 'daily', 'symbol': 'TEST', 'year': 2026,
+                           'active_generation': None, 'min_date': '2026-06-01', 'max_date': '2026-09-04'}])
+    access = SimpleNamespace(manifest_path='manifest', _read_manifest=lambda path: state)
+    monkeypatch.setattr(operator, 'verify', lambda *a: {'status': 'BLOCKED', 'reason_codes': ['INSUFFICIENT_FEATURE_WARMUP']})
+    monkeypatch.setattr(operator, 'admit_migrated_daily_symbol', lambda *a, **k: {
+        'status': 'MIGRATED_CANONICAL_INVALID', 'reason_codes': ['INSUFFICIENT_FEATURE_WARMUP']})
+    requested = []
+    def run(req):
+        requested.append(req)
+        return {'result': {'status': 'PARTIAL', 'import_outcomes': [{'status': 'BLOCKED'}]}}
+    monkeypatch.setattr(operator, 'ImportCoordinator', lambda *a, **k: SimpleNamespace(run=run))
+    days = pd.bdate_range(end='2026-09-04', periods=200).strftime('%Y-%m-%d').tolist()
+    record = {'symbol': 'TEST', 'primary': 'C', 'physical': [{'year': 2026, 'status': 'VALIDATED'}], 'actions': []}
+    result = operator.recover(record, access, {'session': '2026-09-04', 'required_start': '2025-07-11', 'warmup_sessions': days})
+    assert len(requested) == 1 and requested[0].required_start == days[0]
+    assert requested[0].required_end == '2026-09-04'
     assert result['final']['status'] == 'BLOCKED'
