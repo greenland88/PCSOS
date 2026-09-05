@@ -52,6 +52,16 @@ portion. Report source, partition, coverage, validation and promotion outcomes,
 with the original machine-readable blocker. Never turn an unavailable source
 or missing event calendar into evidence that no data/event exists.
 
+Daily migration admission returns a `partition_results` record for every
+validated, reused, promoted, or failed logical partition. Each record carries
+the candidate path, physical and semantic hashes, source, active generation
+before/after values, and the original reason code; promotion records also keep
+the formal receipt and independent read-back evidence. `ADMISSION_INCOMPLETE`
+must preserve committed, reused, failed, and unprocessed partitions so a retry
+can resume only the remaining work. A top-level admission status never proves
+the ticker is daily-ready: readiness is established independently for the
+decision date and required warmup window.
+
 Pool Scan defaults to `READ_ONLY`. Its optional daily preparation requires both
 `data_mode="PREPARE_THEN_SCAN"` and `auto_prepare_data=True`. Prepare options
 through the control plane with explicit requirements; the scan's daily

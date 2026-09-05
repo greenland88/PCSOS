@@ -23,6 +23,13 @@ The canonical implementation is `pcs.pool.runner.run_pcs_pool`, exposed by the
   closed with the specific reason code. Never fall back to raw or unrelated data.
 - Required options coverage is `min_date <= decision_date <= max_date`.
 
+When comparing two runs, require matching effective session, universe snapshot,
+mode, manifest snapshot, code revision, engine version, profile versions, and
+refresh policy. Any missing or changed identity makes the comparison
+non-comparable; do not attribute deltas to recovery. Recovery evidence may be
+attached per symbol, including nested `admission_result` values, but READY
+counts must still come from the independent scan result.
+
 ## Runtime and result invariants
 
 Handle resolution is single-flight and cached by the complete decision identity,
