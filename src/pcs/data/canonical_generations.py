@@ -294,10 +294,23 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                                           "promotion_receipt": receipt_dict})
     except (DataAccessError, DataQualityError, OSError, ValueError) as exc:
         if failed_partition is not None:
+            active_after = None
+            try:
+                failed_year = int(str(failed_partition).split("=", 1)[1])
+                current_manifest = access._read_manifest(access.manifest_path)
+                current_rows = current_manifest[(current_manifest.get("dataset", pd.Series(dtype=str)).astype(str) == "daily") &
+                                                current_manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(s) &
+                                                pd.to_numeric(current_manifest.get("year", pd.Series(dtype=float)), errors="coerce").eq(failed_year)]
+                values = current_rows.get("active_generation", pd.Series(dtype=str)).astype(str).str.strip()
+                active_rows = current_rows[values.notna() & ~values.str.lower().isin({"", "nan", "none", "<na>"})]
+                if not active_rows.empty:
+                    active_after = str(active_rows.iloc[-1].get("active_generation", "")).strip() or None
+            except Exception:
+                active_after = None
             partition_results.append({"partition": failed_partition, "status": "FAILED",
                                       "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
                                       "active_generation_before": active_before if 'active_before' in locals() else None,
-                                      "active_generation_after": None,
+                                      "active_generation_after": active_after,
                                       "reason_codes": (str(exc).strip() or type(exc).__name__,)})
             unprocessed_partitions = [f"year={meta['year']}" for _, meta in validated[position + 1:]]
         return {"symbol": s, "status": "ADMISSION_INCOMPLETE" if promoted else "MIGRATION_ADMISSION_FAILED",
