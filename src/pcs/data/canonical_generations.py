@@ -188,11 +188,15 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 "partitions": tuple(meta for _, meta in validated), "needs_incremental": needs_incremental}
     promoted = []
     already = []
+    promotion_receipts = []
+    failed_partition = None
+    unprocessed_partitions = []
     try:
         with _MIGRATED_ADMISSION_WRITE_LOCK:
-            for frame, meta in validated:
+            for position, (frame, meta) in enumerate(validated):
                 manifest = access._read_manifest(access.manifest_path)
                 year = meta["year"]
+                failed_partition = f"year={year}"
                 rows = manifest[(manifest.get("dataset", pd.Series(dtype=str)).astype(str) == "daily") &
                                 manifest.get("symbol", pd.Series(dtype=str)).astype(str).str.upper().eq(s) &
                                 pd.to_numeric(manifest.get("year", pd.Series(dtype=float)), errors="coerce").eq(year)]
@@ -210,20 +214,26 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                 receipt = access.promote_generation(frame, "daily", s, f"year={year}", source_version="DAILY_UNIVERSE_MIGRATION_ADMISSION")
                 if not hasattr(receipt, "generation_id"):
                     raise DataAccessError("MIGRATION_ADMISSION_IDEMPOTENCY_UNVERIFIED")
+                promotion_receipts.append(receipt.to_dict() if hasattr(receipt, "to_dict") else dict(receipt))
                 record = access.active_generation_record("daily", s, f"year={year}")
                 read_back = access.read_pinned_generation("daily", s, f"year={year}", str(record.get("active_generation")))
                 if len(read_back) != meta["row_count"] or access.semantic_content_hash(read_back) != meta["semantic_content_hash"]:
                     raise DataQualityError("MIGRATION_ADMISSION_READ_BACK_MISMATCH")
                 promoted.append(f"year={year}")
     except (DataAccessError, DataQualityError, OSError, ValueError) as exc:
+        if failed_partition is not None:
+            unprocessed_partitions = [f"year={meta['year']}" for _, meta in validated[position + 1:]]
         return {"symbol": s, "status": "ADMISSION_INCOMPLETE" if promoted else "MIGRATION_ADMISSION_FAILED",
                 "reason_codes": (str(exc).strip() or type(exc).__name__,), "partitions": tuple(meta for _, meta in validated),
-                "promoted_partitions": tuple(promoted), "already_admitted": tuple(already)}
+                "promoted_partitions": tuple(promoted), "already_admitted": tuple(already),
+                "promotion_receipts": tuple(promotion_receipts), "failed_partition": failed_partition,
+                "unprocessed_partitions": tuple(unprocessed_partitions)}
     status = "ADMITTED_NEEDS_INCREMENTAL" if needs_incremental else "ALREADY_ADMITTED" if not promoted else "ADMITTED_READY"
     reasons = ("MIGRATED_CANONICAL_ALREADY_ADMITTED",) if not promoted else ("MIGRATED_CANONICAL_ADMITTED",)
     return {"symbol": s, "status": status, "reason_codes": reasons,
             "partitions": tuple(meta for _, meta in validated), "promoted_partitions": tuple(promoted),
-            "already_admitted": tuple(already), "needs_incremental": needs_incremental}
+            "already_admitted": tuple(already), "promotion_receipts": tuple(promotion_receipts),
+            "failed_partition": None, "unprocessed_partitions": tuple(), "needs_incremental": needs_incremental}
 
 def register_active_generation_provenance(*, dataset: str, symbol: str, generation_id: str,
                                           price_basis: str, corporate_action_version: str,

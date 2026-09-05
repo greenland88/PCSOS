@@ -179,7 +179,7 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
             return {"symbol": str(symbol).upper(), "attempted": True, "result": None,
                     "result_status": admission_status, "reason_codes": admission_reasons,
                     "provider_calls": 0, "provider_coverage_count": 0, "promotion_calls": 0,
-                    "admission_status": admission_status}
+                    "admission_status": admission_status, "admission_result": admission}
         needs_incremental = admission_status == "ADMITTED_NEEDS_INCREMENTAL"
         result = ensure_market_data(symbol, req, access=access) if (
             admission_status in {"MIGRATION_CATALOG_MISSING", "MIGRATION_CATALOG_NOT_SUCCESS",
@@ -192,7 +192,7 @@ def _prepare_daily_symbol(symbol: str, access: PCSDataAccess, effective_daily_se
                                       if str(item.get("status", "")).upper() != "REUSED"),
                 "provider_coverage_count": len(getattr(result, "provider_coverage", ()) or ()),
                 "promotion_calls": len(getattr(result, "promoted_partitions", ()) or ()) + len(admission.get("promoted_partitions", ()) or ()),
-                "admission_status": admission_status}
+                "admission_status": admission_status, "admission_result": admission}
     except Exception as exc:
         return {"symbol": str(symbol).upper(), "attempted": True, "result": None,
                 "result_status": "FAILED", "reason_codes": (str(exc).strip() or type(exc).__name__,),
