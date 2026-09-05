@@ -112,6 +112,15 @@ def test_pool_scan_result_keeps_sanitized_partition_recovery_evidence():
     assert serialized["admission_result"]["unprocessed_partitions"] == ("year=2026",)
 
 
+def test_summarize_recovery_counts_control_plane_promotion_receipts():
+    results = [{"symbol": "AAA", "promoted_partitions": ({
+        "partition_ids": ["year=2026"], "promoted_generation_id": "gen-1",
+    },)}]
+    assert summarize_recovery_results(results) == {"symbols": 1, "validated": 0,
+        "reused": 0, "promoted": 1, "failed": 0, "unprocessed": 0,
+        "promotion_receipts": 1}
+
+
 def test_reconcile_rejects_code_or_configuration_identity_changes():
     before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r1", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}
     after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m", "code_revision": "r2", "engine_version": "e1", "profile_versions": {"pcs": "1"}, "refresh_policy": "FULL"}, "ticker_results": []}

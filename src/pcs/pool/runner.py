@@ -534,6 +534,36 @@ def summarize_recovery_results(recovery_results: Mapping[str, Any] | Sequence[Ma
             partition = str(partition).strip()
             if partition and (symbol, partition) not in latest:
                 latest[(symbol, partition)] = {"status": "unprocessed"}
+        # Control-plane refreshes expose promotion receipts as structured
+        # entries in promoted_partitions rather than admission partition_results.
+        # Normalize them into the same ledger, but never replace richer
+        # partition evidence already recorded above.
+        for receipt in nested.get("promotion_receipts") or ():
+            if not isinstance(receipt, Mapping):
+                continue
+            partitions = receipt.get("partition_ids") or receipt.get("promoted_partitions") or ()
+            if isinstance(partitions, str):
+                partitions = (partitions,)
+            for partition in partitions:
+                partition = str(partition).strip()
+                if partition and (symbol, partition) not in latest:
+                    latest[(symbol, partition)] = {
+                        "partition": partition, "status": "PROMOTED",
+                        "promotion_receipt": dict(receipt),
+                    }
+        for receipt in nested.get("promoted_partitions") or ():
+            if not isinstance(receipt, Mapping):
+                continue
+            partitions = receipt.get("partition_ids") or receipt.get("promoted_partitions") or ()
+            if isinstance(partitions, str):
+                partitions = (partitions,)
+            for partition in partitions:
+                partition = str(partition).strip()
+                if partition and (symbol, partition) not in latest:
+                    latest[(symbol, partition)] = {
+                        "partition": partition, "status": "PROMOTED",
+                        "promotion_receipt": dict(receipt),
+                    }
     for result in latest.values():
         status = str(result.get("status", "")).strip().lower()
         if status in counts:
