@@ -29,6 +29,7 @@ def test_reconcile_pool_scan_results_requires_matching_identity():
              "ticker_results": [{"symbol": "AAA", "eligibility_status": "PCS_ELIGIBLE", "reason_codes": []}, {"symbol": "BBB"}]}
     delta = reconcile_pool_scan_results(before, after)
     assert not delta["comparable"] and delta["added"] == ["BBB"] and delta["removed"] == []
+    assert delta["ready_added"] == ["AAA"] and delta["ready_removed"] == []
     assert delta["changed"][0]["symbol"] == "AAA"
 
 

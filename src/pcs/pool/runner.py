@@ -471,8 +471,11 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
         if any(a.get(k) != b.get(k) or a.get("reason_codes", ()) != b.get("reason_codes", ()) for k in keys):
             changed.append({"symbol": symbol, "before": {k: a.get(k) for k in (*keys, "reason_codes")},
                             "after": {k: b.get(k) for k in (*keys, "reason_codes")}})
+    ready_left = {s for s, row in left.items() if row.get("eligibility_status") == "PCS_ELIGIBLE"}
+    ready_right = {s for s, row in right.items() if row.get("eligibility_status") == "PCS_ELIGIBLE"}
     return {"comparable": comparable, "identity": identity, "added": sorted(set(right)-set(left)),
-            "removed": sorted(set(left)-set(right)), "changed": changed,
+            "removed": sorted(set(left)-set(right)), "ready_added": sorted(ready_right-ready_left),
+            "ready_removed": sorted(ready_left-ready_right), "changed": changed,
             "before_count": len(left), "after_count": len(right)}
 
 
