@@ -110,6 +110,17 @@ def test_semantic_hash_handles_mixed_date_object_values():
     changed = mixed.copy(); changed.loc[0, "value"] = 99
     assert not a._semantic_hash_matches(changed, legacy)
 
+def test_daily_handle_blocks_manifest_year_gap(tmp_path):
+    from pcs.data.strategy_readiness import resolve_active_verified_daily_handle
+    a = access(tmp_path)
+    a.promote_generation(daily_frame(dates=("2024-01-02", "2024-01-03")), "daily", "ZZZ", "year=2024", source_version="fixture")
+    a.promote_generation(daily_frame(dates=("2026-01-02", "2026-01-03")), "daily", "ZZZ", "year=2026", source_version="fixture")
+    m = pd.read_csv(tmp_path / "manifest.csv")
+    m = pd.concat([m, pd.DataFrame([{**{c: "" for c in m.columns}, "dataset": "daily", "symbol": "ZZZ", "year": 2025, "min_date": "2025-01-02", "max_date": "2025-12-31"}])], ignore_index=True)
+    m.to_csv(tmp_path / "manifest.csv", index=False)
+    with pytest.raises(ValueError, match="ACTIVE_GENERATION_MISSING"):
+        resolve_active_verified_daily_handle("ZZZ", "2026-01-03", required_warmup_sessions=2, data_access=a)
+
 def test_promotion_invalidates_old_generation_cache(tmp_path):
     a=access(tmp_path); r1=a.promote_generation(frame(),"options","ZZZ","year=2026/quarter=1",source_version="a"); a.generation_cache.put("options","ZZZ","year=2026/quarter=1",r1.generation_id,"old"); r2=a.promote_generation(frame(bid=1.2),"options","ZZZ","year=2026/quarter=1",source_version="b")
     assert a.generation_cache.get("options","ZZZ","year=2026/quarter=1",r1.generation_id) is None and r1.generation_id!=r2.generation_id
