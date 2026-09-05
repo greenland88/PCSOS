@@ -21,7 +21,7 @@ from pcs.data.massive_client import load_project_environment
 from pcs.pool.registry import UniverseSpec
 from pcs.pool.modes import resolve_effective_market_session
 from pcs.pool.runner import _daily_requirements
-from pcs.data.control_plane import ensure_market_data, MarketDataRequirements
+from pcs.data.control_plane import MarketDataRequirements, MarketDataControlPlane, ImportCoordinator, default_import_handlers
 
 
 class InspectionAccess(PCSDataAccess):
@@ -35,6 +35,23 @@ class InspectionAccess(PCSDataAccess):
             cache.clear()
             cache[key] = super()._read_manifest(path)
         return cache[key].copy()
+
+    def read_prices(self, symbol, start_date=None, end_date=None, *, verified_handle=None):
+        cached = self.__dict__.get('_verified_session_authority')
+        if str(symbol).upper() == 'SPY' and verified_handle is None and cached:
+            handle, frame, physical = cached
+            rows = self._read_manifest(self.manifest_path)
+            rows = rows[(rows.dataset == 'daily') & (rows.symbol == 'SPY')]
+            active = set(rows.active_generation.dropna().astype(str))
+            unchanged = all(gid in active for gid in handle.generation_id.split('|'))
+            unchanged = unchanged and all(Path(p).stat().st_mtime_ns == mtime and Path(p).stat().st_size == size
+                                          for p, mtime, size in physical)
+            lower, upper = pd.Timestamp(start_date or frame.date.min()), pd.Timestamp(end_date or frame.date.max())
+            if unchanged and lower >= frame.date.min() and upper <= frame.date.max():
+                selected = frame[frame.date.ge(lower) & frame.date.le(upper)].copy()
+                self.validate_coverage(selected, 'SPY', start_date, end_date, 'date')
+                return selected
+        return super().read_prices(symbol, start_date, end_date, verified_handle=verified_handle)
 
 
 def save(path, value):
@@ -50,10 +67,10 @@ def digest(path):
 
 def source_result(outcome):
     outcomes = outcome.get('import_outcomes', [])
-    text = json.dumps(outcomes).lower()
+    text = ' '.join(str(o.get('detail', '')) for o in outcomes).lower()
     if 'gateway returned no daily data' in text:
         return 'SOURCE_CONFIRMED_ZERO_ROWS'
-    if '401' in text or '403' in text:
+    if '401 client error' in text or '403 client error' in text:
         return 'SOURCE_AUTHENTICATION_FAILED'
     if 'timed out' in text or 'timeout' in text:
         return 'SOURCE_TIMEOUT'
@@ -111,7 +128,8 @@ def inspect(symbol, access, request):
     admission = admit_migrated_daily_symbol(symbol, decision_as_of=request['session'], required_start=request['required_start'], read_only=True, data_access=access)
     result['admission_inspection'] = admission
     reasons = list(admission.get('reason_codes', []))
-    has_active = rows.get('active_generation', pd.Series(dtype=str)).fillna('').astype(str).str.strip().ne('').any()
+    window_rows = rows[pd.to_numeric(rows.year).between(int(request['required_start'][:4]), int(request['session'][:4]))]
+    has_active = window_rows.get('active_generation', pd.Series(dtype=str)).fillna('').astype(str).str.strip().ne('').any()
     if any('CONFLICT' in r or 'DUPLICATE' in r for r in reasons):
         primary = 'D'
     elif any(p['status'] == 'INVALID' for p in result['physical']):
@@ -134,14 +152,21 @@ def recover(record, access, request):
         record['primary'] = 'B'
     if record['primary'] not in {'A', 'B', 'C'}:
         return record
-    if source_attempted(record):
-        return record  # Explicit bounded attempt; next retry requires review of receipt.
-    if record['primary'] == 'A' and not any(a['action'] == 'ADMISSION' for a in record['actions']):
+    manifest = access._read_manifest(access.manifest_path)
+    symbol_rows = manifest[(manifest.dataset == 'daily') & (manifest.symbol.astype(str).str.upper() == symbol)]
+    active_years = {int(row.year) for row in symbol_rows.itertuples()
+                    if str(getattr(row, 'active_generation', '')).lower() not in {'', 'nan', 'none'}}
+    physical_years = {int(meta['year']) for meta in record.get('physical', []) if meta.get('status') == 'VALIDATED'}
+    needs_admission = bool(physical_years - active_years)
+    if (record['primary'] == 'A' or needs_admission) and not any(a['action'] == 'ADMISSION' for a in record['actions']):
         receipt = admit_migrated_daily_symbol(symbol, decision_as_of=request['session'], required_start=request['required_start'], data_access=access)
         record['actions'].append({'action': 'ADMISSION', 'receipt': receipt})
         if receipt['status'] not in {'ADMITTED_READY', 'ADMITTED_NEEDS_INCREMENTAL', 'ALREADY_ADMITTED'}:
             record['final'] = verify(symbol, access, request)
             return record
+    if source_attempted(record):
+        record['final'] = verify(symbol, access, request)
+        return record  # Admission remains independent of an exhausted source attempt.
     # Resolve each actual active partition before computing missing requests.
     # No maximum-date-only shortcut and no full-history download.
     rows = access._read_manifest(access.manifest_path)
@@ -170,7 +195,12 @@ def recover(record, access, request):
     for group in groups:
         req = MarketDataRequirements(symbol, group[0], group[-1], ('daily',), decision_as_of=group[-1])
         try:
-            outcome = ensure_market_data(symbol, req, access=access).to_dict()
+            # The coordinator already plans, invokes the registered loader,
+            # and checks canonical status. Avoid repeating the same full
+            # control-plane status pass around it; verified read-back below
+            # remains the independent acceptance boundary.
+            outcome = ImportCoordinator(MarketDataControlPlane(access),
+                handlers=default_import_handlers(access=access)).run(req)['result']
         except Exception as exc:
             outcome = {'status': 'BLOCKED', 'reason_codes': [type(exc).__name__]}
         record['actions'].append({'action': 'DAILY_LOADER', 'requirements': asdict(req), 'receipt': outcome,
@@ -183,10 +213,40 @@ def recover(record, access, request):
     return record
 
 
+def conflict_evidence(record, access, request):
+    by_year = {}
+    for candidate in record.get('physical', []):
+        if candidate.get('status') != 'VALIDATED':
+            continue
+        path = Path(candidate['path'])
+        if digest(path) != candidate['physical_sha256']:
+            return {'status': 'STALE_CANDIDATE_IDENTITY', 'path': str(path)}
+        frame, meta = _validate_migrated_daily_file(path, record['symbol'], access)
+        by_year.setdefault(meta['year'], []).append((frame, meta))
+    relations = []
+    for year, items in by_year.items():
+        for i, (a, am) in enumerate(items):
+            for b, bm in items[i + 1:]:
+                columns = ['open', 'high', 'low', 'close', 'volume']
+                aa, bb = a.set_index('date')[columns], b.set_index('date')[columns]
+                overlap = aa.index.intersection(bb.index)
+                different = aa.loc[overlap].ne(bb.loc[overlap]).any(axis=1)
+                conflict_dates = overlap[different].strftime('%Y-%m-%d').tolist()
+                relations.append({'year': year, 'left': am['path'], 'right': bm['path'],
+                                  'left_sha256': am['physical_sha256'], 'right_sha256': bm['physical_sha256'],
+                                  'overlap_rows': len(overlap), 'conflicting_rows': len(conflict_dates),
+                                  'warmup_conflicting_dates': sorted(set(conflict_dates) & set(request['warmup_sessions'])),
+                                  'first_conflict': conflict_dates[0] if conflict_dates else None,
+                                  'last_conflict': conflict_dates[-1] if conflict_dates else None})
+    return {'status': 'OWNER_SOURCE_AUTHORITY_DECISION_REQUIRED', 'relationships': relations,
+            'policy': 'canonical_generations._reconcile_migrated_candidates: reject differing overlap; no automatic source override',
+            'recovery_condition': 'identify authoritative version/corporate-action basis for the listed conflicting physical identities'}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', required=True)
-    parser.add_argument('--phase', choices=['inspect', 'admit', 'recover', 'verify'], default='inspect')
+    parser.add_argument('--phase', choices=['inspect', 'admit', 'recover', 'conflicts', 'verify'], default='inspect')
     parser.add_argument('--limit', type=int)
     args = parser.parse_args()
     root = Path(args.output)
@@ -223,6 +283,14 @@ def main():
     with (root / 'invocations.jsonl').open('a', encoding='utf-8') as log:
         log.write(json.dumps(execution) + '\n')
     access = InspectionAccess()
+    if args.phase == 'recover':
+        try:
+            handle = resolve_active_verified_daily_handle('SPY', request['session'], 200, data_access=access)
+            frame = access.read_verified_dataset(handle, end_date=request['session'], required_warmup_rows=200)
+            physical = [(p, Path(p).stat().st_mtime_ns, Path(p).stat().st_size) for p in handle.canonical_paths]
+            access._verified_session_authority = (handle, frame, physical)
+        except Exception:
+            pass  # Normal control-plane failure handling remains authoritative.
     symbols = list(dict.fromkeys(['QQQ', 'SPY'] + request['symbols']))
     count = 0
     for symbol in symbols:
@@ -237,8 +305,12 @@ def main():
             if not path.exists():
                 continue
             record = json.loads(path.read_text())
+            if args.phase == 'conflicts':
+                if record['primary'] != 'D' or record.get('conflict_evidence'):
+                    continue
+                record['conflict_evidence'] = conflict_evidence(record, access, request)
             if args.phase == 'recover':
-                if (record['primary'] not in {'A', 'B', 'C'} and not record['before'].get('missing_sessions')) or record['final']['status'] == 'READY' or source_attempted(record):
+                if (record['primary'] not in {'A', 'B', 'C'} and not record['before'].get('missing_sessions')) or record['final']['status'] == 'READY':
                     continue
                 try:
                     record = recover(record, access, request)
@@ -250,7 +322,8 @@ def main():
                     continue
                 receipt = admit_migrated_daily_symbol(symbol, decision_as_of=request['session'], required_start=request['required_start'], data_access=access)
                 record['actions'].append({'action': 'ADMISSION', 'receipt': receipt})
-            record['final'] = verify(symbol, access, request)
+            if args.phase in {'admit', 'verify'}:
+                record['final'] = verify(symbol, access, request)
         record['last_execution'] = execution
         save(path, record)
         count += 1

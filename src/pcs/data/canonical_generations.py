@@ -273,9 +273,16 @@ def admit_migrated_daily_symbol(symbol: str, *, decision_as_of: str | None = Non
                     if not current_path.exists():
                         raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
                     try:
-                        current_frame = pd.read_parquet(current_path)
+                        current_frame = access.read_pinned_generation("daily", s, f"year={year}", active_before)
                     except Exception as exc:
                         raise DataAccessError("ACTIVE_GENERATION_UNREADABLE") from exc
+                    # A daily generation may encode its symbol in the route.
+                    # Compare the same schema-normalized representation used
+                    # by migration validation; never repromote a valid active
+                    # object merely to add its redundant symbol column.
+                    if "symbol" not in current_frame:
+                        current_frame.insert(0, "symbol", s)
+                    current_frame = access.validate_schema(current_frame, "daily")
                     if access.semantic_content_hash(current_frame) != meta["semantic_content_hash"] or len(current_frame) != meta["row_count"]:
                         raise DataQualityError("MIGRATED_ACTIVE_CONTENT_CONFLICT")
                     already.append(f"year={year}")

@@ -447,7 +447,7 @@ def repair_daily_session(symbol: str, target_date: str, window: pd.DataFrame, *,
         row = rows.iloc[0:1]
         if not (row.high.iloc[0] >= max(row.open.iloc[0], row.close.iloc[0], row.low.iloc[0]) and row.low.iloc[0] <= min(row.open.iloc[0], row.close.iloc[0], row.high.iloc[0])):
             return {"status": "BLOCKED", "reason_codes": ["DAILY_INVALID_OHLCV"], "target_date": str(target)}
-        result = update_ticker(symbol, daily_frame=row, parquet_root=access.parquet_root if access else "data/parquet", manifest_path=access.manifest_path if access else "data/manifests/storage_manifest.csv", source_version=source_version)
+        result = update_ticker(symbol, daily_frame=row, parquet_root=access.parquet_root if access else "data/parquet", manifest_path=access.manifest_path if access else "data/manifests/storage_manifest.csv", source_version=source_version, refresh_research_readiness=False)
         return {"status": "AUTO_REPAIRED", "target_date": str(target), "result": result}
     except Exception as exc:
         return {"status": "BLOCKED", "reason_codes": [type(exc).__name__], "detail": str(exc), "target_date": str(target)}

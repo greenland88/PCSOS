@@ -358,6 +358,21 @@ def test_valid_legacy_daily_is_formally_admitted_and_idempotent(tmp_path):
     assert second.generation_id == first.generation_id
 
 
+def test_admission_reuses_active_daily_with_route_encoded_symbol(tmp_path):
+    access = PCSDataAccess.isolated(manifest_path=tmp_path / 'manifest.csv', parquet_root=tmp_path / 'parquet')
+    frame = _frame()
+    path = access.parquet_root / 'daily/symbol=AAA/year=2025/AAA_2025.parquet'
+    path.parent.mkdir(parents=True)
+    frame.to_parquet(path, index=False)
+    receipt = access.promote_generation(frame.drop(columns='symbol'), 'daily', 'AAA', 'year=2025', source_version='existing')
+    catalog = tmp_path / 'migration.csv'
+    pd.DataFrame([{'symbol': 'AAA', 'status': 'SUCCESS'}]).to_csv(catalog, index=False)
+    result = admit_migrated_daily_symbol('AAA', decision_as_of='2025-09-17', data_access=access, migration_manifest_path=catalog)
+    assert result['status'] == 'ALREADY_ADMITTED'
+    assert not result['promotion_receipts']
+    assert access.active_generation_record('daily', 'AAA', 'year=2025')['active_generation'] == receipt.generation_id
+
+
 def test_partial_admission_retry_reuses_committed_partition(tmp_path, monkeypatch):
     access = PCSDataAccess.isolated(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
     records = []

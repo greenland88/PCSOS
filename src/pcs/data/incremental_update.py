@@ -113,6 +113,12 @@ def update_daily_frame(symbol: str, incoming: pd.DataFrame, *, parquet_root="dat
         except (DataAccessError, FileNotFoundError, ValueError, KeyError):
             if target.exists():
                 old = pd.read_parquet(target)
+        if not old.empty:
+            prior = normalize_daily_frame(old).set_index('date')
+            fresh = normalize_daily_frame(new_rows).set_index('date')
+            overlap = prior.index.intersection(fresh.index)
+            if len(overlap) and prior.loc[overlap].ne(fresh.loc[overlap]).any().any():
+                raise DataQualityError('DAILY_SOURCE_OVERLAP_CONFLICT')
         merged = normalize_daily_frame(new_rows.copy() if old.empty else pd.concat([old, new_rows], ignore_index=True))
         if target.exists() and _sha256(old) == _sha256(merged):
             continue

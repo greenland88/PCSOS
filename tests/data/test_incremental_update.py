@@ -53,6 +53,17 @@ def test_daily_update_rejects_foreign_ticker_rows(tmp_path):
     assert not (tmp_path / "parquet").exists()
 
 
+def test_daily_overlap_conflict_preserves_active_generation(tmp_path):
+    from pcs.data.access import PCSDataAccess
+    kwargs = dict(parquet_root=tmp_path / 'parquet', manifest_path=tmp_path / 'manifest.csv', refresh_research_readiness=False)
+    update_ticker('SPY', daily_frame=daily([['2026-09-02', 10, 12, 9, 11, 100]]), **kwargs)
+    access = PCSDataAccess.isolated(manifest_path=kwargs['manifest_path'], parquet_root=kwargs['parquet_root'])
+    before = access.active_generation_record('daily', 'SPY', 'year=2026')['active_generation']
+    with pytest.raises(DataQualityError, match='DAILY_SOURCE_OVERLAP_CONFLICT'):
+        update_ticker('SPY', daily_frame=daily([['2026-09-02', 10, 12, 9, 10, 100]]), **kwargs)
+    assert access.active_generation_record('daily', 'SPY', 'year=2026')['active_generation'] == before
+
+
 def test_options_same_partition_is_idempotent(tmp_path):
     kwargs = dict(parquet_root=tmp_path / "parquet", options_manifest_path=tmp_path / "options_manifest.csv")
     first = update_ticker("SPY", options_frame=options(), **kwargs)
