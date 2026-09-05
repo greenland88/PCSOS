@@ -348,6 +348,23 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     )
     if len(candidates) == 0 or not pd.to_datetime(candidates.max_date, errors="coerce").ge(day).any():
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
+    # Do not silently bridge a historical partition that exists in the
+    # routed manifest but has no active identity.  Such a gap can fall inside
+    # the PIT/warmup window even when the remaining active rows exceed the
+    # minimum row count.
+    selected_years = pd.to_numeric(candidates.year, errors="coerce").dropna().astype(int)
+    if not selected_years.empty:
+        all_symbol_rows = manifest[(manifest.dataset.astype(str) == "daily") &
+                                   (manifest.symbol.astype(str).str.upper() == s)]
+        for year in range(int(selected_years.min()), int(selected_years.max()) + 1):
+            year_rows = all_symbol_rows[pd.to_numeric(all_symbol_rows.year, errors="coerce").eq(year)]
+            if year_rows.empty:
+                continue
+            year_active = year_rows[year_rows.active_generation.notna() &
+                                    year_rows.active_generation.astype(str).str.strip().ne("") &
+                                    year_rows.active_generation.astype(str).str.lower().ne("nan")]
+            if year_active.empty:
+                raise ValueError("ACTIVE_GENERATION_MISSING")
     required = ["active_generation", "content_hash", "row_count", "min_date", "max_date", "schema_version", "parquet_path", "partition_ids"]
     if any(pd.isna(row.get(k)) or not str(row.get(k)).strip() for _, row in candidates.iterrows() for k in required):
         raise ValueError("DATASET_PROVENANCE_INCOMPLETE")
