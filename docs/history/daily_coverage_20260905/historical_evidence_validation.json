@@ -1,0 +1,10 @@
+{
+  "historical_only": true,
+  "run_path": "H:\\workspace\\PCSOS-pool-closure\\pool_scan_runs\\root_cause_20260905\\full_final\\455faf98607f45848ade9348628f4a37",
+  "manifest_sha256": "912e9e2ef328dab7de94c7ece5bea6355138cff31a63b4cc54e6cd194af68cbf",
+  "all_manifest_artifact_hashes_valid": true,
+  "original_ready_count": 263,
+  "derived_ready_set_equal": true,
+  "as_of": "2026-09-05T12:36:56.667418-04:00",
+  "applicability": "same 2026-09-04 session; different execution code and interior-session validation; not reused as current readiness"
+}

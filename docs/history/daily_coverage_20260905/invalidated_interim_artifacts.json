@@ -1,0 +1,167 @@
+[
+  {
+    "symbol": "BBUS",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "8205cd9c904d6da2bf312625",
+      "0b939ccd621cfd3c2d9d62b5"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\BBUS.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "BILS",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "b2fc78fabc862636e105fa7c"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\BILS.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "BLRX",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "afb433ab87c66e10746c35ee"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\BLRX.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "CAT",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "26f68c0cee13aa59b480b207",
+      "c10d78624ccd7268438056fe"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\CAT.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "CMMB",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "6eb094c04046c6a7380e5153",
+      "4f3c2cf7d9566f091b30379b"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\CMMB.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "CNTA",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "9a0d153f89b996148a9fdc01"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\CNTA.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "COOK",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "51a1c9d5d8b8a3a86958d818"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\COOK.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "CRNX",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "1e6826bc8ea153bb879c5ff7"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\CRNX.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "CSGS",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "97be319ea27c1106ceba75f4"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\CSGS.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "CWAN",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "6ef0b5acb51f733a067404c2"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\CWAN.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "DAWN",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "980ee4a68019787ade596619"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\DAWN.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "DFIV",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "e46718004bdc65d6ad62ccf5",
+      "70f1ee1a0f23265a3f6e7e89"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\DFIV.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "DTM",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "008195fd13d0124bef35aecb"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\DTM.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "DUO",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "c94c423c2ad68d8463fb785f",
+      "50d9c614b5a35d5d8bdc1506"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\DUO.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "ESPR",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "1c6a2f88ab78617431c4de89"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\ESPR.json",
+    "restoration_completed": true
+  },
+  {
+    "symbol": "EZU",
+    "status": "INTERIM_READINESS_SUPERSEDED_DO_NOT_CONSUME",
+    "reason": "UNINTENDED_HISTORICAL_OVERLAP",
+    "superseded_task_generations": [
+      "2484d72ca0959d90c6a55384"
+    ],
+    "current_checkpoint": "pool_scan_runs\\daily_coverage_recovery_20260905_1741\\tickers\\EZU.json",
+    "restoration_completed": true
+  }
+]

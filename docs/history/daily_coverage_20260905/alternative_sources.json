@@ -1,0 +1,14 @@
+{
+  "source_id": "daily_snapshot",
+  "path": "data\\raw\\daily\\daily_2026-08-19.csv",
+  "exists": true,
+  "file_date": "2026-08-19",
+  "target_session": "2026-09-04",
+  "yahoo_daily": {
+    "authorized": true,
+    "status": "NOT_IMPORTED_PRICE_BASIS_INCOMPATIBLE",
+    "evidence": "src/pcs/data/daily_fetcher.py YahooDailyFetcher.fetch_daily uses auto_adjust=False; DailyDataProvider explicitly reports mixed_adjustment_semantics",
+    "required_input": "approved price-basis/corporate-action compatibility before canonical adjusted import",
+    "provider_availability": "NOT_PROBED; not inferred absent"
+  }
+}

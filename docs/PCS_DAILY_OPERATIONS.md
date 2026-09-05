@@ -9,7 +9,7 @@
 
 | 项目 | 固定值 |
 |---|---|
-| 已核实程序版本 | `d1bcf332fd6e883fb86a2a1badb86e2c5ddfecee` |
+| 已核实程序版本 | `4e0566673a1c64e8d83b65f646fb8de44e689134`（授权日线维修：内部缺口、窗口准入、重叠值保护及日线独立预检） |
 | 代码 checkout / 分支 | `H:/workspace/PCSOS-pool-closure` / `codex/pool-scan-closure` |
 | 执行工作目录 | `H:/workspace/PCSOS`（该目录 main 的旧源码不是日常运行源码） |
 | Python / PYTHONPATH | `C:/Python313/python.exe` / `H:/workspace/PCSOS-pool-closure/src` |
@@ -26,8 +26,8 @@ universe 指针及目标快照已确认存在；核实时版本为
 `c2ede1f139e783e3-fd5a6552aff369df`，配置含 2953 个标的。这是配置清点，
 不是本次扫描结果；后续报告实际使用的 universe 版本和数量，不硬编码旧数量。
 授权配置的既有加载及子进程继承证明见
-[真实证据](history/pool_on_demand_20260905/real_evidence.json)；本次只核实路径存在，
-未重新 probe 来源。禁止输出、复制或提交密钥；URL/USER 已有默认值，不因其
+[真实证据](history/pool_on_demand_20260905/real_evidence.json)；本次日线维修的实际加载、
+恢复和 verified read-back 见[日线恢复记录](history/2026-09-05_daily_canonical_recovery.md)。禁止输出、复制或提交密钥；URL/USER 已有默认值，不因其
 未显式设置就认定缺凭证，不擅自补造其他输入默认值。
 
 每次只检查这组已知路径、git status、程序/配置身份和所需 checkpoint，

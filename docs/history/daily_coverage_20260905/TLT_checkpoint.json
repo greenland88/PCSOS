@@ -1,0 +1,778 @@
+{
+  "symbol": "TLT",
+  "before": {
+    "status": "BLOCKED",
+    "reason_codes": [
+      "MANIFEST_ROUTE_MISSING"
+    ],
+    "verified_at": "2026-09-05T17:49:35.010860+00:00"
+  },
+  "manifest_records": [],
+  "actions": [
+    {
+      "action": "ADMISSION",
+      "receipt": {
+        "symbol": "TLT",
+        "status": "ADMITTED_NEEDS_INCREMENTAL",
+        "reason_codes": [
+          "MIGRATED_CANONICAL_ADMITTED"
+        ],
+        "partitions": [
+          {
+            "path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\TLT_2025.parquet",
+            "year": 2025,
+            "physical_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+            "semantic_content_hash": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+            "row_count": 250,
+            "min_date": "2025-01-02",
+            "max_date": "2025-12-31",
+            "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672",
+            "schema_fingerprint": "817827edae8728a5a67d9138a4f9cfebf0405da0c8a8323d2a6f67d883a757f5"
+          },
+          {
+            "path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\TLT_2026.parquet",
+            "year": 2026,
+            "physical_sha256": "28ac58dea0ef64c85a6e1275fbff2ffb6844a0e2be1c0569fbcac34e9d11bcc9",
+            "semantic_content_hash": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+            "row_count": 166,
+            "min_date": "2026-01-02",
+            "max_date": "2026-09-01",
+            "dataset_fingerprint": "1513dfe5014e65a5b9aec345c323323084688e1df2ebbe996871dc168db708a0",
+            "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374"
+          }
+        ],
+        "promoted_partitions": [
+          "year=2025",
+          "year=2026"
+        ],
+        "already_admitted": [],
+        "promotion_receipts": [
+          {
+            "dataset_type": "daily",
+            "ticker": "TLT",
+            "staging_generation_id": "178925756158397e8ccb5476",
+            "promoted_generation_id": "178925756158397e8ccb5476",
+            "manifest_active_generation_id": "178925756158397e8ccb5476",
+            "read_back_generation_id": "178925756158397e8ccb5476",
+            "promoted_partitions": [
+              "year=2025"
+            ],
+            "partition_ids": [
+              "year=2025"
+            ],
+            "checksum": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+            "read_back_checksum": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+            "row_count": 250,
+            "read_back_row_count": 250,
+            "manifest_version": "storage_manifest_v1",
+            "source_lineage": [
+              {
+                "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+                "partition": "year=2025"
+              }
+            ],
+            "created_at": "2026-09-05T19:17:31.716288+00:00",
+            "promotion_timestamp": "2026-09-05T19:17:32.028122+00:00",
+            "path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\generations\\178925756158397e8ccb5476.parquet",
+            "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672",
+            "snapshot_descriptor": {
+              "dataset": "daily",
+              "symbol": "TLT",
+              "timeframe": "daily",
+              "date_column": "date",
+              "schema_fingerprint": "817827edae8728a5a67d9138a4f9cfebf0405da0c8a8323d2a6f67d883a757f5",
+              "schema_version": "2",
+              "price_basis": "canonical_adjusted",
+              "corporate_action_version": "canonical_identity",
+              "row_count": 250,
+              "min_date": "2025-01-02",
+              "max_date": "2025-12-31",
+              "trading_session_count": 250,
+              "partitions": [
+                {
+                  "logical_partition_key": "year=2025",
+                  "file_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+                  "byte_size": 14356,
+                  "row_count": 250,
+                  "min_date": "2025-01-02",
+                  "max_date": "2025-12-31"
+                }
+              ],
+              "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672"
+            },
+            "logical_dataset": "daily",
+            "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+            "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+          },
+          {
+            "dataset_type": "daily",
+            "ticker": "TLT",
+            "staging_generation_id": "0f38c3021e84cfbfdc63aae2",
+            "promoted_generation_id": "0f38c3021e84cfbfdc63aae2",
+            "manifest_active_generation_id": "0f38c3021e84cfbfdc63aae2",
+            "read_back_generation_id": "0f38c3021e84cfbfdc63aae2",
+            "promoted_partitions": [
+              "year=2026"
+            ],
+            "partition_ids": [
+              "year=2026"
+            ],
+            "checksum": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+            "read_back_checksum": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+            "row_count": 166,
+            "read_back_row_count": 166,
+            "manifest_version": "storage_manifest_v1",
+            "source_lineage": [
+              {
+                "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+                "partition": "year=2026"
+              }
+            ],
+            "created_at": "2026-09-05T19:17:32.162866+00:00",
+            "promotion_timestamp": "2026-09-05T19:17:32.531390+00:00",
+            "path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\generations\\0f38c3021e84cfbfdc63aae2.parquet",
+            "dataset_fingerprint": "de07d17e9650cd0db59ed408022d074280d850bf2c022e30d579bf3dabfb991c",
+            "snapshot_descriptor": {
+              "dataset": "daily",
+              "symbol": "TLT",
+              "timeframe": "daily",
+              "date_column": "date",
+              "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+              "schema_version": "2",
+              "price_basis": "canonical_adjusted",
+              "corporate_action_version": "canonical_identity",
+              "row_count": 166,
+              "min_date": "2026-01-02",
+              "max_date": "2026-09-01",
+              "trading_session_count": 166,
+              "partitions": [
+                {
+                  "logical_partition_key": "year=2026",
+                  "file_sha256": "3e3660169eeccadd5c7c5da9f1e4e0334f7c26cd435f5b7c8505178b84ad62b9",
+                  "byte_size": 11522,
+                  "row_count": 166,
+                  "min_date": "2026-01-02",
+                  "max_date": "2026-09-01"
+                }
+              ],
+              "dataset_fingerprint": "de07d17e9650cd0db59ed408022d074280d850bf2c022e30d579bf3dabfb991c"
+            },
+            "logical_dataset": "daily",
+            "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+            "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+          }
+        ],
+        "failed_partition": null,
+        "unprocessed_partitions": [],
+        "needs_incremental": true,
+        "conflict_partitions": [],
+        "partition_results": [
+          {
+            "partition": "year=2025",
+            "status": "PROMOTED",
+            "candidate_path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\TLT_2025.parquet",
+            "physical_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+            "semantic_content_hash": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+            "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+            "active_generation_before": null,
+            "active_generation_after": "178925756158397e8ccb5476",
+            "reason_codes": [
+              "MIGRATED_CANONICAL_ADMITTED"
+            ],
+            "promotion_receipt": {
+              "dataset_type": "daily",
+              "ticker": "TLT",
+              "staging_generation_id": "178925756158397e8ccb5476",
+              "promoted_generation_id": "178925756158397e8ccb5476",
+              "manifest_active_generation_id": "178925756158397e8ccb5476",
+              "read_back_generation_id": "178925756158397e8ccb5476",
+              "promoted_partitions": [
+                "year=2025"
+              ],
+              "partition_ids": [
+                "year=2025"
+              ],
+              "checksum": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+              "read_back_checksum": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+              "row_count": 250,
+              "read_back_row_count": 250,
+              "manifest_version": "storage_manifest_v1",
+              "source_lineage": [
+                {
+                  "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+                  "partition": "year=2025"
+                }
+              ],
+              "created_at": "2026-09-05T19:17:31.716288+00:00",
+              "promotion_timestamp": "2026-09-05T19:17:32.028122+00:00",
+              "path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\generations\\178925756158397e8ccb5476.parquet",
+              "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672",
+              "snapshot_descriptor": {
+                "dataset": "daily",
+                "symbol": "TLT",
+                "timeframe": "daily",
+                "date_column": "date",
+                "schema_fingerprint": "817827edae8728a5a67d9138a4f9cfebf0405da0c8a8323d2a6f67d883a757f5",
+                "schema_version": "2",
+                "price_basis": "canonical_adjusted",
+                "corporate_action_version": "canonical_identity",
+                "row_count": 250,
+                "min_date": "2025-01-02",
+                "max_date": "2025-12-31",
+                "trading_session_count": 250,
+                "partitions": [
+                  {
+                    "logical_partition_key": "year=2025",
+                    "file_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+                    "byte_size": 14356,
+                    "row_count": 250,
+                    "min_date": "2025-01-02",
+                    "max_date": "2025-12-31"
+                  }
+                ],
+                "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672"
+              },
+              "logical_dataset": "daily",
+              "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+              "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+            }
+          },
+          {
+            "partition": "year=2026",
+            "status": "PROMOTED",
+            "candidate_path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\TLT_2026.parquet",
+            "physical_sha256": "28ac58dea0ef64c85a6e1275fbff2ffb6844a0e2be1c0569fbcac34e9d11bcc9",
+            "semantic_content_hash": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+            "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+            "active_generation_before": null,
+            "active_generation_after": "0f38c3021e84cfbfdc63aae2",
+            "reason_codes": [
+              "MIGRATED_CANONICAL_ADMITTED"
+            ],
+            "promotion_receipt": {
+              "dataset_type": "daily",
+              "ticker": "TLT",
+              "staging_generation_id": "0f38c3021e84cfbfdc63aae2",
+              "promoted_generation_id": "0f38c3021e84cfbfdc63aae2",
+              "manifest_active_generation_id": "0f38c3021e84cfbfdc63aae2",
+              "read_back_generation_id": "0f38c3021e84cfbfdc63aae2",
+              "promoted_partitions": [
+                "year=2026"
+              ],
+              "partition_ids": [
+                "year=2026"
+              ],
+              "checksum": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+              "read_back_checksum": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+              "row_count": 166,
+              "read_back_row_count": 166,
+              "manifest_version": "storage_manifest_v1",
+              "source_lineage": [
+                {
+                  "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+                  "partition": "year=2026"
+                }
+              ],
+              "created_at": "2026-09-05T19:17:32.162866+00:00",
+              "promotion_timestamp": "2026-09-05T19:17:32.531390+00:00",
+              "path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\generations\\0f38c3021e84cfbfdc63aae2.parquet",
+              "dataset_fingerprint": "de07d17e9650cd0db59ed408022d074280d850bf2c022e30d579bf3dabfb991c",
+              "snapshot_descriptor": {
+                "dataset": "daily",
+                "symbol": "TLT",
+                "timeframe": "daily",
+                "date_column": "date",
+                "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+                "schema_version": "2",
+                "price_basis": "canonical_adjusted",
+                "corporate_action_version": "canonical_identity",
+                "row_count": 166,
+                "min_date": "2026-01-02",
+                "max_date": "2026-09-01",
+                "trading_session_count": 166,
+                "partitions": [
+                  {
+                    "logical_partition_key": "year=2026",
+                    "file_sha256": "3e3660169eeccadd5c7c5da9f1e4e0334f7c26cd435f5b7c8505178b84ad62b9",
+                    "byte_size": 11522,
+                    "row_count": 166,
+                    "min_date": "2026-01-02",
+                    "max_date": "2026-09-01"
+                  }
+                ],
+                "dataset_fingerprint": "de07d17e9650cd0db59ed408022d074280d850bf2c022e30d579bf3dabfb991c"
+              },
+              "logical_dataset": "daily",
+              "manifest_identity": "H:\\workspace\\PCSOS\\data\\manifests\\storage_manifest.csv",
+              "parquet_root_identity": "H:\\workspace\\PCSOS\\data\\parquet"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "action": "DAILY_LOADER",
+      "requirements": {
+        "symbol": "TLT",
+        "required_start": "2026-08-14",
+        "required_end": "2026-08-14",
+        "datasets": [
+          "daily"
+        ],
+        "exact_contract_quote_keys": [],
+        "required_fields": [],
+        "decision_as_of": "2026-08-14",
+        "option_type": null,
+        "min_dte": null,
+        "max_dte": null,
+        "required_history_rows": null
+      },
+      "receipt": {
+        "module": "pcs.data.control_plane",
+        "version": "1.0",
+        "symbol": "TLT",
+        "as_of": "2026-08-14",
+        "status": "PARTIAL",
+        "data_timestamp": "2026-09-05T19:17:36.647487+00:00",
+        "calculation_version": "1.0",
+        "run_id": "457f92c8c00d46058fdb0b92a51c0027",
+        "request_id": "d74190c425094f1f8ff24eac56e572fa",
+        "reason_codes": [
+          "DAILY_SESSION_MISSING"
+        ],
+        "requirements": {
+          "symbol": "TLT",
+          "required_start": "2026-08-14",
+          "required_end": "2026-08-14",
+          "datasets": [
+            "daily"
+          ],
+          "exact_contract_quote_keys": [],
+          "required_fields": [],
+          "decision_as_of": "2026-08-14",
+          "option_type": null,
+          "min_dte": null,
+          "max_dte": null,
+          "required_history_rows": null
+        },
+        "coverage_plan": {
+          "requirements": {
+            "symbol": "TLT",
+            "required_start": "2026-08-14",
+            "required_end": "2026-08-14",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-08-14",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "TLT",
+              "backend": "partitioned_parquet",
+              "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2026/generations/0f38c3021e84cfbfdc63aae2.parquet",
+              "first_date": "2016-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 416,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "missing_sessions": [
+                "2026-08-14"
+              ],
+              "coverage_gap": "DAILY_SESSION_MISSING",
+              "reason_codes": [
+                "DAILY_SESSION_MISSING"
+              ]
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "validation": {
+          "canonical": false
+        },
+        "remaining_blockers": [],
+        "source_inventory": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "stages": {
+          "daily": "BLOCKED"
+        },
+        "reused_periods": [],
+        "imported_periods": [],
+        "repaired_periods": [],
+        "blocked_periods": [
+          "daily"
+        ],
+        "initial_plan": {
+          "requirements": {
+            "symbol": "TLT",
+            "required_start": "2026-08-14",
+            "required_end": "2026-08-14",
+            "datasets": [
+              "daily"
+            ],
+            "exact_contract_quote_keys": [],
+            "required_fields": [],
+            "decision_as_of": "2026-08-14",
+            "option_type": null,
+            "min_dte": null,
+            "max_dte": null,
+            "required_history_rows": null
+          },
+          "existing": {
+            "daily": {
+              "present": true,
+              "dataset": "daily",
+              "symbol": "TLT",
+              "backend": "partitioned_parquet",
+              "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=TLT/year=2026/generations/0f38c3021e84cfbfdc63aae2.parquet",
+              "first_date": "2016-01-01",
+              "last_date": "2026-09-01",
+              "row_count": 416,
+              "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+              "schema_version": "2",
+              "missing_sessions": [
+                "2026-08-14"
+              ],
+              "coverage_gap": "DAILY_SESSION_MISSING",
+              "reason_codes": [
+                "DAILY_SESSION_MISSING"
+              ]
+            }
+          },
+          "actions": [
+            {
+              "dataset": "daily",
+              "action": "REPAIR_DAILY_FROM_GATEWAY",
+              "selected_sources": [
+                {
+                  "source_id": "purchased_qfq",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "historical_daily_primary",
+                  "priority": 1
+                },
+                {
+                  "source_id": "daily_snapshot",
+                  "type": "FILE",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.import_daily_snapshot.capabilities",
+                  "capabilities": [
+                    "DAILY_HISTORY"
+                  ],
+                  "authority": "daily_snapshot",
+                  "priority": 2
+                },
+                {
+                  "source_id": "private_massive_gateway",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT",
+                    "OPTION_CONTRACT_REFERENCE"
+                  ],
+                  "credential_env": [
+                    "PCS_MARKET_DATA_API_KEY"
+                  ],
+                  "priority": 3
+                },
+                {
+                  "source_id": "yahoo_daily",
+                  "type": "API",
+                  "enabled": true,
+                  "authorized": true,
+                  "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+                  "capabilities": [
+                    "DAILY_HISTORY",
+                    "DAILY_CURRENT"
+                  ],
+                  "priority": 4
+                }
+              ],
+              "reason": "canonical gap"
+            }
+          ],
+          "required_option_periods": [],
+          "canonical_complete_periods": [],
+          "periods_to_import": [],
+          "periods_to_repair": [],
+          "periods_blocked": []
+        },
+        "selected_source": [],
+        "provider_coverage": [],
+        "import_outcomes": [
+          {
+            "dataset": "daily",
+            "status": "BLOCKED",
+            "reason_codes": [
+              "MarketGatewayError"
+            ],
+            "detail": "gateway request failed: /v2/aggs/ticker/TLT/range/1/day/2026-08-14/2026-08-14: 429 Client Error: Too Many Requests for url: http://38.76.185.106:3000/v2/aggs/ticker/TLT/range/1/day/2026-08-14/2026-08-14?adjusted=true&sort=asc&limit=50000&apiKey=<redacted>"
+          }
+        ],
+        "promoted_partitions": [],
+        "blocked_partitions": [],
+        "final_canonical_status": "PARTIAL"
+      },
+      "source_result": "SOURCE_OR_CANONICAL_BLOCKED",
+      "source_id": "private_massive_gateway",
+      "queried_at": "2026-09-05T19:17:36.647687+00:00",
+      "retry_condition": "explicit resume after source/quality blocker changes; no retry in this run"
+    }
+  ],
+  "physical": [
+    {
+      "path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\TLT_2025.parquet",
+      "year": 2025,
+      "physical_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+      "semantic_content_hash": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+      "row_count": 250,
+      "min_date": "2025-01-02",
+      "max_date": "2025-12-31",
+      "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672",
+      "schema_fingerprint": "817827edae8728a5a67d9138a4f9cfebf0405da0c8a8323d2a6f67d883a757f5",
+      "status": "VALIDATED"
+    },
+    {
+      "path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\TLT_2026.parquet",
+      "year": 2026,
+      "physical_sha256": "28ac58dea0ef64c85a6e1275fbff2ffb6844a0e2be1c0569fbcac34e9d11bcc9",
+      "semantic_content_hash": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+      "row_count": 166,
+      "min_date": "2026-01-02",
+      "max_date": "2026-09-01",
+      "dataset_fingerprint": "1513dfe5014e65a5b9aec345c323323084688e1df2ebbe996871dc168db708a0",
+      "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374",
+      "status": "VALIDATED"
+    }
+  ],
+  "missing_sessions": [
+    "2026-08-14",
+    "2026-09-02",
+    "2026-09-03",
+    "2026-09-04"
+  ],
+  "admission_inspection": {
+    "symbol": "TLT",
+    "status": "MIGRATED_CANONICAL_VALIDATED",
+    "reason_codes": [
+      "MIGRATED_CANONICAL_FOUND",
+      "MIGRATED_CANONICAL_VALIDATED"
+    ],
+    "partitions": [
+      {
+        "path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\TLT_2025.parquet",
+        "year": 2025,
+        "physical_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+        "semantic_content_hash": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+        "row_count": 250,
+        "min_date": "2025-01-02",
+        "max_date": "2025-12-31",
+        "dataset_fingerprint": "b7223f1f510544b52ead25d506ae03ae080c3cc635e7877a20da4abc8b9cb672",
+        "schema_fingerprint": "817827edae8728a5a67d9138a4f9cfebf0405da0c8a8323d2a6f67d883a757f5"
+      },
+      {
+        "path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\TLT_2026.parquet",
+        "year": 2026,
+        "physical_sha256": "28ac58dea0ef64c85a6e1275fbff2ffb6844a0e2be1c0569fbcac34e9d11bcc9",
+        "semantic_content_hash": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+        "row_count": 166,
+        "min_date": "2026-01-02",
+        "max_date": "2026-09-01",
+        "dataset_fingerprint": "1513dfe5014e65a5b9aec345c323323084688e1df2ebbe996871dc168db708a0",
+        "schema_fingerprint": "16c7d866b46796ab21c4a20be30faa974eede745e6bed44f3997ff50966d4374"
+      }
+    ],
+    "needs_incremental": true,
+    "promoted_partitions": [],
+    "already_admitted": [],
+    "promotion_receipts": [],
+    "failed_partition": null,
+    "unprocessed_partitions": [],
+    "conflict_partitions": [],
+    "partition_results": [
+      {
+        "partition": "year=2025",
+        "status": "VALIDATED",
+        "candidate_path": "data\\parquet\\daily\\symbol=TLT\\year=2025\\TLT_2025.parquet",
+        "physical_sha256": "8d07404fa4907c2aef0184ec11bfb551917a3c3ecd9722bb1bbb24ae71137eba",
+        "semantic_content_hash": "178925756158397e8ccb54767cc57b7dcf1e31ee9f760fdb56726d20e37720eb",
+        "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+        "active_generation_before": null,
+        "active_generation_after": null,
+        "reason_codes": [
+          "MIGRATED_CANONICAL_VALIDATED"
+        ]
+      },
+      {
+        "partition": "year=2026",
+        "status": "VALIDATED",
+        "candidate_path": "data\\parquet\\daily\\symbol=TLT\\year=2026\\TLT_2026.parquet",
+        "physical_sha256": "28ac58dea0ef64c85a6e1275fbff2ffb6844a0e2be1c0569fbcac34e9d11bcc9",
+        "semantic_content_hash": "0f38c3021e84cfbfdc63aae2b24ef9855a5f6e915f9f13f52e1052fc81b61d56",
+        "source": "DAILY_UNIVERSE_MIGRATION_ADMISSION",
+        "active_generation_before": null,
+        "active_generation_after": null,
+        "reason_codes": [
+          "MIGRATED_CANONICAL_VALIDATED"
+        ]
+      }
+    ]
+  },
+  "primary": "A",
+  "final": {
+    "status": "BLOCKED",
+    "reason_codes": [
+      "INSUFFICIENT_FEATURE_WARMUP"
+    ],
+    "verified_at": "2026-09-05T19:32:47.478493+00:00"
+  },
+  "additional_reasons": [
+    "MIGRATED_CANONICAL_FOUND",
+    "MIGRATED_CANONICAL_VALIDATED"
+  ],
+  "last_execution": {
+    "started_at": "2026-09-05T19:28:59.008404+00:00",
+    "phase": "verify",
+    "source_identity": "6618091282a3434628378bcb878b92296dc6011ec1a934a919ea7504b2560a68",
+    "operator_sha256": "ad449608e6b1fe5dc146d5bdbdd02c08f6f3bfd1de8436d52f1fe35953081d58",
+    "config_hashes": {
+      "config/pcs_rules.yaml": "b15a415c4670c188ee954b10afeb23a33fd8193f22f1b3728e243b55a6e0bb74",
+      "config/data_source_routes.yaml": "c2deb0397cd66330fbbafe3caffb84cb57d3056e4cc6ad0ef9a203e751a45227",
+      "config/market_data_source_registry.yaml": "3786be73643aa46c68d9d3bf74ea75f9de4b0b07963f7eb5934b322e5d459b4f",
+      "config/data_remediation_registry.yaml": "acae669ecdc103ed3574f9b15672e66e0ef7f462e800997673b1f5b1b14b3d70"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "configuration_source": "H:/workspace/PCSOS/.env",
+  "exists": true,
+  "loaded": true,
+  "child": {
+    "env_path_inherited": true,
+    "daily_key_inherited": true
+  },
+  "client": "pcs.data.massive_client.MassiveCompatibleClient",
+  "configured_timeout_seconds": 10.0,
+  "max_retries": 2,
+  "requests_per_minute": 90,
+  "probe_evidence": "pilot_ABBV_loader.json; real bounded import, followed by pilot_ABBV_verified.json",
+  "credentials_copied": false
+}

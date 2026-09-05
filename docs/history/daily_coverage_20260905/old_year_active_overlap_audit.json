@@ -1,0 +1,125 @@
+[
+  {
+    "symbol": "BBUS",
+    "overlap_differing_rows": 88,
+    "active_generations": [
+      "8205cd9c904d6da2bf312625",
+      "0b939ccd621cfd3c2d9d62b5"
+    ]
+  },
+  {
+    "symbol": "BILS",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "db53f66d082a7995371a40ae",
+      "b2fc78fabc862636e105fa7c"
+    ]
+  },
+  {
+    "symbol": "BLRX",
+    "overlap_differing_rows": 4,
+    "active_generations": [
+      "8c15d40e0da3acc19078e98c",
+      "afb433ab87c66e10746c35ee"
+    ]
+  },
+  {
+    "symbol": "BRK_B",
+    "overlap_differing_rows": 0,
+    "active_generations": []
+  },
+  {
+    "symbol": "CAT",
+    "overlap_differing_rows": 60,
+    "active_generations": [
+      "c10d78624ccd7268438056fe",
+      "26f68c0cee13aa59b480b207"
+    ]
+  },
+  {
+    "symbol": "CFLT",
+    "overlap_differing_rows": 0,
+    "active_generations": []
+  },
+  {
+    "symbol": "CMMB",
+    "overlap_differing_rows": 27,
+    "active_generations": [
+      "4f3c2cf7d9566f091b30379b",
+      "6eb094c04046c6a7380e5153"
+    ]
+  },
+  {
+    "symbol": "CNTA",
+    "overlap_differing_rows": 2,
+    "active_generations": [
+      "9a0d153f89b996148a9fdc01"
+    ]
+  },
+  {
+    "symbol": "COOK",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "51a1c9d5d8b8a3a86958d818",
+      "0bd137a525a0436c53966239"
+    ]
+  },
+  {
+    "symbol": "CRNX",
+    "overlap_differing_rows": 25,
+    "active_generations": [
+      "1e6826bc8ea153bb879c5ff7"
+    ]
+  },
+  {
+    "symbol": "CSGS",
+    "overlap_differing_rows": 3,
+    "active_generations": [
+      "97be319ea27c1106ceba75f4"
+    ]
+  },
+  {
+    "symbol": "DFIV",
+    "overlap_differing_rows": 46,
+    "active_generations": [
+      "70f1ee1a0f23265a3f6e7e89",
+      "e46718004bdc65d6ad62ccf5"
+    ]
+  },
+  {
+    "symbol": "DTM",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "008195fd13d0124bef35aecb",
+      "c159ee0c89bd0b44a0646059"
+    ]
+  },
+  {
+    "symbol": "DUO",
+    "overlap_differing_rows": 32,
+    "active_generations": [
+      "50d9c614b5a35d5d8bdc1506",
+      "c94c423c2ad68d8463fb785f"
+    ]
+  },
+  {
+    "symbol": "EKSO",
+    "overlap_differing_rows": 0,
+    "active_generations": []
+  },
+  {
+    "symbol": "ESPR",
+    "overlap_differing_rows": 1,
+    "active_generations": [
+      "1c6a2f88ab78617431c4de89"
+    ]
+  },
+  {
+    "symbol": "EZU",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "1ab08df60db0b0a9cadbcb47",
+      "2484d72ca0959d90c6a55384"
+    ]
+  }
+]

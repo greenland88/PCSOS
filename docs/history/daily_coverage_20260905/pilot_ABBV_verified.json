@@ -1,0 +1,36 @@
+{
+  "status": "READY",
+  "reason_codes": [],
+  "identity": {
+    "dataset": "daily",
+    "ticker": "ABBV",
+    "generation_id": "60fb4b787e26fc333f5078ee|f3a38e0c68a6781b961e76f6",
+    "partitions": [
+      "year=2025",
+      "year=2026"
+    ],
+    "checksum": "c05cecfbfe93adbee81fa52f1f0ccf923d967ffae1a00811bd9b3e3c3352778e",
+    "row_count": 420,
+    "canonical_paths": [
+      "data\\parquet\\daily\\symbol=ABBV\\year=2025\\generations\\60fb4b787e26fc333f5078ee.parquet",
+      "data\\parquet\\daily\\symbol=ABBV\\year=2026\\generations\\f3a38e0c68a6781b961e76f6.parquet"
+    ],
+    "coverage": {
+      "min_date": "2025-01-02",
+      "max_date": "2026-09-04"
+    },
+    "source_lineage": [],
+    "dataset_fingerprint": "114950733c88344f069b8bd65dbd8ec042717c2f60452fa249a3b2eea89b79ef",
+    "schema_version": "2",
+    "price_basis": "canonical_adjusted",
+    "corporate_action_version": "canonical_identity",
+    "min_date": "2025-01-02",
+    "max_date": "2026-09-04",
+    "partition_count": 2,
+    "manifest_identity": "",
+    "verification_status": "VERIFIED"
+  },
+  "pit_rows": 420,
+  "missing_sessions": [],
+  "verified_at": "2026-09-05T17:45:20.987276+00:00"
+}

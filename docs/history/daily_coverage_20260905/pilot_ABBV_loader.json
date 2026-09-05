@@ -1,0 +1,284 @@
+{
+  "module": "pcs.data.control_plane",
+  "version": "1.0",
+  "symbol": "ABBV",
+  "as_of": "2026-09-04",
+  "status": "ALREADY_COMPLETE",
+  "data_timestamp": "2026-09-05T17:45:10.915086+00:00",
+  "calculation_version": "1.0",
+  "run_id": "a243df5e483d4e159d2be97b3ab9effc",
+  "request_id": "64defb1f77a649e39713471e78768055",
+  "reason_codes": [],
+  "requirements": {
+    "symbol": "ABBV",
+    "required_start": "2026-09-03",
+    "required_end": "2026-09-04",
+    "datasets": [
+      "daily"
+    ],
+    "exact_contract_quote_keys": [],
+    "required_fields": [],
+    "decision_as_of": "2026-09-04",
+    "option_type": null,
+    "min_dte": null,
+    "max_dte": null,
+    "required_history_rows": null
+  },
+  "coverage_plan": {
+    "requirements": {
+      "symbol": "ABBV",
+      "required_start": "2026-09-03",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "existing": {
+      "daily": {
+        "present": true,
+        "dataset": "daily",
+        "symbol": "ABBV",
+        "backend": "partitioned_parquet",
+        "path": "H:/workspace/PCSOS/data/parquet/daily/symbol=ABBV/year=2026/generations/f3a38e0c68a6781b961e76f6.parquet",
+        "first_date": "2013-01-01",
+        "last_date": "2026-09-04",
+        "row_count": 420,
+        "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+        "schema_version": "2"
+      }
+    },
+    "actions": [
+      {
+        "dataset": "daily",
+        "action": "REUSE_CANONICAL",
+        "reason": "validated canonical source exists"
+      }
+    ],
+    "required_option_periods": [],
+    "canonical_complete_periods": [],
+    "periods_to_import": [],
+    "periods_to_repair": [],
+    "periods_blocked": []
+  },
+  "validation": {
+    "daily": {
+      "status": "READY",
+      "reason_codes": [],
+      "row_count": 2,
+      "duplicate_dates": 0,
+      "missing_sessions": []
+    }
+  },
+  "remaining_blockers": [],
+  "source_inventory": [
+    {
+      "source_id": "purchased_qfq",
+      "type": "FILE",
+      "enabled": true,
+      "authorized": true,
+      "adapter": "pcs.data.import_daily_snapshot.capabilities",
+      "capabilities": [
+        "DAILY_HISTORY"
+      ],
+      "authority": "historical_daily_primary",
+      "priority": 1
+    },
+    {
+      "source_id": "daily_snapshot",
+      "type": "FILE",
+      "enabled": true,
+      "authorized": true,
+      "adapter": "pcs.data.import_daily_snapshot.capabilities",
+      "capabilities": [
+        "DAILY_HISTORY"
+      ],
+      "authority": "daily_snapshot",
+      "priority": 2
+    },
+    {
+      "source_id": "private_massive_gateway",
+      "type": "API",
+      "enabled": true,
+      "authorized": true,
+      "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+      "capabilities": [
+        "DAILY_HISTORY",
+        "DAILY_CURRENT",
+        "OPTION_CONTRACT_REFERENCE"
+      ],
+      "credential_env": [
+        "PCS_MARKET_DATA_API_KEY"
+      ],
+      "priority": 3
+    },
+    {
+      "source_id": "yahoo_daily",
+      "type": "API",
+      "enabled": true,
+      "authorized": true,
+      "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+      "capabilities": [
+        "DAILY_HISTORY",
+        "DAILY_CURRENT"
+      ],
+      "priority": 4
+    }
+  ],
+  "stages": {
+    "daily": "REUSED"
+  },
+  "reused_periods": [
+    "daily"
+  ],
+  "imported_periods": [],
+  "repaired_periods": [],
+  "blocked_periods": [],
+  "initial_plan": {
+    "requirements": {
+      "symbol": "ABBV",
+      "required_start": "2026-09-03",
+      "required_end": "2026-09-04",
+      "datasets": [
+        "daily"
+      ],
+      "exact_contract_quote_keys": [],
+      "required_fields": [],
+      "decision_as_of": "2026-09-04",
+      "option_type": null,
+      "min_dte": null,
+      "max_dte": null,
+      "required_history_rows": null
+    },
+    "existing": {
+      "daily": {
+        "present": true,
+        "reason_codes": [
+          "DAILY_STALE",
+          "CANONICAL_DAILY_STALE"
+        ],
+        "dataset": "daily",
+        "symbol": "ABBV",
+        "backend": "partitioned_parquet",
+        "path": "data/parquet/daily/symbol=ABBV/year=2013/ABBV_2013.parquet;data/parquet/daily/symbol=ABBV/year=2014/ABBV_2014.parquet;data/parquet/daily/symbol=ABBV/year=2015/ABBV_2015.parquet;data/parquet/daily/symbol=ABBV/year=2016/ABBV_2016.parquet;data/parquet/daily/symbol=ABBV/year=2017/ABBV_2017.parquet;data/parquet/daily/symbol=ABBV/year=2018/ABBV_2018.parquet;data/parquet/daily/symbol=ABBV/year=2019/ABBV_2019.parquet;data/parquet/daily/symbol=ABBV/year=2020/ABBV_2020.parquet;data/parquet/daily/symbol=ABBV/year=2021/ABBV_2021.parquet;data/parquet/daily/symbol=ABBV/year=2022/ABBV_2022.parquet;data/parquet/daily/symbol=ABBV/year=2023/ABBV_2023.parquet;data/parquet/daily/symbol=ABBV/year=2024/ABBV_2024.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=ABBV/year=2025/generations/60fb4b787e26fc333f5078ee.parquet;H:/workspace/PCSOS/data/parquet/daily/symbol=ABBV/year=2026/generations/bd41b3a0accbe84e217e6234.parquet",
+        "first_date": "2013-01-01",
+        "last_date": "2026-09-02",
+        "row_count": 418,
+        "source_version": "storage_manifest_v1:data\\manifests\\storage_manifest.csv",
+        "schema_version": "2",
+        "coverage_gap": "CURRENT_DECISION_FRESHNESS_GAP"
+      }
+    },
+    "actions": [
+      {
+        "dataset": "daily",
+        "action": "REPAIR_DAILY_FROM_GATEWAY",
+        "selected_sources": [
+          {
+            "source_id": "purchased_qfq",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "historical_daily_primary",
+            "priority": 1
+          },
+          {
+            "source_id": "daily_snapshot",
+            "type": "FILE",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.import_daily_snapshot.capabilities",
+            "capabilities": [
+              "DAILY_HISTORY"
+            ],
+            "authority": "daily_snapshot",
+            "priority": 2
+          },
+          {
+            "source_id": "private_massive_gateway",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.massive_client.MassiveCompatibleClient",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT",
+              "OPTION_CONTRACT_REFERENCE"
+            ],
+            "credential_env": [
+              "PCS_MARKET_DATA_API_KEY"
+            ],
+            "priority": 3
+          },
+          {
+            "source_id": "yahoo_daily",
+            "type": "API",
+            "enabled": true,
+            "authorized": true,
+            "adapter": "pcs.data.daily_fetcher.YahooDailyFetcher",
+            "capabilities": [
+              "DAILY_HISTORY",
+              "DAILY_CURRENT"
+            ],
+            "priority": 4
+          }
+        ],
+        "reason": "canonical gap"
+      }
+    ],
+    "required_option_periods": [],
+    "canonical_complete_periods": [],
+    "periods_to_import": [],
+    "periods_to_repair": [],
+    "periods_blocked": []
+  },
+  "selected_source": [],
+  "provider_coverage": [],
+  "import_outcomes": [
+    {
+      "dataset": "daily",
+      "status": "IMPORTED",
+      "result": {
+        "module": "pcs.data.incremental_update",
+        "version": "1.0",
+        "symbol": "ABBV",
+        "as_of": "2026-09-05T17:45:09.140997+00:00",
+        "status": "SUCCESS",
+        "data_timestamp": "2026-09-05T17:45:09.141005+00:00",
+        "calculation_version": "incremental_current_v1",
+        "run_id": "1df7a4f8732248d88f9a51d203a30a92",
+        "request_id": "60c776b0dd4345b4ba7a86b811ccb6df",
+        "current_data_asof": "2026-09-04",
+        "latest_daily_date": "2026-09-04",
+        "latest_options_date": null,
+        "daily_update": "UPDATED",
+        "options_update": "NO_OP",
+        "affected_partitions": [
+          "daily/symbol=ABBV/year=2026"
+        ],
+        "current_route": "daily",
+        "frozen_generations_touched": 0,
+        "current_derived_artifacts_invalidated": [
+          "ABBV:daily/symbol=ABBV/year=2026"
+        ],
+        "readiness_refresh_status": "REFRESHED",
+        "reason_codes": [
+          "DERIVED_INVALIDATION_MARKED"
+        ]
+      }
+    }
+  ],
+  "promoted_partitions": [],
+  "blocked_partitions": [],
+  "final_canonical_status": "ALREADY_COMPLETE"
+}

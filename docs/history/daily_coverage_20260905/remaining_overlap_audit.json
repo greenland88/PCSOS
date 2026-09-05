@@ -1,0 +1,109 @@
+[
+  {
+    "symbol": "COOK",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "0bd137a525a0436c53966239",
+      "51a1c9d5d8b8a3a86958d818"
+    ],
+    "only_years": [
+      2025
+    ]
+  },
+  {
+    "symbol": "CRNX",
+    "overlap_differing_rows": 25,
+    "active_generations": [
+      "1e6826bc8ea153bb879c5ff7"
+    ],
+    "only_years": [
+      2026
+    ]
+  },
+  {
+    "symbol": "CSGS",
+    "overlap_differing_rows": 3,
+    "active_generations": [
+      "97be319ea27c1106ceba75f4"
+    ],
+    "only_years": [
+      2025
+    ]
+  },
+  {
+    "symbol": "CWAN",
+    "overlap_differing_rows": 2,
+    "active_generations": [
+      "6ef0b5acb51f733a067404c2"
+    ],
+    "only_years": [
+      2025
+    ]
+  },
+  {
+    "symbol": "DAWN",
+    "overlap_differing_rows": 4,
+    "active_generations": [
+      "980ee4a68019787ade596619"
+    ],
+    "only_years": [
+      2025
+    ]
+  },
+  {
+    "symbol": "DFIV",
+    "overlap_differing_rows": 46,
+    "active_generations": [
+      "70f1ee1a0f23265a3f6e7e89",
+      "e46718004bdc65d6ad62ccf5"
+    ],
+    "only_years": [
+      2025,
+      2026
+    ]
+  },
+  {
+    "symbol": "DTM",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "c159ee0c89bd0b44a0646059",
+      "008195fd13d0124bef35aecb"
+    ],
+    "only_years": [
+      2025
+    ]
+  },
+  {
+    "symbol": "DUO",
+    "overlap_differing_rows": 32,
+    "active_generations": [
+      "c94c423c2ad68d8463fb785f",
+      "50d9c614b5a35d5d8bdc1506"
+    ],
+    "only_years": [
+      2025,
+      2026
+    ]
+  },
+  {
+    "symbol": "ESPR",
+    "overlap_differing_rows": 1,
+    "active_generations": [
+      "1c6a2f88ab78617431c4de89"
+    ],
+    "only_years": [
+      2025
+    ]
+  },
+  {
+    "symbol": "EZU",
+    "overlap_differing_rows": 9,
+    "active_generations": [
+      "1ab08df60db0b0a9cadbcb47",
+      "2484d72ca0959d90c6a55384"
+    ],
+    "only_years": [
+      2025
+    ]
+  }
+]

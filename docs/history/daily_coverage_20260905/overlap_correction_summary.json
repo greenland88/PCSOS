@@ -1,0 +1,98 @@
+[
+  {
+    "symbol": "BBUS",
+    "completed": true,
+    "status": "READY",
+    "partitions": 2
+  },
+  {
+    "symbol": "BILS",
+    "completed": true,
+    "status": "READY",
+    "partitions": 1
+  },
+  {
+    "symbol": "BLRX",
+    "completed": true,
+    "status": "READY",
+    "partitions": 1
+  },
+  {
+    "symbol": "CAT",
+    "completed": true,
+    "status": "READY",
+    "partitions": 2
+  },
+  {
+    "symbol": "CMMB",
+    "completed": true,
+    "status": "READY",
+    "partitions": 2
+  },
+  {
+    "symbol": "CNTA",
+    "completed": true,
+    "status": "BLOCKED",
+    "partitions": 1
+  },
+  {
+    "symbol": "COOK",
+    "completed": true,
+    "status": "READY",
+    "partitions": 1
+  },
+  {
+    "symbol": "CRNX",
+    "completed": true,
+    "status": "BLOCKED",
+    "partitions": 1
+  },
+  {
+    "symbol": "CSGS",
+    "completed": true,
+    "status": "BLOCKED",
+    "partitions": 1
+  },
+  {
+    "symbol": "CWAN",
+    "completed": true,
+    "status": "BLOCKED",
+    "partitions": 1
+  },
+  {
+    "symbol": "DAWN",
+    "completed": true,
+    "status": "BLOCKED",
+    "partitions": 1
+  },
+  {
+    "symbol": "DFIV",
+    "completed": true,
+    "status": "READY",
+    "partitions": 2
+  },
+  {
+    "symbol": "DTM",
+    "completed": true,
+    "status": "READY",
+    "partitions": 1
+  },
+  {
+    "symbol": "DUO",
+    "completed": true,
+    "status": "READY",
+    "partitions": 2
+  },
+  {
+    "symbol": "ESPR",
+    "completed": true,
+    "status": "BLOCKED",
+    "partitions": 1
+  },
+  {
+    "symbol": "EZU",
+    "completed": true,
+    "status": "READY",
+    "partitions": 1
+  }
+]
