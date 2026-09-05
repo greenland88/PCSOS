@@ -218,6 +218,7 @@ def pool_scan(args):
             max_workers=args.max_workers, stage_timeout_seconds=args.stage_timeout_seconds,
             manifest_path=args.manifest_path, parquet_root=args.parquet_root, rules=args.rules,
             output_directory=args.output_directory,
+            decision_context_json=args.decision_context_json,
         )
         result = run_read_only_scan(request, timeout_seconds=args.scan_timeout_seconds)
         print(result.to_json(), flush=True)
@@ -229,6 +230,8 @@ def pool_scan(args):
     from pcs.pool.runner import run_pcs_pool
     from pcs.data.access import PCSDataAccess
     from pcs.pool.options import load_pool_option_rules
+    from pcs.pool.adapters import load_pool_context_adapters
+    adapters = load_pool_context_adapters(args.decision_context_json, rules_path=args.rules)
     result = run_pcs_pool(
         symbols=args.symbols,
         universe_id=args.universe_id,
@@ -241,6 +244,7 @@ def pool_scan(args):
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
         option_rules=load_pool_option_rules(args.rules),
         output_directory=args.output_directory,
+        **adapters,
     )
     print(result.to_json())
 
@@ -322,6 +326,7 @@ def main():
     pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     pool.add_argument("--output-directory", default="pool_scan_runs",
                       help="directory for scan and reconciliation artifacts")
+    pool.add_argument("--decision-context-json", help="source-backed v1 event, portfolio and market context")
     pool.set_defaults(func=pool_scan)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")

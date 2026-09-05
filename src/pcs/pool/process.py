@@ -28,6 +28,7 @@ class ReadOnlyScanRequest:
     parquet_root: str = "data/parquet"
     rules: str = "config/pcs_rules.yaml"
     output_directory: str | None = "pool_scan_runs"
+    decision_context_json: str | None = None
 
 
 def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
@@ -36,6 +37,8 @@ def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
         from .options import load_pool_option_rules
         from .runner import run_pcs_pool
 
+        from .adapters import load_pool_context_adapters
+        adapters = load_pool_context_adapters(request.decision_context_json, rules_path=request.rules)
         result = run_pcs_pool(
             symbols=request.symbols, universe_id=request.universe_id,
             as_of=request.as_of, mode=request.mode, data_mode="READ_ONLY",
@@ -45,6 +48,7 @@ def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
                                       parquet_root=request.parquet_root),
             option_rules=load_pool_option_rules(request.rules),
             output_directory=request.output_directory,
+            **adapters,
         )
         sender.send(("result", result))
     except Exception as exc:

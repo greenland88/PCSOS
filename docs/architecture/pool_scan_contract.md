@@ -87,3 +87,54 @@ shared routing, scheduling, or handle changes cover cross-module items):
 
 A valid-JSON CLI smoke test with `spread_count=0` proves CLI completion only; it
 does not prove the verified options path or trade readiness.
+
+## Built-in EOD decision context adapter
+
+`pool-scan --decision-context-json /path/to/context.json` now wires the built-in
+`PoolContextAdapters` in both the read-only child and preparation entrypoint.
+The Python equivalent is `load_pool_context_adapters(path, rules_path=...)`
+expanded into `run_pcs_pool`. Omission preserves discovery-only behavior.
+This adapter is EOD-only; it does not claim intraday snapshot freshness.
+
+The input is a user-supplied, source-backed snapshot, not a live account or
+calendar connector. JSON schema version 1 has `schema_version: 1` and
+`symbols: {TICKER: {market: RECORD, events: RECORD, portfolio: RECORD}}`.
+Each RECORD requires a nonempty `source_id`, `as_of` matching the completed
+option decision session, and `data`. The caller must supply genuine upstream
+source evidence; a source label alone is not external source verification.
+
+- `market.data`: all fields of `pcs.models.market.MarketState`, explicitly
+  supplied, including VIX/drawdown/selloff. No omitted bullish defaults.
+- `events.data`: calendar records with `symbol`, `event_type`, `event_date`,
+  `event_date_known_at_entry`; `events.coverage_end` must cover expiration.
+  An explicit empty list means the source confirms no events through that
+  coverage boundary. Absent, stale, unknown-PIT or wrong-symbol data blocks.
+- `portfolio.data`: `planned_loss`, `theoretical_max_loss`, `bucket_risk`,
+  `ticker_risk`, `account_capital`. Risk values must be finite and nonnegative;
+  capital must be positive. Empty input never becomes a zero-risk account.
+
+Selection builds formal canonical market context using generation-pinned
+underlying/QQQ/SPY/SOXX frames through the run runtime, reuses the existing
+candidate constructor, and calls the real DecisionEngine. Only OPEN with a
+positive recommended size passes. Quotes remain from the scan's chain. Context
+hash, selected contract and full decision are retained for audit. No raw option
+file reads, provider calls, imports or strategy parameter changes are added.
+EventGate remains authoritative. Final portfolio approval checks the selected
+position's incremental planned loss against existing total, bucket and ticker
+limits. READY candidates are individual alternatives against one snapshot;
+their sizes cannot be summed into a jointly approved basket.
+
+Focused verification: `PYTHONPATH=src python -m pytest
+ tests/pool/test_context_adapters.py tests/pool/test_final_correctness.py
+ tests/pool/test_preparation_orchestration.py tests/pool/test_artifacts.py
+ tests/pool/test_process.py -q`. Adapter fixtures prove code wiring and rejection
+invariants, not live account readiness or a successful canonical business scan.
+
+Implementation validation (2026-09-05, base `c62db50`): the focused command
+above returned **67 passed, 1 failed**. All 17 new adapter tests passed,
+including real DecisionEngine OPEN/sizing -> final PCS_TRADE_READY on fixtures,
+RED rejection and read-only child injection. The existing
+`test_valid_legacy_daily_is_formally_admitted_and_idempotent` failed with
+`PROMOTION_EXPECTED_ACTIVE_MISMATCH`; the same failure was reproduced in a
+separate untouched checkout of `c62db50`. No canonical business scan, provider
+probe, import or research run was performed by this adapter change.

@@ -426,7 +426,13 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                     options_status = OptionsStatus.DISCOVERED
                     selection_reasons = ("CONTRACT_SELECTION_NOT_CONNECTED",)
                 elif candidates and contract_selector is not None:
-                    decisions = [contract_selector(
+                    selector = contract_selector
+                    if hasattr(selector, "prepare_selector"):
+                        if mode != "EOD":
+                            raise ValueError("POOL_CONTEXT_EOD_ONLY")
+                        selector = selector.prepare_selector(symbol=symbol, day=str(option_day.date()),
+                            daily=daily, handle=handle, chain=chain, runtime=runtime, access=access)
+                    decisions = [selector(
                         candidate, symbol=symbol, feature_date=str(feature_date),
                         market_state=(market_state_reader(symbol, daily, benchmark)
                                       if market_state_reader is not None else None),
@@ -438,7 +444,9 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                     accepted = next((item for item in decisions
                                      if str(item.get("status", "")).upper() == "PASS"), None)
                     if accepted is None:
-                        options_status = OptionsStatus.REJECT
+                        options_status = (OptionsStatus.DATA_BLOCKED if any(item.get("status") == "DATA_BLOCKED" for item in decisions)
+                                          else OptionsStatus.REJECT)
+                        selection_result = decisions[0]
                         selection_reasons = tuple(dict.fromkeys(
                             code for item in decisions for code in item.get("reason_codes", ())
                         )) or ("CONTRACT_SELECTION_REJECTED",)
