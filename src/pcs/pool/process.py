@@ -5,14 +5,16 @@ interrupt its transaction. Python API stage timeouts only bound result collectio
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from math import isfinite
 import multiprocessing
 from time import perf_counter
 from typing import Any
 import uuid
+from pathlib import Path
 
-from .models import EligibilityStatus, PoolRunSnapshot, PoolScanResult, TickerScanResult
+from .models import (EligibilityStatus, FinalAction, OptionsStatus, PoolRunSnapshot,
+                     PoolScanResult, TickerScanResult, TimingStatus)
 from .registry import resolve_pool_universe
 
 
@@ -55,6 +57,74 @@ def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
         sender.send(("error", f"{type(exc).__name__}: {exc}"))
     finally:
         sender.close()
+
+
+def _restore_progress_row(values: dict[str, Any]) -> TickerScanResult:
+    allowed = {field.name for field in fields(TickerScanResult)}
+    restored = {key: value for key, value in values.items() if key in allowed}
+    for key, enum in (("eligibility_status", EligibilityStatus),
+                      ("timing_status", TimingStatus),
+                      ("options_status", OptionsStatus),
+                      ("final_action", FinalAction)):
+        if key in restored:
+            restored[key] = enum(restored[key])
+    for key in ("reason_codes", "reentry_conditions", "trend_gate_reasons",
+                "pullback_gate_reasons", "warnings", "preparation_reason_codes",
+                "discovered_contracts", "selection_reason_codes"):
+        if key in restored and restored[key] is not None:
+            restored[key] = tuple(restored[key])
+    return TickerScanResult(**restored)
+
+
+def _timeout_result(request, spec, started, reason, detail):
+    """Build and persist a partial result from child progress, if available."""
+    from .artifacts import ProgressCheckpoint, persist_pool_artifacts
+    progress = ProgressCheckpoint.read(Path(request.output_directory) / "active_progress.json") \
+        if request.output_directory else None
+    progress_rows = progress.get("rows", {}) if progress and progress.get("run_id") else {}
+    run_id = progress.get("run_id") if progress else uuid.uuid4().hex
+    metadata = progress.get("metadata", {}) if progress else {}
+    snapshot_values = progress.get("snapshot") if progress else None
+    if snapshot_values:
+        snapshot = PoolRunSnapshot(**snapshot_values)
+    else:
+        snapshot = PoolRunSnapshot(
+            run_id, request.as_of, request.mode, metadata.get("effective_daily_session"),
+            f"{spec.universe_id}:{spec.version}:{spec.fingerprint}",
+            requested_as_of=request.as_of,
+            effective_daily_session=metadata.get("effective_daily_session"),
+            benchmark_status="UNKNOWN_TIMEOUT")
+    rows = []
+    for symbol in spec.symbols:
+        saved = progress_rows.get(str(symbol).strip().upper())
+        if saved:
+            rows.append(_restore_progress_row(saved))
+        else:
+            rows.append(TickerScanResult(
+                str(symbol).strip().upper(), run_id, request.as_of,
+                EligibilityStatus.DATA_BLOCKED, final_action=FinalAction.DATA_FAILED,
+                reason_codes=(reason,), warnings=(detail,)))
+    timing_evaluated = sum(row.timing_status != TimingStatus.NOT_EVALUATED for row in rows)
+    summary = {
+        "raw_count": len(rows), "data_blocked_count": sum(row.eligibility_status == EligibilityStatus.DATA_BLOCKED for row in rows),
+        "pcs_eligible_count": sum(row.eligibility_status == EligibilityStatus.PCS_ELIGIBLE for row in rows),
+        "timing_evaluated_count": timing_evaluated,
+        "timing_not_evaluated_count": len(rows) - timing_evaluated,
+        "timing_watch_count": sum(row.timing_status == TimingStatus.WATCH for row in rows),
+        "timing_entry_ready_count": sum(row.timing_status == TimingStatus.TIMING_ENTRY_READY for row in rows),
+        "options_evaluated_count": sum(row.options_status != OptionsStatus.NOT_EVALUATED for row in rows),
+        "pcs_trade_ready_count": sum(row.final_action == FinalAction.PCS_TRADE_READY for row in rows),
+        "missing_ticker_decisions": 0, "spread_count": sum(row.spread_count for row in rows),
+        "run_status": "PARTIAL_TIMEOUT", "timeout_stage": progress.get("stage", "UNKNOWN") if progress else "UNKNOWN",
+    }
+    result = PoolScanResult(snapshot, tuple(rows), summary=summary,
+                            stage_latency_ms={"global_timeout": (perf_counter() - started) * 1000},
+                            counters={"progress_rows": len(progress_rows), "ordinary_reader_calls": 0,
+                                      "options_reader_calls": 0, "provider_calls": 0,
+                                      "promotion_calls": 0, "recovery_calls": 0})
+    if request.output_directory:
+        persist_pool_artifacts(result, request.output_directory)
+    return result
 
 
 def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float = 300.0,
@@ -110,14 +180,4 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
                 process.join(timeout=0.9)
             process.close()
 
-    run_id = uuid.uuid4().hex
-    snapshot = PoolRunSnapshot(run_id, request.as_of, request.mode, None,
-                               f"{spec.universe_id}:{spec.version}:{spec.fingerprint}",
-                               requested_as_of=request.as_of)
-    rows = tuple(TickerScanResult(symbol, run_id, request.as_of, EligibilityStatus.DATA_BLOCKED,
-                                  reason_codes=(reason,), warnings=(detail,)) for symbol in spec.symbols)
-    return PoolScanResult(snapshot, rows, summary={
-        "raw_count": len(rows), "data_blocked_count": len(rows),
-        "missing_ticker_decisions": 0, "spread_count": 0, "pcs_trade_ready_count": 0,
-        "run_status": "PARTIAL_TIMEOUT" if reason == "POOL_SCAN_TIMEOUT" else "FAILED",
-    }, stage_latency_ms={"total": (perf_counter() - started) * 1000})
+    return _timeout_result(request, spec, started, reason, detail)

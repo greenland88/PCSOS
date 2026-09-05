@@ -4,11 +4,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
-from pcs.pool.models import EligibilityStatus, PoolRunSnapshot, PoolScanResult, TickerScanResult
-from pcs.pool.process import ReadOnlyScanRequest, run_read_only_scan
+from pcs.pool.models import EligibilityStatus, PoolRunSnapshot, PoolScanResult, TickerScanResult, TimingStatus
+from pcs.pool.process import ReadOnlyScanRequest, _timeout_result, run_read_only_scan
+from pcs.pool.artifacts import ProgressCheckpoint
 
 
 def _result_then_hang(request, sender):
@@ -36,6 +38,25 @@ def test_completed_timeout_result_does_not_leave_child_alive():
     assert result.snapshot.run_id == "fixture"
     assert result.ticker_results[0].reason_codes == ("WORKER_TIMEOUT",)
     assert {child.pid for child in multiprocessing.active_children()} == before
+
+
+def test_timeout_persists_completed_progress_and_marks_unfinished_rows(tmp_path):
+    checkpoint = ProgressCheckpoint(tmp_path, "progress-run", metadata={
+        "effective_daily_session": "2026-09-04"})
+    checkpoint.save(TickerScanResult(
+        "DONE", "progress-run", "2026-09-04", EligibilityStatus.PCS_ELIGIBLE,
+        TimingStatus.WATCH, final_action="WATCH", reason_codes=("RULE_WATCH",)))
+    spec = SimpleNamespace(universe_id="test", version="1", fingerprint="fp",
+                           symbols=("DONE", "LATE"))
+    result = _timeout_result(
+        ReadOnlyScanRequest(symbols=spec.symbols, output_directory=str(tmp_path)),
+        spec, time.perf_counter(), "POOL_SCAN_TIMEOUT", "deadline")
+    assert [row.symbol for row in result.ticker_results] == ["DONE", "LATE"]
+    assert result.ticker_results[0].final_action == "WATCH"
+    assert result.ticker_results[1].reason_codes == ("POOL_SCAN_TIMEOUT",)
+    manifest = json.loads((tmp_path / "progress-run" / "run_manifest.json").read_text())
+    assert manifest["current"] is False
+    assert manifest["stage_status"]["DAILY_TIMING"] == "PARTIAL"
 
 
 @pytest.mark.parametrize("worker,timeout,reason", [

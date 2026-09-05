@@ -295,7 +295,9 @@ def _revalidate_daily(symbols, access, effective_daily_session, resolver):
     return states
 
 
-def _audit_verified_daily(states, symbols, access, effective_daily_session, resolver):
+def _audit_verified_daily(states, symbols, access, effective_daily_session, resolver,
+                          *, max_workers=8, timeout_seconds=60.0,
+                          manifest_snapshot=None):
     """Verify metadata-READY dependencies without fetching or writing."""
     if not hasattr(access, "_resolve_route") or not hasattr(access, "_read_manifest"):
         return states
@@ -304,16 +306,27 @@ def _audit_verified_daily(states, symbols, access, effective_daily_session, reso
         "DATASET_PROVENANCE_INCOMPLETE", "DUPLICATE_CANONICAL_PRICE_KEY",
         "GENERATION_NOT_VERIFIED", "CANONICAL_PERMISSION_REPAIR_REQUIRES_OWNER",
     }
-    for symbol in symbols:
-        state = states[symbol]
-        if state.status != "READY":
-            continue
+    candidates = tuple(symbol for symbol in symbols if states[symbol].status == "READY")
+    def audit(symbol):
         try:
-            resolver(symbol, effective_daily_session, 200, data_access=access)
+            PoolRuntime._call_with_snapshot(
+                resolver, symbol, effective_daily_session, 200,
+                data_access=access, snapshot=manifest_snapshot)
+            return None
         except Exception as exc:
-            code = str(exc).strip() or "DAILY_VERIFIED_READ_FAILED"
-            states[symbol] = DailyReadiness(
+            return str(exc).strip() or "DAILY_VERIFIED_READ_FAILED"
+    from .concurrency import run_symbol_workers
+    outcomes = run_symbol_workers(candidates, audit, max_workers=max_workers,
+                                  timeout_seconds=timeout_seconds, include_error_details=True)
+    for outcome in outcomes:
+        if outcome.value is not None:
+            code = outcome.value
+            states[outcome.symbol] = DailyReadiness(
                 "HARD_BLOCKED" if code in hard_codes else "PREP_REQUIRED", (code,))
+        elif outcome.reason_codes:
+            states[outcome.symbol] = DailyReadiness("PREP_REQUIRED",
+                ("DAILY_VERIFIED_READ_TIMEOUT" if "WORKER_TIMEOUT" in outcome.reason_codes or
+                 "STAGE_DEADLINE_NOT_STARTED" in outcome.reason_codes else outcome.reason_codes[-1],))
     return states
 
 
@@ -965,6 +978,12 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         contract_selector.bind_run(asof, mode)
     effective = resolve_effective_market_session(asof, mode, "XNYS")
     effective_asof = str(effective.date())
+    from .artifacts import ProgressCheckpoint
+    progress = ProgressCheckpoint(output_directory, run_id, metadata={
+        "as_of": asof, "mode": mode, "universe_id": spec.universe_id,
+        "universe_count": len(spec.symbols), "effective_daily_session": effective_asof,
+    })
+    progress.update(stage="READINESS_AUDIT")
     access = data_access or PCSDataAccess()
     started = perf_counter()
     daily_resolver = daily_handle_resolver or resolve_active_verified_daily_handle
@@ -974,9 +993,16 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     audit_started = perf_counter()
     dependencies = tuple(dict.fromkeys((*[str(s).strip().upper() for s in spec.symbols],
                                         str(benchmark_symbol).strip().upper())))
+    from .runtime import ManifestSnapshot
+    manifest_snapshot = ManifestSnapshot.capture(access)
+    progress.update(stage="DAILY_PREFLIGHT")
+    readiness = _daily_preflight(dependencies, access, effective_asof)
+    progress.update(stage="VERIFIED_DAILY_AUDIT")
     initial = _audit_verified_daily(
-        _daily_preflight(dependencies, access, effective_asof),
-        dependencies, access, effective_asof, daily_resolver)
+        readiness,
+        dependencies, access, effective_asof, daily_resolver,
+        max_workers=max_workers, timeout_seconds=stage_timeout_seconds,
+        manifest_snapshot=manifest_snapshot)
     stage_latency["readiness_audit"] = (perf_counter() - audit_started) * 1000
     prep_required = tuple(symbol for symbol in dependencies
                           if initial[symbol].status == "PREP_REQUIRED")
@@ -1045,6 +1071,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                           daily_handle_resolver=daily_resolver,
                           options_handle_resolver=options_resolver)
     benchmark = None
+    progress.update(stage="BENCHMARK")
     benchmark_started = perf_counter()
     if benchmark_blocker is None:
         try:
@@ -1069,6 +1096,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         benchmark_status="READY" if benchmark is not None else (benchmark_blocker or "BLOCKED"))
     snapshot = PoolRunSnapshot(**{**snapshot.__dict__, "requested_as_of": asof,
                                   "effective_daily_session": effective_asof})
+    progress.update(snapshot=asdict(snapshot))
     preflight_results = {}
     queued_symbols = []
     for symbol in spec.symbols:
@@ -1086,6 +1114,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 prepared_dataset=evidence["dataset"],
                 effective_daily_session=effective_asof,
                 initial_daily_readiness=initial[normalized].status)
+            progress.save(preflight_results[normalized])
         elif normalized not in scan_ready:
             preflight_results[str(symbol).upper()] = TickerScanResult(
                 normalized, run_id, asof, EligibilityStatus.DATA_BLOCKED,
@@ -1098,6 +1127,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 prepared_dataset=evidence["dataset"],
                 effective_daily_session=effective_asof,
                 initial_daily_readiness=initial[normalized].status)
+            progress.save(preflight_results[normalized])
         else:
             queued_symbols.append(symbol)
     from .artifacts import CandidateCheckpoints
@@ -1125,10 +1155,12 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 # checkpoint lookup must never mask it as WORKER_FAILED.
                 pass
         if resume is not None:
-            return replace(resume, run_id=run_id, as_of=asof, event_status="NOT_EVALUATED",
+            result = replace(resume, run_id=run_id, as_of=asof, event_status="NOT_EVALUATED",
                 portfolio_status="NOT_EVALUATED", final_action=FinalAction.WAIT,
                 candidate_state={**resume.candidate_state, "timing_reused": True})
-        return _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
+            progress.save(result)
+            return result
+        result = _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             runtime=runtime, benchmark=benchmark, benchmark_symbol=benchmark_symbol,
             options_reader=options_reader, option_rules=option_rules, daily_asof=effective_asof,
             static_metadata_reader=static_metadata_reader,
@@ -1138,7 +1170,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             contract_selector=contract_selector, market_state_reader=market_state_reader,
             portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader,
             evidence_window=evidence_window)
+        progress.save(result)
+        return result
 
+    progress.update(stage="SCAN")
     scan = runtime.run_stage(tuple(queued_symbols), scan_symbol,
         stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
@@ -1147,6 +1182,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes))
         for outcome in outcomes}
+    progress.update(stage="OPTIONS")
     options_started = perf_counter()
     options_deadline = options_started + stage_timeout_seconds
     options_preparation_results = {}
@@ -1186,6 +1222,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 candidate_state={**row.candidate_state, "resume_stage": "OPTIONS", "options_data_status": "WAITING_DATA"})
             save(row)
         worker_results[symbol] = row
+        progress.save(row)
         if row.candidate_state.get("preparation_receipt") and row.candidate_state.get("preparation_attempt_run_id") == run_id:
             options_preparation_results[symbol] = row.candidate_state["preparation_receipt"]
     stage_latency["options_recovery"] = (perf_counter() - options_started) * 1000
@@ -1303,9 +1340,11 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                             preparation_results=preparation_results,
                             recovery_summary=recovery_summary)
     if output_directory is not None:
+        progress.update(stage="PERSISTING")
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory, baseline_run_id=baseline_run_id,
                                recovery_run_id=recovery_run_id, evidence_window=evidence_window)
+        progress.update(stage="COMPLETE", completed=True)
     return result
 
 

@@ -5,6 +5,7 @@ from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
 import json
+from threading import Lock
 import pandas as pd
 
 from .models import PoolScanResult
@@ -88,6 +89,74 @@ class CandidateCheckpoints:
         keys = {"preparation_receipt", "source_query_started_at", "source_query_completed_at",
                 "attempt_budget_per_run", "preparation_attempt_run_id", "source_check_status"}
         return {k: v for k, v in state.items() if k in keys}, row.get("next_review_at")
+
+
+class ProgressCheckpoint:
+    """Atomic run-local progress for a read-only process deadline.
+
+    This is not a canonical data manifest and never confers data readiness.
+    It lets the parent supervisor retain completed ticker results when the
+    disposable scan process reaches its hard deadline.
+    """
+    def __init__(self, output_directory, run_id, *, metadata=None):
+        self.root = Path(output_directory) if output_directory is not None else None
+        self.run_id = run_id
+        self.path = self.root / "active_progress.json" if self.root is not None else None
+        self.rows_path = self.root / "active_progress.jsonl" if self.root is not None else None
+        self._lock = Lock()
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.rows_path.write_bytes(b"")
+            self._write({"schema": "pcs.pool.progress", "schema_version": 1,
+                         "run_id": run_id, "stage": "STARTUP",
+                         "metadata": dict(metadata or {})})
+
+    def _write(self, payload):
+        if self.path is not None:
+            _write_atomic(self.path, json.dumps(payload, default=str, sort_keys=True, indent=2))
+
+    def update(self, **values):
+        if self.path is None:
+            return
+        with self._lock:
+            payload = self.read_metadata(self.path) or {"metadata": {}}
+            payload.update(values)
+            payload["run_id"] = self.run_id
+            self._write(payload)
+
+    def save(self, row):
+        if self.path is None:
+            return
+        with self._lock:
+            with self.rows_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps({"symbol": row.symbol, "row": asdict(row)},
+                                        default=str, sort_keys=True) + "\n")
+
+    @staticmethod
+    def read_metadata(path):
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if payload.get("schema") != "pcs.pool.progress":
+                return None
+            return payload
+        except (OSError, ValueError, TypeError):
+            return None
+
+    @classmethod
+    def read(cls, path):
+        metadata = cls.read_metadata(path)
+        if metadata is None:
+            return None
+        rows_path = Path(path).with_suffix(".jsonl")
+        rows = {}
+        try:
+            for line in rows_path.read_text(encoding="utf-8").splitlines():
+                item = json.loads(line)
+                rows[item["symbol"]] = item["row"]
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        metadata["rows"] = rows
+        return metadata
 
 
 def _load_pool_run(manifest_path: Path):
@@ -255,17 +324,20 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
         "".join(json.dumps({"symbol": row.symbol, "final_action": row.final_action.value,
                             "reason_codes": list(row.reason_codes)}, sort_keys=True) + "\n"
                 for row in result.ticker_results))
+    run_status = str(result.summary.get("run_status", "COMPLETED"))
+    successful = run_status in {"COMPLETED", "COMPLETED_NO_EVALUABLE_TICKERS"}
     manifest = {
-        "current": True, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
+        "current": successful, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,
         "stage_status": {"RAW_UNIVERSE": "COMPLETE", "STATIC_ELIGIBILITY": "COMPLETE",
-                          "DAILY_TIMING": "COMPLETE",
+                          "DAILY_TIMING": "COMPLETE" if successful else "PARTIAL",
                           "OPTIONS_SHORTLIST": "COMPLETE" if options_evaluated else "NOT_RUN",
                           "EVENT_GATE": "COMPLETE" if any(row.event_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN",
                           "PORTFOLIO_GATE": "COMPLETE" if any(row.portfolio_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN"},
         "input_symbol_count": len(result.ticker_results), "summary": dict(result.summary),
         "counters": dict(result.counters), "recovery_summary": dict(result.recovery_summary),
-        "artifact_hashes": files,
+        "artifact_hashes": files, "run_status": run_status,
+        "stage_latency_ms": dict(result.stage_latency_ms),
     }
     from .ai_evidence import write_ai_artifacts
     files.update(write_ai_artifacts(root, result.ticker_results,

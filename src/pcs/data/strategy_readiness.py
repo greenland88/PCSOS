@@ -318,7 +318,9 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
 def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
     """Resolve one complete active daily generation without refresh or promotion."""
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
-    manifest = (manifest_snapshot.to_frame() if manifest_snapshot is not None and
+    manifest = (manifest_snapshot.rows_for("daily", s) if manifest_snapshot is not None and
+                hasattr(manifest_snapshot, "rows_for") else
+                manifest_snapshot.to_frame() if manifest_snapshot is not None and
                 hasattr(manifest_snapshot, "to_frame") else
                 access._read_manifest(access.manifest_path))
     if manifest.empty or not {"dataset", "symbol", "active_generation"}.issubset(manifest.columns):

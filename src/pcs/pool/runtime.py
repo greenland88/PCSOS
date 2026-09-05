@@ -7,7 +7,7 @@ stage. It deliberately contains no market, strategy, or contract logic.
 from __future__ import annotations
 
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 import inspect
 import json
@@ -50,6 +50,18 @@ class ManifestSnapshot:
     columns: tuple[str, ...]
     rows: tuple[tuple[tuple[str, Any], ...], ...]
     identity: str
+    _symbol_index: dict[tuple[str, str], tuple[dict[str, Any], ...]] = field(
+        init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        index: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for record in self.rows:
+            values = dict(record)
+            key = (str(values.get("dataset", "")),
+                   str(values.get("symbol", "")).upper())
+            index.setdefault(key, []).append(values)
+        object.__setattr__(self, "_symbol_index",
+                           {key: tuple(values) for key, values in index.items()})
 
     @classmethod
     def capture(cls, access: Any) -> "ManifestSnapshot":
@@ -72,6 +84,11 @@ class ManifestSnapshot:
     def to_frame(self) -> pd.DataFrame:
         """Return a defensive tabular copy for a compatible resolver."""
         return pd.DataFrame([dict(row) for row in self.rows], columns=self.columns)
+
+    def rows_for(self, dataset: str, symbol: str) -> pd.DataFrame:
+        """Return only one logical dataset/ticker slice from the snapshot."""
+        rows = self._symbol_index.get((str(dataset), str(symbol).upper()), ())
+        return pd.DataFrame(rows, columns=self.columns)
 
 
 @dataclass(frozen=True)
