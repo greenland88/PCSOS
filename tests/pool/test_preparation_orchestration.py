@@ -44,6 +44,14 @@ def test_reconcile_attaches_recovery_receipts_and_daily_readiness_delta():
     assert delta["recovery_by_symbol"]["AAA"]["promoted_partitions"] == ("year=2025",)
 
 
+def test_reconcile_rejects_missing_identity_fields():
+    before = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "mode": "EOD", "manifest_snapshot_id": "m"},
+              "ticker_results": [{"symbol": "AAA", "eligibility_status": "DATA_BLOCKED"}]}
+    after = {"snapshot": {"effective_daily_session": "2026-09-04", "universe_snapshot_id": "u", "manifest_snapshot_id": "m"},
+             "ticker_results": [{"symbol": "AAA", "eligibility_status": "PCS_ELIGIBLE"}]}
+    assert reconcile_pool_scan_results(before, after)["comparable"] is False
+
+
 class RoutedFixtureAccess:
     def __init__(self, tmp_path, ready=()):
         self.manifest_path = tmp_path / "manifest.csv"

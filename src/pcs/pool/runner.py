@@ -464,7 +464,7 @@ def reconcile_pool_scan_results(before: Mapping[str, Any], after: Mapping[str, A
     left, right = rows(before), rows(after)
     fields = ("effective_daily_session", "universe_snapshot_id", "mode", "manifest_snapshot_id")
     identity = {f: (before.get("snapshot", {}).get(f), after.get("snapshot", {}).get(f)) for f in fields}
-    comparable = all(a == b for a, b in identity.values() if a is not None and b is not None)
+    comparable = all(a is not None and b is not None and a == b for a, b in identity.values())
     keys = ("eligibility_status", "initial_daily_readiness", "timing_status", "options_status", "final_action")
     changed = []
     for symbol in sorted(set(left) & set(right)):
