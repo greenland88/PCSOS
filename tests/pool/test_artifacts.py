@@ -107,3 +107,13 @@ def test_artifacts_ignore_tampered_history_and_accept_explicit_baseline(tmp_path
     out = persist_pool_artifacts(PoolScanResult(snap2, (row2,), {}), tmp_path,
                                  baseline_run_id="run-first")
     assert json.loads((out / "reconciliation.json").read_text())["status"] == "BASELINE_NOT_FOUND"
+
+def test_partial_run_cannot_publish_current(tmp_path):
+    snapshot=PoolRunSnapshot('partial','2025-01-01','EOD',None,'u')
+    row=TickerScanResult('AAA','partial',snapshot.as_of,EligibilityStatus.DATA_BLOCKED,
+                         reason_codes=('WORKER_TIMEOUT',))
+    result=PoolScanResult(snapshot,(row,),{'raw_count':1,'run_status':'PARTIAL_TIMEOUT'})
+    root=persist_pool_artifacts(result,tmp_path)
+    manifest=json.loads((root/'run_manifest.json').read_text())
+    assert manifest['current'] is False
+    assert manifest['stage_status']['DAILY_TIMING']=='PARTIAL'

@@ -370,10 +370,10 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 trend = runtime.observe(symbol, "indicators", lambda: build_trend_snapshot(
                     daily.copy(deep=True), benchmark.copy(deep=True),
                     as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol))
-                interpretation = interpret_trend(trend)
-                trend_score = score_trend(trend, interpretation)
-                trend_gate = evaluate_trend_gate(trend_score, interpretation, trend)
-                pullback_gate = evaluate_pullback_gate(trend_gate, trend, interpretation)
+                interpretation = runtime.observe(symbol, "trend_interpretation", lambda: interpret_trend(trend))
+                trend_score = runtime.observe(symbol, "trend_score", lambda: score_trend(trend, interpretation))
+                trend_gate = runtime.observe(symbol, "trend_gate", lambda: evaluate_trend_gate(trend_score, interpretation, trend))
+                pullback_gate = runtime.observe(symbol, "timing_gate", lambda: evaluate_pullback_gate(trend_gate, trend, interpretation))
                 timing_warnings = list(getattr(trend, "warnings", ()) or ())
                 for result in (interpretation, trend_score, trend_gate, pullback_gate):
                     timing_warnings.extend(getattr(result, "warnings", ()) or ())
@@ -460,8 +460,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 close = float(daily.iloc[-1].close)
                 atr = float(getattr(trend.support, "current_atr", 0) or 0)
                 contract_entry_date = option_day
-                candidates = discover_spreads(symbol, contract_entry_date, close, atr, chain,
-                                              rules=option_rules)
+                candidates = runtime.observe(symbol, "options_discovery", lambda: discover_spreads(
+                    symbol, contract_entry_date, close, atr, chain, rules=option_rules))
                 selected_contract = None
                 selection_result = None
                 selection_reasons = ()
@@ -874,7 +874,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         if checkpoint_callback is not None:
             checkpoint_callback(str(checkpoint_path), checkpoint_identity)
     initial = _audit_verified_daily(
-        _daily_preflight(dependencies, access, effective_asof, runtime.manifest_snapshot),
+        runtime.observe("", "manifest_index_preflight", lambda: _daily_preflight(
+            dependencies, access, effective_asof, runtime.manifest_snapshot)),
         dependencies, access, effective_asof, daily_resolver, runtime=runtime)
     stage_latency["readiness_audit"] = (perf_counter() - audit_started) * 1000
     if runtime.manifest_snapshot is not None:

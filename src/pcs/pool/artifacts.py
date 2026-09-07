@@ -175,11 +175,16 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
         "".join(json.dumps({"symbol": row.symbol, "final_action": row.final_action.value,
                             "reason_codes": list(row.reason_codes)}, sort_keys=True) + "\n"
                 for row in result.ticker_results))
+    complete = (str(result.summary.get("run_status", "COMPLETED")) in
+                {"COMPLETED", "COMPLETED_NO_EVALUABLE_TICKERS"}
+                and not any(any(code in row.reason_codes for code in
+                    ("WORKER_TIMEOUT", "STAGE_DEADLINE_NOT_STARTED", "POOL_SCAN_TIMEOUT", "POOL_SCAN_PROCESS_FAILED"))
+                    for row in result.ticker_results))
     manifest = {
-        "current": True, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
+        "current": complete, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,
         "stage_status": {"RAW_UNIVERSE": "COMPLETE", "STATIC_ELIGIBILITY": "COMPLETE",
-                          "DAILY_TIMING": "COMPLETE",
+                          "DAILY_TIMING": "COMPLETE" if complete else "PARTIAL",
                           "OPTIONS_SHORTLIST": "COMPLETE" if options_evaluated else "NOT_RUN",
                           "EVENT_GATE": "COMPLETE" if any(row.event_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN",
                           "PORTFOLIO_GATE": "COMPLETE" if any(row.portfolio_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN"},

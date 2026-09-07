@@ -146,7 +146,13 @@ class PoolRuntime:
         self.stage_timeout_seconds = 60.0 if stage_timeout_seconds is None else stage_timeout_seconds
         self.daily_handle_resolver = daily_handle_resolver
         self.options_handle_resolver = options_handle_resolver
+        self.telemetry = telemetry
+        manifest_started = perf_counter()
+        manifest_started_at = datetime.now(timezone.utc).isoformat()
+        self._emit(operation="manifest_capture_parse_index", state="STARTED", started_at=manifest_started_at)
         self.manifest_snapshot = ManifestSnapshot.capture(access) if access is not None else None
+        self._emit(operation="manifest_capture_parse_index", state="COMPLETED", started_at=manifest_started_at,
+                   ended_at=datetime.now(timezone.utc).isoformat(), elapsed_ms=(perf_counter()-manifest_started)*1000)
         self.stage_latency_ms: dict[str, float] = {}
         self.counters: dict[str, int] = {
             "handle_resolution_calls": 0,
@@ -279,8 +285,10 @@ class PoolRuntime:
         """Produce one value per key, sharing the in-flight Future."""
         with self._lock:
             if key in self._values:
+                self._emit(operation=str(key[0]), symbol=str(key[1]) if len(key)>1 else "", cache_hit=True)
                 return self._values[key]
             if key in self._frames:
+                self._emit(operation=str(key[0]), cache_hit=True)
                 return self._frames[key]  # type: ignore[return-value]
             future = self._inflight.get(key)
             owner = future is None
@@ -379,8 +387,8 @@ class PoolRuntime:
             started = perf_counter()
             with self._lock:
                 self.counters["handle_resolution_calls"] += 1
-            value = self._call_with_snapshot(resolver, normalized, str(day.date()),
-                                              data_access=self.access, snapshot=self.manifest_snapshot)
+            value = self.observe(normalized, "options_handle_locate_verify", lambda: self._call_with_snapshot(
+                resolver, normalized, str(day.date()), data_access=self.access, snapshot=self.manifest_snapshot))
             with self._lock:
                 self.stage_latency_ms["handle_resolution"] = (
                     self.stage_latency_ms.get("handle_resolution", 0.0)
@@ -441,7 +449,8 @@ class PoolRuntime:
         def produce() -> pd.DataFrame:
             with self._lock:
                 self.counters["options_frame_reads"] += 1
-            return self.access.read_verified_dataset(handle, start_date=start_date, end_date=end_date)
+            return self.observe(getattr(handle, "ticker", ""), "options_read_verify",
+                                lambda: self.access.read_verified_dataset(handle, start_date=start_date, end_date=end_date))
         return self._single_flight(key, produce).copy(deep=True).reset_index(drop=True)
 
     def run_stage(self, symbols: Sequence[str], worker: Callable[[str], T], *,
