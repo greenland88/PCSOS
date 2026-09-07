@@ -10,6 +10,7 @@
 - 独立工作分支：`codex/selection-v2-step-01`。
 - 组件实现提交：`1505a60`（`feat: add selection explanation evidence component`）。
 - 本文件的交接提交：见本文件所在的后续提交；第1步的可独立回退实现边界是 `1505a60` 加本交接提交。
+- 2026-09-07 复核修复提交：`9a356e8`（`fix: correct selection explanation execution evidence`）。
 
 本步没有执行 Pool Scan、数据导入、供应商请求、账户读取、收益研究或策略修改。来源 run 和其 checkpoint 均未改写。
 
@@ -57,6 +58,18 @@ $env:PYTHONPATH='src'; python -c "from pcs.pool.ai_evidence import load_selectio
 - 入口差异记录为实现差异而非多数表决：生产快照 pivot 3/3、TA-Lib ATR14、SMA200；旧 opportunity replay 使用 pivot 2/2、rolling true-range ATR14、EMA200；`market_context` 的 phase 直接映射与 Pool Scan 的 trend gate + pullback gate 不同。来源 run 只实际执行 Pool 路径，替代入口逐票结果标 `NOT_RECORDED`/`ALTERNATE_RESULTS_NOT_RECORDED`。
 - `result_id` 只绑定语义输入、规则和内容哈希，不含 request ID、计算墙钟或物理复制路径；视图变化不会重算业务结果。
 
+### 2026-09-07 复核缺陷与修正语义
+
+本次复核只修正解释层的五项缺陷，不改变任何原判定、评分权重或策略参数：
+
+1. DecisionEngine 调用、硬门槛检查和实际评分分开记录。硬门槛提前拒绝时，决策对象中的零分返回形状不是实际评分，质量、支撑、确认和 `iv_premium` 等评分输入不标为已消费。正常评分时只从保存的 `selection_result.decision.scores` 读取实际分项，`iv_premium` 不为 `null`。
+2. 期权完成状态只按现有 `OptionsStatus` 处理：`PASS`/`REJECT` 是已完成正式合约评估，`DISCOVERED` 是已完成合约发现但正式合约评估仍为 `NOT_EVALUATED`，`DATA_BLOCKED` 是阻断，`NOT_EVALUATED` 为未执行。不再检查系统不会产生的 `EVALUATED`。
+3. 缺失 `timing_status` 是 `NOT_RECORDED` 且执行状态为 `NOT_EVALUATED`。空 `source_references` 时 `source_artifacts_hash_validated=false`，并记录 `SOURCE_REFERENCES_NOT_RECORDED`。
+4. 解释入口校验 `requested_as_of`、context/ticker 的 `effective_daily_session`、ticker `as_of` 和 `feature_max_date`。请求与来源 run 时刻不一致、有效日线 session 晚于请求、或 feature 证据来自未来时，均以稳定 `EXPLANATION_*` `ValueError` reason code 失败关闭；日期比较不使用本机当前日期。
+5. 生产 pivot “实际值”从保存的 `candidate_state.applicable_rules`/`effective_policy` 读取，3/3 只作 `TrendIndicatorConfig` 参考默认；保存 5/5 时报告必须显示 5/5。`trend_health` 只从 AI evidence、ticker result 或 candidate state 的明确结构化字段读取，没有才是 `NOT_RECORDED`。
+
+中文 Markdown 视图与结构化输出使用同一对象，现在分别展示 options stage execution/completed evaluation kind、DecisionEngine invocation、hard-gate checks/outcome 和 actual scoring，不再用单一布尔值概括多层执行语义。
+
 ## 实际结果与输出
 
 | 股票 | 基础资格 | 旧 timing | 期权 | 原最终动作 | 主要记录原因 | 重要缺口 |
@@ -103,6 +116,16 @@ $env:PYTHONPATH='src'; python -m pcs.cli pool-evidence --run-directory pool_scan
 结果：原单票 AI evidence 读取仍成功，未执行 `--upgrade`。
 
 `git diff --check` 通过。环境未安装 `ruff`（`No module named ruff`），因此没有把未运行的 lint 写成通过。
+
+### 2026-09-07 复核修复验证
+
+```powershell
+$env:PYTHONPATH='src'; python -m pytest tests/pool/test_selection_explanation.py tests/pool/test_artifacts.py tests/pool/test_context_adapters.py -q
+```
+
+聚焦范围新增成功评分、硬门槛提前拒绝、五种期权状态、缺失 timing/空来源、请求日期冲突、未来证据、pivot 5/5、已记录 trend health 以及中文视图分层执行状态断言。其中成功评分和 RED 硬门槛拒绝各有一个测试直接调用现有 `DecisionEngine.evaluate_candidate`，再将 `decision.model_dump(mode="json")` 的真实保存形状交给解释器；前者验证读取引擎实际 `iv_premium`，后者验证引擎硬门槛返回的零分形状不算实际评分。提交后最终复核结果：`47 passed in 5.11s`。
+
+只读复用原 run 的 NVDA 做兼容性检查：原动作仍为 `WAIT`，期权状态仍为 `NOT_EVALUATED`，保存的实际 pivot 读为 3/3。没有执行扫描、期权请求、provider probe、canonical 数据运行或原 run 写回。修复提交为 `9a356e8`；交接提交完成后推送同一远端分支，不合入 `main`。
 
 ## 验收状态与剩余缺口
 
