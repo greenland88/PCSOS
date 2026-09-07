@@ -66,6 +66,16 @@ def test_missing_live_chain_session_is_blocked(monkeypatch):
     assert "OPTIONS_QUOTE_SESSION_UNVERIFIED" in row.reason_codes
 
 
+def test_missing_live_quote_timestamp_preserves_timing_and_blocks_options(monkeypatch):
+    row = _run(monkeypatch, pd.DataFrame({
+        "trade_date": ["2025-03-04"], "quote_as_of": ["2025-03-04"],
+        "bid": [1.0], "ask": [1.2],
+    }))
+    assert row.timing_status.value == "TIMING_ENTRY_READY"
+    assert row.options_status == OptionsStatus.DATA_BLOCKED
+    assert "OPTION_QUOTE_TIMESTAMP_REQUIRED" in row.reason_codes
+
+
 def test_current_live_session_is_accepted_and_discovery_uses_option_day(monkeypatch):
     _timing(monkeypatch)
     captured = {}
@@ -76,11 +86,30 @@ def test_current_live_session_is_accepted_and_discovery_uses_option_day(monkeypa
 
     monkeypatch.setattr(runner, "discover_spreads", discover)
     row = runner._evaluate_symbol(
-        "AAA", run_id="r", asof="2025-03-04", access=Access(), benchmark=_daily(),
-        benchmark_symbol="QQQ", options_reader=lambda *_: pd.DataFrame({"trade_date": ["2025-03-04"]}),
+        "AAA", run_id="r", asof="2025-03-04T15:00:00Z", access=Access(), benchmark=_daily(),
+        benchmark_symbol="QQQ", options_reader=lambda *_: pd.DataFrame({
+            "trade_date": ["2025-03-04"],
+            "quote_as_of": [pd.Timestamp("2025-03-04T14:59:00Z")],
+        }),
         option_rules=dict(runner.load_pool_option_rules()), daily_handle_resolver=resolve,
         runtime=PoolRuntime(access=Access(), daily_handle_resolver=resolve),
         static_metadata_reader=lambda _: {"optionable": True}, mode="INTRADAY",
-        options_enabled=True, auto_prepare_data=False)
-    assert captured["entry_date"] == pd.Timestamp("2025-03-04")
+        options_enabled=True, auto_prepare_data=False, daily_asof="2025-03-04")
+    assert captured["entry_date"].date() == pd.Timestamp("2025-03-04").date()
     assert row.options_status == OptionsStatus.REJECT
+
+
+def test_quote_session_validation_preserves_full_timestamp_and_raw_unit():
+    source_time = pd.Timestamp("2026-09-08T14:59:30.123456789Z")
+    chain = pd.DataFrame({
+        "trade_date": ["2026-09-08"], "quote_as_of": [source_time],
+        "quote_timestamp_raw": [source_time.value], "quote_timestamp_unit": ["ns"],
+    })
+
+    validated = runner._validate_options_quote_session(
+        chain, "2026-09-08", mode="INTRADAY",
+        decision_time="2026-09-08T15:00:00Z")
+
+    assert validated.loc[0, "quote_as_of"] == source_time
+    assert validated.loc[0, "quote_timestamp_raw"] == source_time.value
+    assert validated.loc[0, "quote_timestamp_unit"] == "ns"

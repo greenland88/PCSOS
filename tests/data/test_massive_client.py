@@ -39,6 +39,32 @@ def test_daily_safety_window_is_bounded():
     assert len(frame) == 1
 
 
+def test_option_quote_detail_is_bounded_and_pinned_to_private_gateway():
+    class QuoteResponse(Response):
+        def json(self):
+            return {"results": [{"bid_price": 1.1, "ask_price": 1.2,
+                                  "sip_timestamp": 1788893970000000000}]}
+
+    session = Session()
+    session.get = lambda url, params, timeout: (
+        session.calls.append((url, params, timeout)) or QuoteResponse())
+    client = MassiveCompatibleClient(GatewayConfig("secret"), session)
+
+    rows = client.option_quotes(
+        "O:NVDA261009P00150000",
+        timestamp_gte="2026-09-08T13:30:00Z",
+        timestamp_lte="2026-09-08T15:00:00Z", limit=1)
+
+    url, params, _ = session.calls[0]
+    assert url == "http://38.76.185.106:3000/v3/quotes/O:NVDA261009P00150000"
+    assert params == {
+        "sort": "timestamp", "order": "desc", "limit": 1,
+        "timestamp.gte": "2026-09-08T13:30:00Z",
+        "timestamp.lte": "2026-09-08T15:00:00Z", "apiKey": "secret",
+    }
+    assert rows[0]["sip_timestamp"] == 1788893970000000000
+
+
 def test_pagination_rejects_public_or_foreign_next_url():
     class PagingResponse(Response):
         def json(self):

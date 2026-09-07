@@ -138,7 +138,8 @@ class MassiveCompatibleClient:
             raise MarketGatewayError(str(payload.get("error", payload)))
         return payload
 
-    def iter_results(self, path: str, params: dict[str, Any], *, max_pages: int = 10) -> Iterator[dict[str, Any]]:
+    def iter_results(self, path: str, params: dict[str, Any], *, max_pages: int = 10,
+                     require_complete: bool = True) -> Iterator[dict[str, Any]]:
         next_url: str | None = path
         page_params = params
         for page_number in range(max_pages):
@@ -147,8 +148,10 @@ class MassiveCompatibleClient:
             next_url = payload.get("next_url")
             if not next_url:
                 return
-            if page_number + 1 == max_pages:
+            if page_number + 1 == max_pages and require_complete:
                 raise MarketGatewayError(f"API_PARTIAL: pagination limit reached before next_url was consumed: {path}")
+            if page_number + 1 == max_pages:
+                return
             page_params = {}
 
     def stock_daily(self, ticker: str, start_date: str, end_date: str, *, limit: int = 120) -> pd.DataFrame:
@@ -206,9 +209,37 @@ class MassiveCompatibleClient:
         return self._get("/v3/reference/options/contracts", params).get("results", [])
 
     def option_chain_snapshot(self, underlying_ticker: str, *, limit: int = 250,
-                              max_pages: int = 10) -> list[dict[str, Any]]:
+                              max_pages: int = 10, require_complete: bool = True,
+                              contract_type: str | None = None,
+                              expiration_date_gte: str | None = None,
+                              expiration_date_lte: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if contract_type:
+            params["contract_type"] = str(contract_type).lower()
+        if expiration_date_gte:
+            params["expiration_date.gte"] = str(expiration_date_gte)[:10]
+        if expiration_date_lte:
+            params["expiration_date.lte"] = str(expiration_date_lte)[:10]
         return list(self.iter_results(f"/v3/snapshot/options/{underlying_ticker.upper()}",
-                                      {"limit": limit}, max_pages=max_pages))
+                                      params, max_pages=max_pages,
+                                      require_complete=require_complete))
+
+    def option_quotes(self, options_ticker: str, *, timestamp_gte: str,
+                      timestamp_lte: str, limit: int = 1) -> list[dict[str, Any]]:
+        """Read bounded quote records for one exact option contract."""
+        ticker = str(options_ticker).strip().upper()
+        if not ticker.startswith("O:"):
+            raise ValueError("OPTION_CONTRACT_TICKER_REQUIRED")
+        if limit < 1 or limit > 250:
+            raise ValueError("option quote limit must be between 1 and 250")
+        payload = self._get(f"/v3/quotes/{ticker}", {
+            "sort": "timestamp", "order": "desc", "limit": limit,
+            "timestamp.gte": timestamp_gte, "timestamp.lte": timestamp_lte,
+        })
+        rows = payload.get("results", [])
+        if not isinstance(rows, list):
+            raise MarketGatewayError("gateway returned invalid option quote results")
+        return rows
 
     def stock_snapshot(self, ticker: str) -> dict[str, Any]:
         return self._get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker.upper()}", {}).get("ticker", {})

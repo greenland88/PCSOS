@@ -74,29 +74,53 @@ class DailyReadiness:
     reason_codes: tuple[str, ...] = ()
 
 
-def _validate_options_quote_session(chain: pd.DataFrame, expected_session) -> pd.DataFrame:
-    """Require one verifiable quote session before Stage-B discovery."""
-    expected = pd.Timestamp(expected_session).normalize()
+def _validate_options_quote_session(chain: pd.DataFrame, expected_session, *, mode="EOD",
+                                    decision_time=None, exchange_timezone="America/New_York",
+                                    max_quote_age_seconds=300.0) -> pd.DataFrame:
+    """Validate quote timing without replacing source timestamps with dates."""
+    expected = pd.Timestamp(expected_session).date()
+    mode = str(mode).upper()
     if chain is None or chain.empty:
         raise ValueError("OPTIONS_QUOTE_SESSION_UNVERIFIED")
-    evidence = []
-    for field in ("trade_date", "quote_as_of", "as_of"):
+    sessions = set()
+    intraday_timestamp_incomplete = False
+    if "trade_date" in chain.columns:
+        sessions.update(pd.Timestamp(value).date() for value in chain["trade_date"]
+                        if not pd.isna(value) and not pd.isna(pd.to_datetime(value, errors="coerce")))
+    quote_times = []
+    for field in ("quote_as_of", "as_of"):
         if field not in chain.columns:
             continue
-        values = pd.to_datetime(chain[field], errors="coerce")
-        values = values.dropna().map(lambda value: pd.Timestamp(value).normalize())
-        if not values.empty:
-            evidence.extend(values.tolist())
-    if not evidence:
+        for raw in chain[field]:
+            if pd.isna(raw):
+                continue
+            stamp = pd.Timestamp(raw)
+            if mode == "INTRADAY" and stamp.tzinfo is None:
+                intraday_timestamp_incomplete = True
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert(exchange_timezone)
+            sessions.add(stamp.date())
+            if field == "quote_as_of" and stamp.tzinfo is not None:
+                quote_times.append(stamp.tz_convert("UTC"))
+    if not sessions:
         raise ValueError("OPTIONS_QUOTE_SESSION_UNVERIFIED")
-    sessions = {value for value in evidence}
     if len(sessions) != 1 or expected not in sessions:
         raise ValueError("OPTIONS_QUOTE_SESSION_MISMATCH")
-    normalized = chain.copy()
-    for field in ("trade_date", "quote_as_of"):
-        if field in normalized.columns:
-            normalized[field] = pd.to_datetime(normalized[field], errors="coerce").dt.normalize()
-    return normalized
+    if mode == "INTRADAY":
+        if intraday_timestamp_incomplete or len(quote_times) != len(chain):
+            raise ValueError("OPTION_QUOTE_TIMESTAMP_REQUIRED")
+        decision = pd.Timestamp(decision_time)
+        if pd.isna(decision) or decision.tzinfo is None:
+            raise ValueError("OPTIONS_DECISION_TIMEZONE_REQUIRED")
+        decision = decision.tz_convert("UTC")
+        ages = [(decision - stamp).total_seconds() for stamp in quote_times]
+        if any(age < 0 for age in ages):
+            raise ValueError("OPTION_QUOTE_FROM_FUTURE")
+        if any(age > float(max_quote_age_seconds) for age in ages):
+            raise ValueError("OPTION_QUOTE_STALE")
+    # Return a copy, but preserve the full quote time, source timezone and raw
+    # timestamp/unit columns.  Session derivation must never mutate evidence.
+    return chain.copy()
 
 
 def _execution_identity(option_rules):
@@ -500,7 +524,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 else:
                     option_handle = runtime.resolve_options(symbol, str(option_day.date()))
                     chain = runtime.read_options_handle(option_handle, start_date=str(option_day.date()), end_date=str(option_day.date()))
-                chain = _validate_options_quote_session(chain, option_day)
+                chain = _validate_options_quote_session(
+                    chain, option_day, mode=mode, decision_time=asof)
                 if options_reader is None:
                     option_identity = list(runtime._handle_key(option_handle))
                 contract_entry_date = option_day

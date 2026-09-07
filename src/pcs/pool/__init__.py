@@ -18,7 +18,8 @@ from .iv import (IVGateStatus, IVFeatures, build_iv_features, calculate_iv_featu
                  evaluate_iv_gate)
 from .validation import validate_pool_result
 from .concurrency import WorkerOutcome, run_symbol_workers
-from .modes import completed_daily_cutoff, resolve_effective_market_session
+from .modes import (OptionQuoteWindow, completed_daily_cutoff,
+                    resolve_effective_market_session, resolve_option_quote_window)
 from .intraday import ExecutionTimingSnapshot, build_intraday_overlay, run_intraday_overlay
 from .ai_evidence import read_ai_evidence, upgrade_current_pool_artifacts
 
@@ -33,7 +34,8 @@ __all__ = [
     "IVGateStatus", "IVFeatures", "build_iv_features", "calculate_iv_features", "evaluate_iv_gate",
     "validate_pool_result",
     "WorkerOutcome", "run_symbol_workers",
-    "completed_daily_cutoff", "resolve_effective_market_session",
+    "OptionQuoteWindow", "completed_daily_cutoff", "resolve_effective_market_session",
+    "resolve_option_quote_window",
     "ExecutionTimingSnapshot", "build_intraday_overlay", "run_intraday_overlay",
     "read_ai_evidence", "upgrade_current_pool_artifacts",
 ]
