@@ -11,6 +11,7 @@
 - 组件实现提交：`1505a60`（`feat: add selection explanation evidence component`）。
 - 本文件的交接提交：见本文件所在的后续提交；第1步的可独立回退实现边界是 `1505a60` 加本交接提交。
 - 2026-09-07 复核修复提交：`9a356e8`（`fix: correct selection explanation execution evidence`）。
+- 本次追加复现修复开始时 HEAD：`be32eb6`；修复提交：`e0b1aea`（`fix: require evidence for selection explanation stages`）。
 
 本步没有执行 Pool Scan、数据导入、供应商请求、账户读取、收益研究或策略修改。来源 run 和其 checkpoint 均未改写。
 
@@ -53,7 +54,7 @@ $env:PYTHONPATH='src'; python -c "from pcs.pool.ai_evidence import load_selectio
 - 旧产物没有独立 `trend_health` 和 `pullback_depth_atr` 字段；即使 reason code 含类似文字，也标为 `NOT_RECORDED`，不从文字补数。
 - `_candidate()` 的 `business_quality=80`、`support_score=0`、`price_confirmation=0`、`sector_alignment=80` 均记录为 `CONFIGURED_ASSUMPTION`。80不是实测质量好，0不是实测支撑/确认差。
 - `business_quality`、`support_score`、`price_confirmation` 只有在 DecisionEngine 评分路径实际运行时才分别进入质量、支撑、趋势分；`sector_alignment` 被填入 TradeCandidate，但当前 ScoreBreakdown/OpportunityScorer 不消费。
-- `iv_premium=min(100, credit / max(short_strike-long_strike, 1) * 500)` 的真实语义是信用/宽度衍生分，权重0.08，不是真实IV premium。本来源 run 没有保存该评分或真实IV评分诊断。
+- `iv_premium=min(100, credit / max(short_strike-long_strike, 1) * 500)` 的真实语义是信用/宽度衍生分，不是真实IV premium。当前配置的0.08仅作参考默认；本来源 run 没有保存实际评分权重、该评分或真实IV评分诊断。
 - 本八票均未留下 DecisionEngine 评分执行结果，因此 `score_validity=NOT_EVALUATED`，不生成总分或分项得分。
 - 入口差异记录为实现差异而非多数表决：生产快照 pivot 3/3、TA-Lib ATR14、SMA200；旧 opportunity replay 使用 pivot 2/2、rolling true-range ATR14、EMA200；`market_context` 的 phase 直接映射与 Pool Scan 的 trend gate + pullback gate 不同。来源 run 只实际执行 Pool 路径，替代入口逐票结果标 `NOT_RECORDED`/`ALTERNATE_RESULTS_NOT_RECORDED`。
 - `result_id` 只绑定语义输入、规则和内容哈希，不含 request ID、计算墙钟或物理复制路径；视图变化不会重算业务结果。
@@ -63,12 +64,19 @@ $env:PYTHONPATH='src'; python -c "from pcs.pool.ai_evidence import load_selectio
 本次复核只修正解释层的五项缺陷，不改变任何原判定、评分权重或策略参数：
 
 1. DecisionEngine 调用、硬门槛检查和实际评分分开记录。硬门槛提前拒绝时，决策对象中的零分返回形状不是实际评分，质量、支撑、确认和 `iv_premium` 等评分输入不标为已消费。正常评分时只从保存的 `selection_result.decision.scores` 读取实际分项，`iv_premium` 不为 `null`。
-2. 期权完成状态只按现有 `OptionsStatus` 处理：`PASS`/`REJECT` 是已完成正式合约评估，`DISCOVERED` 是已完成合约发现但正式合约评估仍为 `NOT_EVALUATED`，`DATA_BLOCKED` 是阻断，`NOT_EVALUATED` 为未执行。不再检查系统不会产生的 `EVALUATED`。
+2. 期权完成状态只使用现有 `OptionsStatus`，但不仅凭顶层状态推断子阶段。`PASS` 只在有明确 selector/selection 证据时才是正式合约评估通过；`REJECT` 可能是零价差后只完成发现，也可能是 selector 已执行后的正式拒绝；`DISCOVERED` 是只完成发现；`DATA_BLOCKED` 保留实际阻断层次；`NOT_EVALUATED` 为未执行。
 3. 缺失 `timing_status` 是 `NOT_RECORDED` 且执行状态为 `NOT_EVALUATED`。空 `source_references` 时 `source_artifacts_hash_validated=false`，并记录 `SOURCE_REFERENCES_NOT_RECORDED`。
 4. 解释入口校验 `requested_as_of`、context/ticker 的 `effective_daily_session`、ticker `as_of` 和 `feature_max_date`。请求与来源 run 时刻不一致、有效日线 session 晚于请求、或 feature 证据来自未来时，均以稳定 `EXPLANATION_*` `ValueError` reason code 失败关闭；日期比较不使用本机当前日期。
 5. 生产 pivot “实际值”从保存的 `candidate_state.applicable_rules`/`effective_policy` 读取，3/3 只作 `TrendIndicatorConfig` 参考默认；保存 5/5 时报告必须显示 5/5。`trend_health` 只从 AI evidence、ticker result 或 candidate state 的明确结构化字段读取，没有才是 `NOT_RECORDED`。
 
 中文 Markdown 视图与结构化输出使用同一对象，现在分别展示 options stage execution/completed evaluation kind、DecisionEngine invocation、hard-gate checks/outcome 和 actual scoring，不再用单一布尔值概括多层执行语义。
+
+### 2026-09-07 追加复现的四项解释修正
+
+1. 期权子阶段现在同时检查 `spread_count`/`discovered_contracts`、非空 `selection_result`、可选 `contract_selector_invoked` 明细及 selector status。`spread_count=0` 是所有 `TickerScanResult` 的默认形状，单独出现不证明 discovery 已运行：`options_status=NOT_EVALUATED` 时 discovery 仍为 `NOT_EVALUATED`；`options_status=DATA_BLOCKED` 且无 selection/selector 证据时 discovery 为 `BLOCKED`。runner 的真实零价差完成路径是 `options_status=REJECT`、`spread_count=0`、`selection_result=None`、`contract_evaluation_status=REJECT`；该组合只证明发现已完成，正式合约评估为 `NOT_EVALUATED`。顶层 `PASS` 缺少明确 selector/selection 证据时记 `NOT_RECORDED` 和 `OPTIONS_FORMAL_EVALUATION_EVIDENCE_MISSING`，不自动补成正式 PASS。
+2. `trend_health` 按声明的优先级逐项查找，包装对象为 `UNKNOWN`/`MISSING`/`NOT_RECORDED`/`NOT_PROVIDED` 或 `value=null` 时跳过，继续寻找后续明确值；所有候选均未知才输出 `NOT_RECORDED`。
+3. `selection_result.decision={}` 是空记录，`decision_record_status=NOT_RECORDED`，DecisionEngine invocation、hard-gate checks 和 actual scoring 全部为 `NOT_EVALUATED`，hard-gate outcome 也是 `NOT_EVALUATED`；不由“没有拒绝”反推 PASS。
+4. 实际 `score_weights` 按 `input.effective_policy` → `candidate_state.effective_policy` → `candidate_state.applicable_rules` 的优先级读取，支持 `score_weights`、`scoring.weights`、`values.score_weights` 和 `values.scoring.weights` 形状。例如保存的 `iv_premium=0.20` 原值输出0.20；当前配置0.08单列为 `score_weights_reference_default`，缺少来源 run 权重时实际状态是 `NOT_RECORDED`。程序、AI、中文 Markdown 和 CSV 视图均从同一 `effective_policy` 生成。
 
 ## 实际结果与输出
 
@@ -126,6 +134,16 @@ $env:PYTHONPATH='src'; python -m pytest tests/pool/test_selection_explanation.py
 聚焦范围新增成功评分、硬门槛提前拒绝、五种期权状态、缺失 timing/空来源、请求日期冲突、未来证据、pivot 5/5、已记录 trend health 以及中文视图分层执行状态断言。其中成功评分和 RED 硬门槛拒绝各有一个测试直接调用现有 `DecisionEngine.evaluate_candidate`，再将 `decision.model_dump(mode="json")` 的真实保存形状交给解释器；前者验证读取引擎实际 `iv_premium`，后者验证引擎硬门槛返回的零分形状不算实际评分。提交后最终复核结果：`47 passed in 5.11s`。
 
 只读复用原 run 的 NVDA 做兼容性检查：原动作仍为 `WAIT`，期权状态仍为 `NOT_EVALUATED`，保存的实际 pivot 读为 3/3。没有执行扫描、期权请求、provider probe、canonical 数据运行或原 run 写回。修复提交为 `9a356e8`；交接提交完成后推送同一远端分支，不合入 `main`。
+
+### 2026-09-07 追加复现修复验证
+
+```powershell
+$env:PYTHONPATH='src'; python -m pytest tests/pool/test_selection_explanation.py tests/pool/test_artifacts.py tests/pool/test_context_adapters.py -q
+```
+
+提交前独立复核结果：`56 passed in 5.16s`。新回归覆盖 runner 零价差 `REJECT` 不误报正式评估、`NOT_EVALUATED + spread_count=0` 不推进 discovery、`DATA_BLOCKED + spread_count=0` 在无 selector/selection 证据时保留 discovery `BLOCKED`、selector 阻断层次、空 decision、早期未知 trend health 后续有效值、全部未知 trend health、实际 `iv_premium=0.20` 权重及缺失权重不回退当前配置。
+
+用户本地复现环境报告的失败发生在 pytest 收集前的 DuckDB 原生依赖崩溃；该结果不是项目测试断言失败，也不能由本工作区的通过代替。本记录不声称用户已重跑或已通过。修复提交为 `e0b1aea`；交接提交完成后推送同一远端分支，不合入 `main`。
 
 ## 验收状态与剩余缺口
 
