@@ -9,9 +9,12 @@ from typing import Any, Literal, Mapping, Sequence
 import uuid
 import os
 import traceback
+import json
+import hashlib
 from threading import RLock
 from pathlib import Path
 from math import isfinite
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -120,7 +123,7 @@ def _candidate_record(candidate) -> dict:
         return dict(vars(candidate))
 
 
-def _daily_preflight(symbols, access, decision_date):
+def _daily_preflight(symbols, access, decision_date, manifest_snapshot=None):
     """Build one stable, read-only daily readiness index for this run."""
     if not hasattr(access, "_resolve_route") or not hasattr(access, "_read_manifest"):
         return {str(symbol).strip().upper(): DailyReadiness("READY") for symbol in symbols}
@@ -140,9 +143,16 @@ def _daily_preflight(symbols, access, decision_date):
                     index[s] = DailyReadiness("HARD_BLOCKED", ("BLOCKED_NO_AUTHORIZED_SOURCE",))
                 continue
             key = str(Path(manifest_path).resolve())
-            if key not in manifest_cache:
+            if manifest_snapshot is not None and key == str(Path(manifest_snapshot.path).resolve()):
+                manifest = manifest_snapshot.rows_for("daily", s)
+                if manifest.empty and manifest_snapshot.rows:
+                    index[s] = DailyReadiness("PREP_REQUIRED", ("ACTIVE_GENERATION_MISSING",))
+                    continue
+            elif key not in manifest_cache:
                 manifest_cache[key] = access._read_manifest(Path(manifest_path))
-            manifest = manifest_cache[key]
+                manifest = manifest_cache[key]
+            else:
+                manifest = manifest_cache[key]
             required = {"dataset", "symbol", "active_generation", "min_date", "max_date"}
             if manifest.empty or not required.issubset(manifest.columns):
                 index[s] = DailyReadiness("PREP_REQUIRED", ("MANIFEST_ROUTE_MISSING",)); continue
@@ -297,7 +307,7 @@ def _revalidate_daily(symbols, access, effective_daily_session, resolver):
 
 def _audit_verified_daily(states, symbols, access, effective_daily_session, resolver,
                           *, max_workers=8, timeout_seconds=60.0,
-                          manifest_snapshot=None):
+                          manifest_snapshot=None, runtime=None):
     """Verify metadata-READY dependencies without fetching or writing."""
     if not hasattr(access, "_resolve_route") or not hasattr(access, "_read_manifest"):
         return states
@@ -309,9 +319,11 @@ def _audit_verified_daily(states, symbols, access, effective_daily_session, reso
     candidates = tuple(symbol for symbol in symbols if states[symbol].status == "READY")
     def audit(symbol):
         try:
-            PoolRuntime._call_with_snapshot(
-                resolver, symbol, effective_daily_session, 200,
-                data_access=access, snapshot=manifest_snapshot)
+            if runtime is not None:
+                runtime.resolve_daily_handle(symbol, effective_daily_session, 200,
+                                             resolver=resolver)
+            else:
+                resolver(symbol, effective_daily_session, 200, data_access=access)
             return None
         except Exception as exc:
             return str(exc).strip() or "DAILY_VERIFIED_READ_FAILED"
@@ -337,14 +349,15 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                      options_prepare=None, options_enabled=None, mode="EOD",
                      contract_selector=None, market_state_reader=None,
                      portfolio_context_reader=None, event_calendar_reader=None, resume_row=None,
-                     evidence_window=60):
+                     evidence_window=60, saved_stage=None, on_stage=None):
     started = perf_counter()
+    stage_timings = {}
     selected_contract = None
     selection_result = None
     selection_reasons = ()
     selection_identity = None
     trend = None
-    trend_config = None
+    trend_config = TrendIndicatorConfig()
     metadata = static_metadata_reader(symbol) if static_metadata_reader is not None else None
     entry = evaluate_static_eligibility(symbol, metadata)
     if entry.status != EligibilityStatus.PCS_ELIGIBLE:
@@ -357,10 +370,12 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
 
         # The scanner never prepares data; only the run orchestrator may write.
         runtime = runtime or PoolRuntime(access=access)
+        io_started = perf_counter()
         handle = runtime.resolve_daily_handle(
             symbol, daily_asof or asof, 200, resolver=resolver)
         daily = runtime.read_daily(handle, end_date=daily_asof or asof,
                                    required_warmup_rows=200)
+        stage_timings["daily_read_and_verify"] = (perf_counter() - io_started) * 1000
         if benchmark is None or daily.empty:
             raise ValueError("BENCHMARK_OR_DAILY_DATA_UNAVAILABLE")
         # Each worker receives an independent immutable snapshot boundary;
@@ -374,20 +389,37 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             close = resume_row.candidate_state["close"]
             atr = resume_row.candidate_state["atr"]
             engine = trend_gate = pullback_gate = None
+        elif saved_stage:
+            state = saved_stage.stage_state
+            timing, action = TimingStatus(state["timing"]), FinalAction(state["action"])
+            timing_reasons = tuple(state["reasons"])
+            timing_warnings = list(state["warnings"])
+            trend_gate = SimpleNamespace(reasons=state["trend_reasons"])
+            pullback_gate = SimpleNamespace(reasons=state["pullback_reasons"])
+            trend = SimpleNamespace(market_structure_engine=SimpleNamespace(**state["engine"]),
+                                    support=SimpleNamespace(current_atr=state["atr"]))
+            stage_timings["trend_and_timing"] = 0.0
+            engine = trend.market_structure_engine
+            feature_date = engine.feature_max_date
+            close = float(daily.iloc[-1].close)
+            atr = state["atr"]
         else:
+            # Each worker receives an independent immutable snapshot boundary;
+            # trend helpers may construct intermediate columns internally.
             timing_reasons = []
             timing_warnings = []
             trend_gate = pullback_gate = interpretation = trend_score = trend = None
+            timing_started = perf_counter()
             try:
                 trend_config = TrendIndicatorConfig()
-                trend = build_trend_snapshot(daily.copy(deep=True), benchmark.copy(deep=True),
-                                             config=trend_config,
-                                             as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol,
-                                             evidence_window=evidence_window)
-                interpretation = interpret_trend(trend)
-                trend_score = score_trend(trend, interpretation)
-                trend_gate = evaluate_trend_gate(trend_score, interpretation, trend)
-                pullback_gate = evaluate_pullback_gate(trend_gate, trend, interpretation)
+                trend = runtime.observe(symbol, "indicators", lambda: build_trend_snapshot(
+                    daily.copy(deep=True), benchmark.copy(deep=True),
+                    as_of_date=str(day.date()), symbol=symbol, benchmark=benchmark_symbol,
+                    config=trend_config, evidence_window=evidence_window))
+                interpretation = runtime.observe(symbol, "trend_interpretation", lambda: interpret_trend(trend))
+                trend_score = runtime.observe(symbol, "trend_score", lambda: score_trend(trend, interpretation))
+                trend_gate = runtime.observe(symbol, "trend_gate", lambda: evaluate_trend_gate(trend_score, interpretation, trend))
+                pullback_gate = runtime.observe(symbol, "timing_gate", lambda: evaluate_pullback_gate(trend_gate, trend, interpretation))
                 timing_warnings = list(getattr(trend, "warnings", ()) or ())
                 for result in (interpretation, trend_score, trend_gate, pullback_gate):
                     timing_warnings.extend(getattr(result, "warnings", ()) or ())
@@ -418,6 +450,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 timing_reasons = ["TIMING_EVIDENCE_UNAVAILABLE"]
             timing_reasons.extend(timing_warnings)
             timing_reasons = tuple(dict.fromkeys(timing_reasons))
+            stage_timings["trend_and_timing"] = (perf_counter() - timing_started) * 1000
             options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
             candidates = ()
             discovered_contracts = ()
@@ -428,12 +461,36 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         options_status, option_reasons = OptionsStatus.NOT_EVALUATED, ()
         candidates, discovered_contracts = (), ()
         option_identity = None
+        timing_evidence = (dict(saved_stage.stage_state.get("evidence", {})) if saved_stage else {
+            "price_indicator_series": list(getattr(trend, "evidence_series", ()) or ()),
+            "trend_evidence": {
+                "market_structure": _evidence_record(getattr(trend, "market_structure", None)),
+                "support": _evidence_record(getattr(trend, "support", None)),
+                "relative_strength": _evidence_record(getattr(trend, "relative_strength", None)),
+                "market_structure_engine": _evidence_record(engine),
+            },
+            "applicable_rules": _trend_rule_context(trend_config),
+        })
+        timing_state = {
+                    "evidence": timing_evidence,
+                    "timing": timing.value, "action": action.value,
+                    "reasons": timing_reasons, "warnings": timing_warnings,
+                    "trend_reasons": tuple(getattr(trend_gate, "reasons", ()) or ()),
+                    "pullback_reasons": tuple(getattr(pullback_gate, "reasons", ()) or ()),
+                    "engine": {key: (feature_date if key == "feature_max_date" else getattr(engine, key, None)) for key in
+                               ("feature_max_date", "structural_trend", "short_term_phase")},
+                    "atr": atr}
+        if on_stage is not None and saved_stage is None:
+            on_stage(TickerScanResult(symbol, run_id, asof, entry.status, timing,
+                final_action=action, reason_codes=timing_reasons, checkpoint_stage="OPTIONS_PENDING",
+                stage_state=timing_state, stage_timings_ms=dict(stage_timings)))
         if options_enabled is None:
             options_enabled = options_reader is not None
         if (timing == TimingStatus.TIMING_ENTRY_READY and
                 mode in {"PREMARKET", "INTRADAY"} and options_reader is None):
             option_reasons = ("LIVE_OPTIONS_SOURCE_REQUIRED",)
         elif timing == TimingStatus.TIMING_ENTRY_READY and options_enabled:
+            options_started = perf_counter()
             try:
                 option_day = (pd.Timestamp(asof).normalize() if options_reader is not None and
                               mode in {"PREMARKET", "INTRADAY"} else pd.Timestamp(feature_date).normalize())
@@ -447,8 +504,8 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 if options_reader is None:
                     option_identity = list(runtime._handle_key(option_handle))
                 contract_entry_date = option_day
-                candidates = discover_spreads(symbol, contract_entry_date, close, atr, chain,
-                                              rules=option_rules)
+                candidates = runtime.observe(symbol, "options_discovery", lambda: discover_spreads(
+                    symbol, contract_entry_date, close, atr, chain, rules=option_rules))
                 selected_contract = None
                 selection_result = None
                 selection_reasons = ()
@@ -496,10 +553,14 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
             except Exception as exc:
                 options_status = OptionsStatus.DATA_BLOCKED
                 option_reasons = (_safe_reason(exc),)
+            stage_timings["options"] = (perf_counter() - options_started) * 1000
         reasons = timing_reasons + option_reasons or ("TIMING_EVALUATED",)
         evaluated = TickerScanResult(symbol, run_id, asof, entry.status, timing, options_status,
             final_action=action, reason_codes=reasons, feature_max_date=str(feature_date),
             latency_ms=(perf_counter()-started)*1000,
+            stage_timings_ms=stage_timings,
+            cache_hits=("CHECKPOINT:TIMING",) if saved_stage else (),
+            stage_state=timing_state,
             spread_count=len(candidates),
             discovered_contracts=discovered_contracts,
             selected_contract=selected_contract,
@@ -519,16 +580,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
                 "timing_computed_at": (resume_row.candidate_state["timing_computed_at"] if resume_row
                                        else datetime.now(timezone.utc).isoformat()),
                 "timing_reason_codes": list(timing_reasons), "close": close, "atr": atr,
-                **({
-                "price_indicator_series": list(getattr(trend, "evidence_series", ()) or ()),
-                "trend_evidence": {
-                    "market_structure": _evidence_record(getattr(trend, "market_structure", None)),
-                    "support": _evidence_record(getattr(trend, "support", None)),
-                    "relative_strength": _evidence_record(getattr(trend, "relative_strength", None)),
-                    "market_structure_engine": _evidence_record(engine),
-                },
-                "applicable_rules": _trend_rule_context(trend_config),
-                } if trend is not None else {}),
+                **(timing_evidence if resume_row is None else {}),
                 "daily_identity": list(runtime._handle_key(handle)),
                 "options_identity": option_identity,
                 "options_evaluation_reused": False,
@@ -563,7 +615,7 @@ def _evaluate_symbol(symbol, *, run_id, asof, access, benchmark, benchmark_symbo
         } else ("DAILY_TIMING_FAILED", type(exc).__name__)
         return TickerScanResult(symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
             final_action=FinalAction.DATA_FAILED, reason_codes=reasons,
-            latency_ms=(perf_counter()-started)*1000)
+            latency_ms=(perf_counter()-started)*1000, stage_timings_ms=stage_timings)
 
 
 def _as_of(value) -> str:
@@ -924,6 +976,76 @@ def _serialize_preparation_result(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _checkpoint_identity(snapshot: PoolRunSnapshot, option_rules: Any, *, context=None) -> str:
+    """Stable identity for a resumable scan, including code and config inputs."""
+    source_root = Path(__file__).resolve().parents[1]
+    code_hash = hashlib.sha256(b"".join(
+        str(path.relative_to(source_root)).encode() + path.read_bytes()
+        for path in sorted(source_root.rglob("*.py")))).hexdigest()
+    payload = {
+        "universe_snapshot_id": snapshot.universe_snapshot_id,
+        "effective_daily_session": snapshot.effective_daily_session,
+        "mode": snapshot.mode,
+        "as_of": snapshot.as_of if snapshot.mode != "EOD" else snapshot.effective_daily_session,
+        "refresh_policy": snapshot.refresh_policy,
+        "code_hash": code_hash,
+        "option_rules": repr(option_rules),
+        "context": context,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _checkpoint_row(payload: Mapping[str, Any]) -> TickerScanResult:
+    values = dict(payload)
+    for field in ("reason_codes", "reentry_conditions", "trend_gate_reasons", "pullback_gate_reasons",
+                  "warnings", "discovered_contracts", "cache_hits", "selection_reason_codes", "preparation_reason_codes"):
+        if field in values and isinstance(values[field], list):
+            values[field] = tuple(values[field])
+    for field, enum in (("eligibility_status", EligibilityStatus), ("timing_status", TimingStatus),
+                        ("options_status", OptionsStatus), ("final_action", FinalAction)):
+        if field in values:
+            values[field] = enum(values[field])
+    return TickerScanResult(**values)
+
+
+def _load_scan_checkpoint(path: Path, identity: str) -> tuple[str, dict[str, TickerScanResult]]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if state.get("schema") != "pcs.pool.scan_checkpoint" or state.get("identity") != identity:
+            return "", {}
+        rows = {str(symbol).upper(): _checkpoint_row(row)
+                for symbol, row in (state.get("ticker_results") or {}).items()}
+        return str(state.get("run_id", "")), rows
+    except (OSError, ValueError, TypeError, KeyError):
+        return "", {}
+
+
+def _write_scan_checkpoint(path: Path, *, identity: str, run_id: str,
+                           snapshot: PoolRunSnapshot, rows: Mapping[str, TickerScanResult],
+                           stage: str, status: str = "IN_PROGRESS", encoded_rows=None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache = encoded_rows if encoded_rows is not None else {}
+    for key in set(cache)-set(rows):
+        del cache[key]
+    for key, value in rows.items():
+        if key not in cache or cache[key][0] is not value:
+            cache[key] = (value, json.dumps(asdict(value), default=str, sort_keys=True,
+                                           separators=(",", ":")))
+    header = json.dumps({"schema": "pcs.pool.scan_checkpoint", "schema_version": 1,
+                          "identity": identity, "run_id": run_id, "stage": stage,
+                          "status": status, "updated_at": datetime.now(timezone.utc).isoformat(),
+                          "snapshot": asdict(snapshot)}, default=str, sort_keys=True)
+    # Rows are immutable snapshots owned by the serialized checkpoint writer.
+    # Re-encode only a replaced row; keep the existing JSON schema and atomic
+    # full-file replacement, without walking every nested result on every save.
+    payload = header[:-1] + ',"ticker_results":{' + ','.join(
+        json.dumps(key) + ':' + cache[key][1] for key in sorted(rows)) + '}}'
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    temporary.write_text(payload, encoding="utf-8")
+    from pcs.data.access import _atomic_replace_with_retry
+    _atomic_replace_with_retry(temporary, path)
+
+
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
                  as_of: datetime | str = "latest",
                  mode: Literal["PREMARKET", "INTRADAY", "EOD"],
@@ -942,7 +1064,9 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  refresh_policy="INCREMENTAL_IF_NEEDED", max_data_workers=4,
                  max_scan_workers=None, stage_timeout_seconds: float | None = 60.0,
                  timeout_seconds: float | None = None, baseline_run_id: str | None = None,
-                 recovery_run_id: str | None = None, evidence_window: int = 60) -> PoolScanResult:
+                 recovery_run_id: str | None = None, resume: bool = True,
+                 new_run: bool = False, resume_run_id: str | None = None,
+                 checkpoint_callback=None, evidence_window: int = 60) -> PoolScanResult:
     """Scan pinned daily/options inputs; preparation requires explicit opt-in."""
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
@@ -993,17 +1117,68 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     audit_started = perf_counter()
     dependencies = tuple(dict.fromkeys((*[str(s).strip().upper() for s in spec.symbols],
                                         str(benchmark_symbol).strip().upper())))
-    from .runtime import ManifestSnapshot
-    manifest_snapshot = ManifestSnapshot.capture(access)
-    progress.update(stage="DAILY_PREFLIGHT")
-    readiness = _daily_preflight(dependencies, access, effective_asof)
-    progress.update(stage="VERIFIED_DAILY_AUDIT")
+    runtime = PoolRuntime(access=access, run_id=run_id, as_of=asof,
+                          telemetry=output_directory is not None, total=len(spec.symbols),
+                          stage_timeout_seconds=stage_timeout_seconds,
+                          daily_handle_resolver=daily_resolver,
+                          options_handle_resolver=(resolve_active_verified_options_handle
+                                                   if mode == "EOD" and options_reader is None else None))
+    # Establish the recovery anchor before the potentially expensive shared
+    # readiness audit.  This guarantees an interrupted audit leaves an
+    # identity-bound checkpoint, even when no ticker has reached scan yet.
+    candidate_resume_enabled = resume
+    checkpoint_path = None
+    checkpoint_identity = None
+    checkpoint_rows: dict[str, TickerScanResult] = {}
+    checkpoint_encoded_rows = {}
+    if output_directory is not None:
+        snapshot_seed = PoolRunSnapshot(
+            run_id, asof, mode, effective_asof,
+            f"{spec.universe_id}:{spec.version}:{spec.universe_role}:{len(spec.symbols)}:{spec.fingerprint}",
+            manifest_snapshot_id=runtime.manifest_snapshot_id,
+            requested_as_of=asof, effective_daily_session=effective_asof,
+            benchmark_status="PENDING")
+        config_root = Path("config")
+        config_identity = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+                           for p in sorted(config_root.rglob("*.yaml"))}
+        checkpoint_identity = _checkpoint_identity(snapshot_seed, option_rules, context={
+            "symbols": list(spec.symbols), "benchmark": benchmark_symbol,
+            "config": config_identity, "refresh_policy": refresh_policy,
+            "data_mode": data_mode, "event_policy": event_policy, "evidence_window": evidence_window,
+            "strategies": strategies, "exit_buffer": planned_exit_before_event_sessions,
+            "parquet_root": str(getattr(access, "parquet_root", "")),
+        })
+        # Injected readers may contain live state with no persistent identity.
+        # Never reuse their prior decisions merely because the callable is the same.
+        if any(callback is not None for callback in (options_reader, event_status_reader,
+                portfolio_status_reader, static_metadata_reader, contract_selector,
+                market_state_reader, portfolio_context_reader, event_calendar_reader)):
+            resume = False
+        checkpoint_path = Path(output_directory) / ".checkpoints" / f"{checkpoint_identity}.json"
+        prior_run_id, checkpoint_rows = _load_scan_checkpoint(checkpoint_path, checkpoint_identity) if resume else ("", {})
+        if resume_run_id and prior_run_id != resume_run_id:
+            raise ValueError("CHECKPOINT_IDENTITY_MISMATCH")
+        if prior_run_id and not new_run:
+            run_id = prior_run_id
+            runtime.run_id = run_id
+            snapshot_seed = replace(snapshot_seed, run_id=run_id)
+        _write_scan_checkpoint(checkpoint_path, identity=checkpoint_identity, run_id=run_id,
+                               snapshot=snapshot_seed, rows=checkpoint_rows, stage="READINESS_AUDIT",
+                               status="IN_PROGRESS", encoded_rows=checkpoint_encoded_rows)
+        if checkpoint_callback is not None:
+            checkpoint_callback(str(checkpoint_path), checkpoint_identity)
+    progress = ProgressCheckpoint(output_directory, run_id, metadata={
+        "as_of": asof, "mode": mode, "universe_id": spec.universe_id,
+        "universe_count": len(spec.symbols), "effective_daily_session": effective_asof,
+    })
     initial = _audit_verified_daily(
-        readiness,
-        dependencies, access, effective_asof, daily_resolver,
-        max_workers=max_workers, timeout_seconds=stage_timeout_seconds,
-        manifest_snapshot=manifest_snapshot)
+        runtime.observe("", "manifest_index_preflight", lambda: _daily_preflight(
+            dependencies, access, effective_asof, runtime.manifest_snapshot)),
+        dependencies, access, effective_asof, daily_resolver, runtime=runtime,
+        max_workers=max_workers, timeout_seconds=stage_timeout_seconds)
     stage_latency["readiness_audit"] = (perf_counter() - audit_started) * 1000
+    if runtime.manifest_snapshot is not None:
+        runtime.manifest_snapshot.assert_current()
     prep_required = tuple(symbol for symbol in dependencies
                           if initial[symbol].status == "PREP_REQUIRED")
     hard_blocked = {symbol: initial[symbol] for symbol in dependencies
@@ -1015,6 +1190,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         prep_results, prep_counters = _bounded_daily_preparation(
             prep_required, access, effective_asof,
             max_workers=max_data_workers, timeout_seconds=stage_timeout_seconds)
+        runtime.refresh_manifest_snapshot()
         stage_latency["daily_preparation"] = (perf_counter() - prep_started) * 1000
     else:
         stage_latency["daily_preparation"] = 0.0
@@ -1067,9 +1243,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
 
     options_resolver = (resolve_active_verified_options_handle
                         if mode == "EOD" and options_reader is None else None)
-    runtime = PoolRuntime(access=access, stage_timeout_seconds=stage_timeout_seconds,
-                          daily_handle_resolver=daily_resolver,
-                          options_handle_resolver=options_resolver)
+    # The runtime was created before the readiness audit so verified daily
+    # handles are shared by audit, benchmark, and ticker stages.
     benchmark = None
     progress.update(stage="BENCHMARK")
     benchmark_started = perf_counter()
@@ -1130,9 +1305,78 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             progress.save(preflight_results[normalized])
         else:
             queued_symbols.append(symbol)
+    if output_directory is not None:
+        prior_run_id, prior_rows = _load_scan_checkpoint(checkpoint_path, checkpoint_identity) if resume else ("", {})
+        if prior_run_id:
+            run_id = prior_run_id
+            snapshot = replace(snapshot, run_id=run_id)
+            checkpoint_rows = {}
+            for symbol, row in prior_rows.items():
+                if symbol not in queued_symbols or any(code in row.reason_codes for code in
+                        ("WORKER_TIMEOUT", "WORKER_FAILED", "STAGE_DEADLINE_NOT_STARTED", "DAILY_TIMING_FAILED")):
+                    continue
+                daily_identity = runtime.input_identity(symbol, benchmark_symbol)
+                if row.daily_input_identity != daily_identity:
+                    continue
+                identity = runtime.input_identity(symbol, benchmark_symbol,
+                    options=row.timing_status == TimingStatus.TIMING_ENTRY_READY)
+                if row.input_identity == identity:
+                    checkpoint_rows[symbol] = row
+                elif row.stage_state:
+                    checkpoint_rows[symbol] = replace(row, checkpoint_stage="OPTIONS_PENDING")
+            for symbol in tuple(spec.symbols):
+                normalized = str(symbol).strip().upper()
+                if normalized in checkpoint_rows and normalized in queued_symbols and checkpoint_rows[normalized].checkpoint_stage == "COMPLETE":
+                    queued_symbols.remove(symbol)
+                if normalized in checkpoint_rows and checkpoint_rows[normalized].checkpoint_stage == "COMPLETE":
+                    checkpoint_rows[normalized] = replace(
+                        checkpoint_rows[normalized], run_id=run_id,
+                        cache_hits=tuple(dict.fromkeys((*checkpoint_rows[normalized].cache_hits,
+                                                        "CHECKPOINT:DAILY_TIMING"))))
+                    preflight_results.pop(normalized, None)
+        checkpoint_rows.update(preflight_results)
+        _write_scan_checkpoint(checkpoint_path, identity=checkpoint_identity, run_id=run_id,
+                               snapshot=snapshot, rows=checkpoint_rows,
+                               stage="PREFLIGHT", status="IN_PROGRESS", encoded_rows=checkpoint_encoded_rows)
+
+    checkpoint_lock = RLock()
+    accepting_results = True
+
+    def save_scan_outcome(outcome):
+        with checkpoint_lock:
+            if accepting_results:
+                save_locked(outcome)
+
+    def save_locked(outcome):
+        if checkpoint_path is None:
+            return
+        if outcome.value is not None:
+            checkpoint_rows[outcome.symbol] = replace(outcome.value,
+                daily_input_identity=runtime.input_identity(outcome.symbol, benchmark_symbol),
+                input_identity=runtime.input_identity(outcome.symbol, benchmark_symbol,
+                    options=outcome.value.timing_status == TimingStatus.TIMING_ENTRY_READY))
+        else:
+            checkpoint_rows[outcome.symbol] = TickerScanResult(
+                outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
+                final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
+        runtime.observe(outcome.symbol, "save_result", lambda: _write_scan_checkpoint(
+            checkpoint_path, identity=checkpoint_identity, run_id=run_id,
+            snapshot=snapshot, rows=checkpoint_rows, stage="DAILY_TIMING", status="IN_PROGRESS",
+            encoded_rows=checkpoint_encoded_rows))
+        runtime.processed = sum(row.checkpoint_stage == "COMPLETE" for row in checkpoint_rows.values())
+        runtime.last_result_saved_at = datetime.now(timezone.utc).isoformat()
+        print(json.dumps({"status": "POOL_SCAN_PROGRESS", "run_id": run_id,
+                          "processed": runtime.processed, "remaining": len(spec.symbols)-runtime.processed,
+                          "total": len(spec.symbols),
+                          "current_symbol": outcome.symbol, "stage": "DAILY_TIMING",
+                          "last_result_saved_at": datetime.now(timezone.utc).isoformat()},
+                         sort_keys=True), file=__import__("sys").stderr, flush=True)
+
     from .artifacts import CandidateCheckpoints
     checkpoints = CandidateCheckpoints(output_directory, run_id)
     checkpoint_identities = {}
+
+    resume_enabled = candidate_resume_enabled
 
     def scan_symbol(symbol):
         resume = None
@@ -1149,7 +1393,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 checkpoint_identities[symbol] = identity
                 # Missing immutable identity is never compatible evidence.
                 if getattr(handle, "checksum", None) and getattr(handle, "generation_id", None):
-                    resume = checkpoints.resume(symbol, identity)
+                    if resume_enabled:
+                        resume = checkpoints.resume(symbol, identity)
             except Exception:
                 # The canonical evaluator owns the fail-closed reason code;
                 # checkpoint lookup must never mask it as WORKER_FAILED.
@@ -1157,8 +1402,11 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         if resume is not None:
             result = replace(resume, run_id=run_id, as_of=asof, event_status="NOT_EVALUATED",
                 portfolio_status="NOT_EVALUATED", final_action=FinalAction.WAIT,
+                checkpoint_stage="OPTIONS_PENDING",
                 candidate_state={**resume.candidate_state, "timing_reused": True})
-            progress.save(result)
+            with checkpoint_lock:
+                if accepting_results:
+                    progress.save(result)
             return result
         result = _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
             runtime=runtime, benchmark=benchmark, benchmark_symbol=benchmark_symbol,
@@ -1169,19 +1417,33 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             options_enabled=(options_reader is not None), mode=mode,
             contract_selector=contract_selector, market_state_reader=market_state_reader,
             portfolio_context_reader=portfolio_context_reader, event_calendar_reader=event_calendar_reader,
-            evidence_window=evidence_window)
-        progress.save(result)
+            evidence_window=evidence_window,
+            saved_stage=(checkpoint_rows.get(symbol) if checkpoint_rows.get(symbol) is not None
+                         and checkpoint_rows[symbol].checkpoint_stage != "COMPLETE" else None),
+            on_stage=lambda row: save_scan_outcome(SimpleNamespace(symbol=row.symbol, value=row)))
+        if mode == "EOD" and options_reader is None and result.timing_status == TimingStatus.TIMING_ENTRY_READY:
+            result = replace(result, checkpoint_stage="OPTIONS_PENDING")
+        with checkpoint_lock:
+            if accepting_results:
+                progress.save(result)
         return result
 
     progress.update(stage="SCAN")
     scan = runtime.run_stage(tuple(queued_symbols), scan_symbol,
-        stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds)
+        stage_name="scan", max_workers=(max_scan_workers or max_workers), timeout_seconds=stage_timeout_seconds,
+        on_outcome=save_scan_outcome)
+    with checkpoint_lock:
+        accepting_results = False
+    if runtime.manifest_snapshot is not None:
+        runtime.manifest_snapshot.assert_current()
     stage_latency["scan"] = runtime.stage_latency_ms.get("scan", 0.0)
     outcomes = scan.outcomes
     worker_results = {outcome.symbol: (outcome.value if outcome.value is not None else TickerScanResult(
         outcome.symbol, run_id, asof, EligibilityStatus.DATA_BLOCKED,
         final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes))
         for outcome in outcomes}
+    worker_results.update({symbol: row for symbol, row in checkpoint_rows.items()
+                           if symbol not in worker_results and symbol not in preflight_results})
     progress.update(stage="OPTIONS")
     options_started = perf_counter()
     options_deadline = options_started + stage_timeout_seconds
@@ -1202,6 +1464,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             identity = checkpoint_identities.get(symbol)
             if identity:
                 checkpoints.save(candidate, identity)
+            with checkpoint_lock:
+                save_locked(SimpleNamespace(symbol=symbol, value=replace(candidate, checkpoint_stage="OPTIONS_PENDING")))
         def evaluate(candidate):
             return _evaluate_symbol(symbol, run_id=run_id, asof=asof, access=access,
                 runtime=runtime, benchmark=benchmark, benchmark_symbol=benchmark_symbol,
@@ -1221,7 +1485,10 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 reason_codes=tuple(row.candidate_state["timing_reason_codes"]) + (_safe_reason(exc),),
                 candidate_state={**row.candidate_state, "resume_stage": "OPTIONS", "options_data_status": "WAITING_DATA"})
             save(row)
-        worker_results[symbol] = row
+        worker_results[symbol] = replace(row, checkpoint_stage="COMPLETE")
+        row = worker_results[symbol]
+        with checkpoint_lock:
+            save_locked(SimpleNamespace(symbol=symbol, value=row))
         progress.save(row)
         if row.candidate_state.get("preparation_receipt") and row.candidate_state.get("preparation_attempt_run_id") == run_id:
             options_preparation_results[symbol] = row.candidate_state["preparation_receipt"]
@@ -1322,6 +1589,16 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     summary["run_status"] = ("PARTIAL_TIMEOUT" if any("WORKER_TIMEOUT" in r.reason_codes or "STAGE_DEADLINE_NOT_STARTED" in r.reason_codes for r in results)
                               else "COMPLETED_NO_EVALUABLE_TICKERS" if not any(r.timing_status != TimingStatus.NOT_EVALUATED for r in results)
                               else "COMPLETED")
+    summary["timeout_count"] = sum("WORKER_TIMEOUT" in r.reason_codes for r in results)
+    summary["unprocessed_count"] = sum("STAGE_DEADLINE_NOT_STARTED" in r.reason_codes for r in results)
+    summary["execution_failed_count"] = sum(any(c in r.reason_codes for c in
+        ("WORKER_FAILED", "DAILY_TIMING_FAILED")) for r in results)
+    summary["blocked_assessment_count"] = sum(
+        (r.eligibility_status == EligibilityStatus.DATA_BLOCKED or r.options_status == OptionsStatus.DATA_BLOCKED
+         or "TIMING_EVIDENCE_UNAVAILABLE" in r.reason_codes)
+        and not any(c in r.reason_codes for c in ("WORKER_FAILED", "DAILY_TIMING_FAILED", "WORKER_TIMEOUT", "STAGE_DEADLINE_NOT_STARTED"))
+        for r in results)
+    counters["checkpoint_hits"] = sum(bool(r.cache_hits) for r in results)
     result = PoolScanResult(snapshot, tuple(results), summary,
                             stage_latency_ms=stage_latency, counters=counters,
                             discovered_contracts=tuple(
@@ -1332,6 +1609,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     validate_pool_result(result, spec.symbols)
     stage_latency["validation"] = (perf_counter() - validation_started) * 1000
     stage_latency["total"] = (perf_counter() - started) * 1000
+    stage_latency.update({f"operation:{key}": value for key, value in runtime.stage_latency_ms.items()
+                          if key != "scan"})
     result = PoolScanResult(snapshot, tuple(results), summary,
                             stage_latency_ms=stage_latency, counters=counters,
                             discovered_contracts=tuple(
@@ -1339,12 +1618,25 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                                 for candidate in row.discovered_contracts),
                             preparation_results=preparation_results,
                             recovery_summary=recovery_summary)
+    if checkpoint_path is not None:
+        final_rows = {row.symbol: (checkpoint_rows[row.symbol]
+                      if row.symbol in checkpoint_rows and "WORKER_TIMEOUT" in row.reason_codes
+                      else replace(row,
+                          daily_input_identity=runtime.input_identity(row.symbol, benchmark_symbol),
+                          input_identity=runtime.input_identity(row.symbol, benchmark_symbol,
+                              options=row.timing_status == TimingStatus.TIMING_ENTRY_READY)))
+                      for row in result.ticker_results}
+        _write_scan_checkpoint(checkpoint_path, identity=checkpoint_identity, run_id=run_id,
+                               snapshot=snapshot, rows=final_rows,
+                               stage="DAILY_TIMING", status="COMPLETE" if summary["run_status"] == "COMPLETED" else "PARTIAL",
+                               encoded_rows=checkpoint_encoded_rows)
     if output_directory is not None:
         progress.update(stage="PERSISTING")
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory, baseline_run_id=baseline_run_id,
                                recovery_run_id=recovery_run_id, evidence_window=evidence_window)
         progress.update(stage="COMPLETE", completed=True)
+    runtime.close()
     return result
 
 

@@ -252,7 +252,8 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
     rows = json.dumps(flat_rows, default=str, sort_keys=True, indent=2)
     files["static_eligibility.json"] = _write_atomic(root / "static_eligibility.json", rows)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
-    parquet_rows = [{**row, "candidate_state": json.dumps(row.get("candidate_state", {}), default=str, sort_keys=True)}
+    parquet_rows = [{**row, **{key: json.dumps(row.get(key, {}), default=str, sort_keys=True)
+                    for key in ("candidate_state", "stage_timings_ms", "stage_state")}}
                     for row in flat_rows]
     files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
     files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
@@ -325,12 +326,16 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
                             "reason_codes": list(row.reason_codes)}, sort_keys=True) + "\n"
                 for row in result.ticker_results))
     run_status = str(result.summary.get("run_status", "COMPLETED"))
-    successful = run_status in {"COMPLETED", "COMPLETED_NO_EVALUABLE_TICKERS"}
+    complete = (run_status in
+                {"COMPLETED", "COMPLETED_NO_EVALUABLE_TICKERS"}
+                and not any(any(code in row.reason_codes for code in
+                    ("WORKER_TIMEOUT", "STAGE_DEADLINE_NOT_STARTED", "POOL_SCAN_TIMEOUT", "POOL_SCAN_PROCESS_FAILED"))
+                    for row in result.ticker_results))
     manifest = {
-        "current": successful, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
+        "current": complete, "run_id": result.snapshot.run_id, "as_of": result.snapshot.as_of,
         "mode": result.snapshot.mode, "universe_snapshot_id": result.snapshot.universe_snapshot_id,
         "stage_status": {"RAW_UNIVERSE": "COMPLETE", "STATIC_ELIGIBILITY": "COMPLETE",
-                          "DAILY_TIMING": "COMPLETE" if successful else "PARTIAL",
+                          "DAILY_TIMING": "COMPLETE" if complete else "PARTIAL",
                           "OPTIONS_SHORTLIST": "COMPLETE" if options_evaluated else "NOT_RUN",
                           "EVENT_GATE": "COMPLETE" if any(row.event_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN",
                           "PORTFOLIO_GATE": "COMPLETE" if any(row.portfolio_status != "NOT_EVALUATED" for row in result.ticker_results) else "NOT_RUN"},

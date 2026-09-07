@@ -318,6 +318,9 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
 def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
     """Resolve one complete active daily generation without refresh or promotion."""
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
+    if (manifest_snapshot is not None and
+            Path(str(manifest_snapshot.path)).resolve() != Path(access.manifest_path).resolve()):
+        manifest_snapshot = None
     manifest = (manifest_snapshot.rows_for("daily", s) if manifest_snapshot is not None and
                 hasattr(manifest_snapshot, "rows_for") else
                 manifest_snapshot.to_frame() if manifest_snapshot is not None and
@@ -376,7 +379,8 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     for _, row in candidates.iterrows():
         partition = str(row.partition_ids)
         generation = str(row.active_generation)
-        part_frame = access.read_pinned_generation("daily", s, partition, generation)
+        snapshot_kwargs = {"manifest_snapshot": manifest_snapshot} if manifest_snapshot is not None else {}
+        part_frame = access.read_pinned_generation("daily", s, partition, generation, **snapshot_kwargs)
         if "date" not in part_frame.columns:
             raise ValueError("DAILY_SCHEMA_INCOMPLETE")
         part_dates = pd.to_datetime(part_frame["date"], errors="coerce").dt.normalize()

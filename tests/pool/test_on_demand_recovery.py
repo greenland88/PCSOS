@@ -281,3 +281,33 @@ def test_read_failure_invalidates_old_options_identity_without_losing_timing(bun
     assert row.candidate_state["options_identity"] is None
     assert row.candidate_state["verified_read_status"] == "FAILED"
     assert result.summary["options_verified_count"] == 0
+
+
+def test_full_queue_checkpoint_keeps_options_result_and_revalidates_quotes(bundle, monkeypatch):
+    access, _, timing, rules = bundle
+    provider(monkeypatch)
+    args = dict(symbols=("AAA",), mode="EOD", as_of="2026-09-04T17:00:00-04:00",
+                data_access=access, data_mode="PREPARE_THEN_SCAN", auto_prepare_data=True,
+                option_rules=rules, output_directory="merged_runs", max_workers=1)
+    first = runner.run_pcs_pool(**args)
+    row = first.ticker_results[0]
+    assert row.options_status == OptionsStatus.DISCOVERED
+    state = json.loads(next(Path("merged_runs/.checkpoints").glob("*.json")).read_text())
+    assert state["ticker_results"]["AAA"]["options_status"] == row.options_status.value
+    assert state["ticker_results"]["AAA"]["checkpoint_stage"] == "COMPLETE"
+    second = runner.run_pcs_pool(**args, new_run=True)
+    assert first.snapshot.run_id != second.snapshot.run_id
+    assert timing == ["AAA"]
+    assert second.ticker_results[0].options_status == row.options_status
+    assert second.ticker_results[0].spread_count == row.spread_count
+    assert second.counters["checkpoint_hits"] == 1
+    # A new options generation invalidates only options; the queue checkpoint
+    # and candidate continuation must agree on which timing remains valid.
+    changed = chain()
+    changed["bid"] = [.01, .01]
+    changed["ask"] = [.02, .02]
+    access.promote_generation(changed, "options", "AAA", "year=2026/quarter=3", source_version="changed")
+    third = runner.run_pcs_pool(**args)
+    assert timing == ["AAA"]
+    assert third.ticker_results[0].spread_count == 0
+    assert third.ticker_results[0].options_status == OptionsStatus.REJECT

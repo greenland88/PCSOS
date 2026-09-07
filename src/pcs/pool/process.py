@@ -31,6 +31,9 @@ class ReadOnlyScanRequest:
     rules: str = "config/pcs_rules.yaml"
     output_directory: str | None = "pool_scan_runs"
     decision_context_json: str | None = None
+    resume: bool = True
+    new_run: bool = False
+    resume_run_id: str | None = None
 
 
 def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
@@ -51,6 +54,9 @@ def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
             option_rules=load_pool_option_rules(request.rules),
             output_directory=request.output_directory,
             **adapters,
+            resume=request.resume,
+            new_run=request.new_run, resume_run_id=request.resume_run_id,
+            checkpoint_callback=lambda path, identity: sender.send(("checkpoint", (path, identity))),
         )
         sender.send(("result", result))
     except Exception as exc:
@@ -146,25 +152,31 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
     reason = "POOL_SCAN_PROCESS_FAILED"
     detail = "scan process ended without a result"
     launched = False
+    checkpoint_anchor = None
     try:
         process.start()
         launched = True
         sender.close()
-        remaining = max(0.0, timeout_seconds - (perf_counter() - started))
-        if receiver.poll(remaining):
+        while True:
+            remaining = max(0.0, timeout_seconds - (perf_counter() - started))
+            if not receiver.poll(remaining):
+                reason = "POOL_SCAN_TIMEOUT"
+                detail = "read-only scan exceeded its process deadline"
+                break
             try:
                 kind, payload = receiver.recv()
             except EOFError:
-                pass
+                break
             else:
+                if kind == "checkpoint":
+                    checkpoint_anchor = payload
+                    continue
                 if kind == "result" and isinstance(payload, PoolScanResult):
                     from .validation import validate_pool_result
                     validate_pool_result(payload, spec.symbols)
                     return payload
                 detail = str(payload)
-        else:
-            reason = "POOL_SCAN_TIMEOUT"
-            detail = "read-only scan exceeded its process deadline"
+                break
     finally:
         sender.close()
         receiver.close()
@@ -180,4 +192,42 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
                 process.join(timeout=0.9)
             process.close()
 
+    if checkpoint_anchor:
+        import json
+        from pathlib import Path
+        from dataclasses import replace
+        from .runner import _load_scan_checkpoint
+        path, identity = checkpoint_anchor
+        saved_id, saved = _load_scan_checkpoint(Path(path), identity)
+        if saved_id:
+            state = json.loads(Path(path).read_text(encoding="utf-8"))
+            snapshot = PoolRunSnapshot(**state["snapshot"])
+            # The startup anchor preserves the old cache for recovery, but
+            # these rows have not yet passed this invocation's input checks.
+            if state.get("stage") == "READINESS_AUDIT":
+                saved = {}
+            rows = tuple(
+                replace(saved[symbol], run_id=snapshot.run_id, as_of=snapshot.as_of)
+                if symbol in saved and saved[symbol].checkpoint_stage == "COMPLETE"
+                else replace(saved[symbol], run_id=snapshot.run_id, as_of=snapshot.as_of,
+                             reason_codes=("WORKER_TIMEOUT",)) if symbol in saved
+                else TickerScanResult(symbol, saved_id, snapshot.as_of, EligibilityStatus.DATA_BLOCKED,
+                                     reason_codes=("STAGE_DEADLINE_NOT_STARTED",))
+                for symbol in spec.symbols)
+            from .models import TimingStatus, OptionsStatus
+            result = PoolScanResult(snapshot, rows, summary={
+                "raw_count": len(rows), "run_status": "PARTIAL_TIMEOUT" if reason == "POOL_SCAN_TIMEOUT" else "FAILED",
+                "timeout_count": sum("WORKER_TIMEOUT" in r.reason_codes for r in rows),
+                "unprocessed_count": sum("STAGE_DEADLINE_NOT_STARTED" in r.reason_codes for r in rows),
+                "pcs_eligible_count": sum(r.eligibility_status == EligibilityStatus.PCS_ELIGIBLE for r in rows),
+                "timing_watch_count": sum(r.timing_status == TimingStatus.WATCH for r in rows),
+                "timing_entry_ready_count": sum(r.timing_status == TimingStatus.TIMING_ENTRY_READY for r in rows),
+                "options_check_count": sum(r.options_status != OptionsStatus.NOT_EVALUATED for r in rows),
+                "spread_count": sum(r.spread_count for r in rows), "pcs_trade_ready_count": 0,
+                "missing_ticker_decisions": 0,
+            }, stage_latency_ms={"total": (perf_counter()-started)*1000})
+            if request.output_directory:
+                from .artifacts import persist_pool_artifacts
+                persist_pool_artifacts(result, request.output_directory)
+            return result
     return _timeout_result(request, spec, started, reason, detail)

@@ -20,7 +20,8 @@ class WorkerOutcome:
 
 def run_symbol_workers(symbols: Sequence[str], worker: Callable[[str], R], *, max_workers: int = 8,
                        timeout_seconds: float | None = 60.0,
-                       include_error_details: bool = False) -> tuple[WorkerOutcome, ...]:
+                       include_error_details: bool = False,
+                       on_outcome: Callable[[WorkerOutcome], None] | None = None) -> tuple[WorkerOutcome, ...]:
     """Bound result collection, preserving order and not starting late work.
 
     Python threads cannot interrupt a running callable. This API cancels queued
@@ -64,6 +65,8 @@ def run_symbol_workers(symbols: Sequence[str], worker: Callable[[str], R], *, ma
                     if include_error_details:
                         reasons += (str(exc) or type(exc).__name__,)
                     outcomes[symbol] = WorkerOutcome(symbol, reason_codes=reasons)
+                if on_outcome is not None:
+                    on_outcome(outcomes[symbol])
                 if perf_counter() < deadline:
                     next_symbol = next(pending, None)
                     if next_symbol is not None:

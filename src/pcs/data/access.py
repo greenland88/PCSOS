@@ -1031,7 +1031,8 @@ class PCSDataAccess:
         """
         return self.read_prices(symbol, start_date, end_date)
 
-    def read_verified_dataset(self, handle, start_date=None, end_date=None, *, required_warmup_rows: int = 0) -> pd.DataFrame:
+    def read_verified_dataset(self, handle, start_date=None, end_date=None, *, required_warmup_rows: int = 0,
+                              manifest_snapshot=None) -> pd.DataFrame:
         """Read and validate every partition represented by a verified handle."""
         from .correctness_gate import validate_price_input, DataCorrectnessError
         if getattr(handle, "verification_status", None) != "VERIFIED":
@@ -1046,8 +1047,9 @@ class PCSDataAccess:
             raise DataCorrectnessError("UNPINNED_INPUT")
         if len(generation_ids) == 1:
             generation_ids = generation_ids * len(handle.partitions)
+        snapshot_kwargs = {"manifest_snapshot": manifest_snapshot} if manifest_snapshot is not None else {}
         frames = [self.read_pinned_generation(handle.dataset, handle.ticker, partition, generation,
-                                              manifest_identity=manifest_identity or None)
+                                              manifest_identity=manifest_identity or None, **snapshot_kwargs)
                   for partition, generation in zip(handle.partitions, generation_ids)]
         if not frames:
             raise DataCorrectnessError("UNPINNED_INPUT")
@@ -1300,11 +1302,14 @@ class PCSDataAccess:
 
     def read_pinned_generation(self, dataset: str, symbol: str, partition: str,
                                generation_id: str, *, manifest_path=None,
-                               manifest_identity=None) -> pd.DataFrame:
+                               manifest_identity=None, manifest_snapshot=None) -> pd.DataFrame:
         """Read only the manifest-active immutable generation."""
         if not generation_id: raise DataAccessError("GENERATION_REQUIRED")
         selected_manifest = manifest_identity or manifest_path or self.manifest_path
-        manifest=self._read_manifest(Path(selected_manifest))
+        compatible = (manifest_snapshot is not None and
+                      Path(str(manifest_snapshot.path)).resolve() == Path(selected_manifest).resolve())
+        manifest = (manifest_snapshot.rows_for(dataset, symbol) if compatible else
+                    self._read_manifest(Path(selected_manifest)))
         parts=dict(x.split("=",1) for x in str(partition).split("/") if "=" in x)
         mask=(manifest.get("dataset",pd.Series(dtype=str)).astype(str).eq(str(dataset)) &
               manifest.get("symbol",pd.Series(dtype=str)).astype(str).str.upper().eq(self._symbol(symbol)) &
@@ -1318,6 +1323,8 @@ class PCSDataAccess:
         if not path.exists(): raise DataAccessError("ACTIVE_GENERATION_PATH_MISSING")
         frame=pd.read_parquet(path)
         if len(frame) != int(row.row_count) or not self._semantic_hash_matches(frame, str(row.content_hash)): raise DataAccessError("READ_BACK_CHECKSUM_MISMATCH")
+        if compatible:
+            manifest_snapshot.assert_current()
         return frame
 
     def active_generation_record(self, dataset: str, symbol: str, partition: str, *, manifest_path=None,
