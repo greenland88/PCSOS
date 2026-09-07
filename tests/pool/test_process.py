@@ -93,3 +93,22 @@ def test_cli_rejects_invalid_requests_before_start(monkeypatch, capsys, args):
         cli.main()
     assert exc.value.code == 2
     assert "POOL_SCAN_STARTED" not in capsys.readouterr().err
+
+def _unverified_cache_then_hang(request,sender):
+    from pcs.pool.runner import _write_scan_checkpoint
+    root=Path(request.output_directory)
+    snapshot=PoolRunSnapshot('new-run',request.as_of,'EOD',None,'fixture')
+    old=TickerScanResult('AAA','old-run','2020-01-01',EligibilityStatus.PCS_ELIGIBLE)
+    path=root/'.checkpoints'/'fixture.json'
+    _write_scan_checkpoint(path,identity='i',run_id='new-run',snapshot=snapshot,
+                           rows={'AAA':old},stage='READINESS_AUDIT')
+    sender.send(('checkpoint',(str(path),'i')))
+    time.sleep(60)
+
+def test_timeout_during_revalidation_does_not_present_old_cache_as_current(tmp_path):
+    result=run_read_only_scan(ReadOnlyScanRequest(symbols=('AAA',),output_directory=str(tmp_path)),
+                             timeout_seconds=4,_worker=_unverified_cache_then_hang)
+    assert result.summary['unprocessed_count']==1
+    assert result.ticker_results[0].run_id=='new-run'
+    assert result.ticker_results[0].reason_codes==('STAGE_DEADLINE_NOT_STARTED',)
+    assert json.loads((tmp_path/'new-run'/'run_manifest.json').read_text())['current'] is False

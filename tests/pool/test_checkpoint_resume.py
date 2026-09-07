@@ -101,3 +101,26 @@ def test_saved_timing_continues_without_recomputing_indicators(monkeypatch):
     assert result.checkpoint_stage=='COMPLETE'
     assert result.cache_hits==('CHECKPOINT:TIMING',)
     assert result.timing_status==saved[0].timing_status
+
+def test_checkpoint_reencodes_only_replaced_rows(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from pcs.pool.models import PoolRunSnapshot
+    snapshot=PoolRunSnapshot('r','2025-08-08','EOD','2025-08-08','u')
+    rows={s:TickerScanResult(s,'r',snapshot.as_of,EligibilityStatus.PCS_ELIGIBLE) for s in ('AAA','BBB')}
+    encoded={}; calls=[]; original=runner.asdict
+    def track(value):
+        if isinstance(value,TickerScanResult):calls.append(value.symbol)
+        return original(value)
+    monkeypatch.setattr(runner,'asdict',track)
+    path=tmp_path/'checkpoint.json'
+    args=dict(identity='i',run_id='r',snapshot=snapshot,stage='DAILY_TIMING',encoded_rows=encoded)
+    runner._write_scan_checkpoint(path,rows=rows,**args)
+    rows['BBB']=replace(rows['BBB'],latency_ms=7)
+    runner._write_scan_checkpoint(path,rows=rows,**args)
+    assert calls==['AAA','BBB','BBB']
+    run,restored=runner._load_scan_checkpoint(path,'i')
+    assert run=='r' and restored==rows
+    del rows['AAA']
+    runner._write_scan_checkpoint(path,rows=rows,**args)
+    assert 'AAA' not in encoded
+    assert set(runner._load_scan_checkpoint(path,'i')[1])=={'BBB'}

@@ -128,9 +128,15 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
         if saved_id:
             state = json.loads(Path(path).read_text(encoding="utf-8"))
             snapshot = PoolRunSnapshot(**state["snapshot"])
+            # The startup anchor preserves the old cache for recovery, but
+            # these rows have not yet passed this invocation's input checks.
+            if state.get("stage") == "READINESS_AUDIT":
+                saved = {}
             rows = tuple(
-                saved[symbol] if symbol in saved and saved[symbol].checkpoint_stage == "COMPLETE"
-                else replace(saved[symbol], reason_codes=("WORKER_TIMEOUT",)) if symbol in saved
+                replace(saved[symbol], run_id=snapshot.run_id, as_of=snapshot.as_of)
+                if symbol in saved and saved[symbol].checkpoint_stage == "COMPLETE"
+                else replace(saved[symbol], run_id=snapshot.run_id, as_of=snapshot.as_of,
+                             reason_codes=("WORKER_TIMEOUT",)) if symbol in saved
                 else TickerScanResult(symbol, saved_id, snapshot.as_of, EligibilityStatus.DATA_BLOCKED,
                                      reason_codes=("STAGE_DEADLINE_NOT_STARTED",))
                 for symbol in spec.symbols)

@@ -727,7 +727,7 @@ def _checkpoint_identity(snapshot: PoolRunSnapshot, option_rules: Any, *, contex
 def _checkpoint_row(payload: Mapping[str, Any]) -> TickerScanResult:
     values = dict(payload)
     for field in ("reason_codes", "reentry_conditions", "trend_gate_reasons", "pullback_gate_reasons",
-                  "warnings", "discovered_contracts", "cache_hits", "selection_reason_codes"):
+                  "warnings", "discovered_contracts", "cache_hits", "selection_reason_codes", "preparation_reason_codes"):
         if field in values and isinstance(values[field], list):
             values[field] = tuple(values[field])
     for field, enum in (("eligibility_status", EligibilityStatus), ("timing_status", TimingStatus),
@@ -751,17 +751,28 @@ def _load_scan_checkpoint(path: Path, identity: str) -> tuple[str, dict[str, Tic
 
 def _write_scan_checkpoint(path: Path, *, identity: str, run_id: str,
                            snapshot: PoolRunSnapshot, rows: Mapping[str, TickerScanResult],
-                           stage: str, status: str = "IN_PROGRESS") -> None:
+                           stage: str, status: str = "IN_PROGRESS", encoded_rows=None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"schema": "pcs.pool.scan_checkpoint", "schema_version": 1,
+    cache = encoded_rows if encoded_rows is not None else {}
+    for key in set(cache)-set(rows):
+        del cache[key]
+    for key, value in rows.items():
+        if key not in cache or cache[key][0] is not value:
+            cache[key] = (value, json.dumps(asdict(value), default=str, sort_keys=True,
+                                           separators=(",", ":")))
+    header = json.dumps({"schema": "pcs.pool.scan_checkpoint", "schema_version": 1,
                           "identity": identity, "run_id": run_id, "stage": stage,
                           "status": status, "updated_at": datetime.now(timezone.utc).isoformat(),
-                          "snapshot": asdict(snapshot),
-                          "ticker_results": {key: asdict(value) for key, value in rows.items()}},
-                         default=str, sort_keys=True, indent=2)
+                          "snapshot": asdict(snapshot)}, default=str, sort_keys=True)
+    # Rows are immutable snapshots owned by the serialized checkpoint writer.
+    # Re-encode only a replaced row; keep the existing JSON schema and atomic
+    # full-file replacement, without walking every nested result on every save.
+    payload = header[:-1] + ',"ticker_results":{' + ','.join(
+        json.dumps(key) + ':' + cache[key][1] for key in sorted(rows)) + '}}'
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     temporary.write_text(payload, encoding="utf-8")
-    temporary.replace(path)
+    from pcs.data.access import _atomic_replace_with_retry
+    _atomic_replace_with_retry(temporary, path)
 
 
 def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | None = None,
@@ -837,6 +848,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
     checkpoint_path = None
     checkpoint_identity = None
     checkpoint_rows: dict[str, TickerScanResult] = {}
+    checkpoint_encoded_rows = {}
     if output_directory is not None:
         snapshot_seed = PoolRunSnapshot(
             run_id, asof, mode, effective_asof,
@@ -870,7 +882,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
             snapshot_seed = replace(snapshot_seed, run_id=run_id)
         _write_scan_checkpoint(checkpoint_path, identity=checkpoint_identity, run_id=run_id,
                                snapshot=snapshot_seed, rows=checkpoint_rows, stage="READINESS_AUDIT",
-                               status="IN_PROGRESS")
+                               status="IN_PROGRESS", encoded_rows=checkpoint_encoded_rows)
         if checkpoint_callback is not None:
             checkpoint_callback(str(checkpoint_path), checkpoint_identity)
     initial = _audit_verified_daily(
@@ -1031,7 +1043,7 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
         checkpoint_rows.update(preflight_results)
         _write_scan_checkpoint(checkpoint_path, identity=checkpoint_identity, run_id=run_id,
                                snapshot=snapshot, rows=checkpoint_rows,
-                               stage="PREFLIGHT", status="IN_PROGRESS")
+                               stage="PREFLIGHT", status="IN_PROGRESS", encoded_rows=checkpoint_encoded_rows)
 
     checkpoint_lock = RLock()
     accepting_results = True
@@ -1055,7 +1067,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                 final_action=FinalAction.DATA_FAILED, reason_codes=outcome.reason_codes)
         runtime.observe(outcome.symbol, "save_result", lambda: _write_scan_checkpoint(
             checkpoint_path, identity=checkpoint_identity, run_id=run_id,
-            snapshot=snapshot, rows=checkpoint_rows, stage="DAILY_TIMING", status="IN_PROGRESS"))
+            snapshot=snapshot, rows=checkpoint_rows, stage="DAILY_TIMING", status="IN_PROGRESS",
+            encoded_rows=checkpoint_encoded_rows))
         runtime.processed = sum(row.checkpoint_stage == "COMPLETE" for row in checkpoint_rows.values())
         runtime.last_result_saved_at = datetime.now(timezone.utc).isoformat()
         print(json.dumps({"status": "POOL_SCAN_PROGRESS", "run_id": run_id,
@@ -1213,7 +1226,8 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                       for row in result.ticker_results}
         _write_scan_checkpoint(checkpoint_path, identity=checkpoint_identity, run_id=run_id,
                                snapshot=snapshot, rows=final_rows,
-                               stage="DAILY_TIMING", status="COMPLETE" if summary["run_status"] == "COMPLETED" else "PARTIAL")
+                               stage="DAILY_TIMING", status="COMPLETE" if summary["run_status"] == "COMPLETED" else "PARTIAL",
+                               encoded_rows=checkpoint_encoded_rows)
     if output_directory is not None:
         from .artifacts import persist_pool_artifacts
         persist_pool_artifacts(result, output_directory, baseline_run_id=baseline_run_id,
