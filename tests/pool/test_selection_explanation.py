@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +16,7 @@ from pcs.models.trade import TradeCandidate
 from pcs.pool.ai_evidence import (
     build_selection_explanations, explain_selection, read_ai_evidence_batch,
     selection_explanation_to_ai_view, selection_explanation_to_markdown,
-    write_selection_explanation_artifacts,
+    selection_explanations_to_csv, write_selection_explanation_artifacts,
 )
 from pcs.pool.artifacts import persist_pool_artifacts
 from pcs.pool.models import (
@@ -306,21 +308,25 @@ def test_real_decision_engine_hard_gate_zero_shape_is_not_actual_scoring(monkeyp
 
 
 @pytest.mark.parametrize(
-    ("status", "capability", "execution", "kind", "formal"),
+    ("status", "capability", "execution", "kind", "formal", "consistent"),
     [
-        ("PASS", "COMPLETED", "EXECUTED", "FORMAL_CONTRACT_EVALUATION", "PASS"),
-        ("REJECT", "COMPLETED", "EXECUTED", "FORMAL_CONTRACT_EVALUATION", "REJECT"),
-        ("DISCOVERED", "COMPLETED", "EXECUTED", "CONTRACT_DISCOVERY", "NOT_EVALUATED"),
-        ("DATA_BLOCKED", "PARTIAL", "BLOCKED", "OPTIONS_STAGE", "BLOCKED"),
-        ("NOT_EVALUATED", "NOT_EVALUATED", "NOT_EVALUATED", "NONE", "NOT_EVALUATED"),
+        ("PASS", "PARTIAL", "EXECUTED", "CONTRACT_DISCOVERY", "NOT_RECORDED", False),
+        ("REJECT", "COMPLETED", "EXECUTED", "CONTRACT_DISCOVERY", "NOT_EVALUATED", True),
+        ("DISCOVERED", "COMPLETED", "EXECUTED", "CONTRACT_DISCOVERY", "NOT_EVALUATED", True),
+        ("DATA_BLOCKED", "PARTIAL", "BLOCKED", "NONE", "NOT_EVALUATED", True),
+        ("NOT_EVALUATED", "NOT_EVALUATED", "NOT_EVALUATED", "NONE", "NOT_EVALUATED", True),
     ],
 )
 def test_options_status_maps_only_existing_enum_values(
-    status, capability, execution, kind, formal,
+    status, capability, execution, kind, formal, consistent,
 ):
     base = _input()
     row = dict(base.ticker_result)
     row["options_status"] = status
+    if status in {"PASS", "DISCOVERED"}:
+        row.update(spread_count=1, discovered_contracts=[{"short_strike": 90}])
+    elif status == "REJECT":
+        row.update(spread_count=0, discovered_contracts=[])
     row["candidate_state"] = dict(row["candidate_state"], contract_evaluation_status=status)
 
     result = explain_selection(_updated(base, ticker_result=row))
@@ -331,7 +337,107 @@ def test_options_status_maps_only_existing_enum_values(
     assert option_capability["execution_status"] == execution
     assert stage["completed_evaluation_kind"] == kind
     assert stage["formal_contract_evaluation_status"] == formal
-    assert stage["contract_evidence_consistent"] is True
+    assert stage["contract_evidence_consistent"] is consistent
+
+
+def test_no_spread_reject_completes_discovery_without_calling_selector():
+    base = _input()
+    row = dict(base.ticker_result)
+    row.update(
+        options_status="REJECT", spread_count=0, discovered_contracts=[],
+        selection_result=None, selection_reason_codes=["NO_STRUCTURALLY_VALID_PCS"],
+    )
+    row["candidate_state"] = dict(row["candidate_state"], contract_evaluation_status="REJECT")
+
+    result = explain_selection(_updated(base, ticker_result=row))
+    stage = result.data.selection_explanation["options_stage"]
+
+    assert stage["spread_discovery_status"] == "COMPLETED"
+    assert stage["contract_selector_invocation_status"] == "NOT_EVALUATED"
+    assert stage["completed_evaluation_kind"] == "CONTRACT_DISCOVERY"
+    assert stage["formal_contract_evaluation_execution_status"] == "NOT_EVALUATED"
+    assert stage["formal_contract_evaluation_status"] == "NOT_EVALUATED"
+    assert selection_explanation_to_ai_view(result)["key_facts"]["options_stage"][
+        "formal_contract_evaluation_status"] == "NOT_EVALUATED"
+    csv_row = next(csv.DictReader(io.StringIO(selection_explanations_to_csv([result]))))
+    assert csv_row["options_status"] == "REJECT"
+    assert csv_row["spread_discovery_status"] == "COMPLETED"
+    assert csv_row["options_candidate_count"] == "0"
+    assert csv_row["formal_contract_evaluation_status"] == "NOT_EVALUATED"
+
+
+def test_default_zero_spread_count_does_not_advance_not_evaluated_options():
+    base = _input()
+    row = dict(base.ticker_result)
+    row.update(
+        options_status="NOT_EVALUATED", spread_count=0,
+        discovered_contracts=[], selection_result=None,
+    )
+    row["candidate_state"] = dict(
+        row["candidate_state"], contract_evaluation_status="NOT_EVALUATED")
+
+    stage = explain_selection(
+        _updated(base, ticker_result=row)).data.selection_explanation["options_stage"]
+
+    assert stage["candidate_count"] == 0
+    assert stage["spread_discovery_status"] == "NOT_EVALUATED"
+    assert stage["completed_evaluation_kind"] == "NONE"
+    assert stage["contract_selector_invocation_status"] == "NOT_EVALUATED"
+
+
+def test_default_zero_spread_count_does_not_complete_blocked_discovery():
+    base = _input()
+    row = dict(base.ticker_result)
+    row.update(
+        options_status="DATA_BLOCKED", spread_count=0,
+        discovered_contracts=[], selection_result=None,
+    )
+    row["candidate_state"] = dict(
+        row["candidate_state"], contract_evaluation_status="DATA_BLOCKED")
+
+    stage = explain_selection(
+        _updated(base, ticker_result=row)).data.selection_explanation["options_stage"]
+
+    assert stage["candidate_count"] == 0
+    assert stage["spread_discovery_status"] == "BLOCKED"
+    assert stage["completed_evaluation_kind"] == "NONE"
+    assert stage["contract_selector_invocation_status"] == "NOT_EVALUATED"
+
+
+def test_selector_data_block_is_distinct_from_discovery_completion():
+    base = _input()
+    row = dict(base.ticker_result)
+    row.update(
+        options_status="DATA_BLOCKED", spread_count=1,
+        discovered_contracts=[{"short_strike": 90, "long_strike": 85}],
+        selection_result={"status": "DATA_BLOCKED", "reason_codes": ["EVENT_DATA_STALE"]},
+    )
+    row["candidate_state"] = dict(
+        row["candidate_state"], contract_evaluation_status="DATA_BLOCKED")
+
+    stage = explain_selection(
+        _updated(base, ticker_result=row)).data.selection_explanation["options_stage"]
+
+    assert stage["spread_discovery_status"] == "COMPLETED"
+    assert stage["contract_selector_invocation_status"] == "EXECUTED"
+    assert stage["formal_contract_evaluation_execution_status"] == "BLOCKED"
+    assert stage["formal_contract_evaluation_status"] == "BLOCKED"
+
+
+def test_empty_decision_record_does_not_imply_invocation_or_gate_pass():
+    base = _input()
+    row = dict(base.ticker_result)
+    row.update(options_status="REJECT", selection_result={"status": "REJECT", "decision": {}})
+    row["candidate_state"] = dict(row["candidate_state"], contract_evaluation_status="REJECT")
+
+    stage = explain_selection(
+        _updated(base, ticker_result=row)).data.selection_explanation["options_stage"]
+
+    assert stage["decision_record_status"] == "NOT_RECORDED"
+    assert stage["decision_invocation_status"] == "NOT_EVALUATED"
+    assert stage["hard_gate_checks_status"] == "NOT_EVALUATED"
+    assert stage["hard_gate_outcome"] == "NOT_EVALUATED"
+    assert stage["actual_scoring_status"] == "NOT_EVALUATED"
 
 
 def test_missing_timing_and_empty_sources_are_not_reported_as_executed_or_validated():
@@ -393,3 +499,78 @@ def test_actual_pivot_policy_and_explicit_trend_health_are_reported():
     assert pivot["production_pool"]["actual_source"] == "candidate_state.applicable_rules"
     assert health["value"] == "healthy"
     assert health["source_field"] == "ticker_result.candidate_state.trend_health"
+
+
+def test_unknown_early_trend_health_wrapper_does_not_hide_later_valid_value():
+    base = _input()
+    row = dict(base.ticker_result)
+    row["candidate_state"] = dict(row["candidate_state"], trend_health="healthy")
+    ai_evidence = {
+        "opportunity_context": {
+            "trend_health": {"status": "UNKNOWN", "reason": "NOT_SAVED"}},
+        "trend_health": {"source_status": "MISSING", "value": None},
+    }
+
+    result = explain_selection(_updated(
+        base, ticker_result=row, ai_evidence=ai_evidence))
+    health = result.data.selection_explanation["trend_health"]
+
+    assert health["value"] == "healthy"
+    assert health["source_field"] == "ticker_result.candidate_state.trend_health"
+
+
+def test_all_unknown_trend_health_wrappers_remain_not_recorded():
+    base = _input()
+    row = dict(base.ticker_result)
+    row["trend_health"] = {"status": "NOT_RECORDED", "value": None}
+    row["candidate_state"] = dict(
+        row["candidate_state"],
+        trend_health={"status": "MISSING", "value": None},
+        trend_evidence=dict(
+            row["candidate_state"]["trend_evidence"],
+            trend_health={"status": "UNKNOWN", "value": None},
+        ),
+    )
+    ai_evidence = {
+        "opportunity_context": {
+            "trend_health": {"status": "UNKNOWN", "value": None}}}
+
+    result = explain_selection(_updated(
+        base, ticker_result=row, ai_evidence=ai_evidence))
+    health = result.data.selection_explanation["trend_health"]
+
+    assert health["value"] is None
+    assert health["source_status"] == "NOT_RECORDED"
+    assert health["execution_status"] == "NOT_EVALUATED"
+
+
+def test_score_weights_use_explicit_effective_policy_not_reference_default():
+    base = _input()
+    effective_policy = {
+        "values": {"scoring": {"weights": {
+            "market_regime": 0.10, "iv_premium": 0.20}}},
+        "policy_id": "fixture-custom-weights",
+    }
+
+    result = explain_selection(_updated(base, effective_policy=effective_policy))
+    policy = result.data.effective_policy
+
+    assert policy["score_weights_status"] == "RECORDED"
+    assert policy["score_weights_source"] == "input.effective_policy.values.scoring.weights"
+    assert policy["score_weights"] == {"market_regime": 0.10, "iv_premium": 0.20}
+    assert policy["score_weights_reference_default"]["values"]["iv_premium"] == 0.08
+    assert "iv_premium 0.2；参考默认 0.08" in selection_explanation_to_markdown(result)
+    assert selection_explanation_to_ai_view(result)["effective_policy"]["score_weights"] == policy["score_weights"]
+    csv_row = next(csv.DictReader(io.StringIO(selection_explanations_to_csv([result]))))
+    assert csv_row["score_weights_status"] == "RECORDED"
+    assert csv_row["iv_premium_weight"] == "0.2"
+
+
+def test_missing_source_run_score_weights_do_not_fall_back_to_current_config():
+    result = explain_selection(_input())
+    policy = result.data.effective_policy
+
+    assert policy["score_weights_status"] == "NOT_RECORDED"
+    assert policy["score_weights_source"] is None
+    assert policy["score_weights"] == {}
+    assert policy["score_weights_reference_default"]["values"]["iv_premium"] == 0.08

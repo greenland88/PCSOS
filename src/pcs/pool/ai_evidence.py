@@ -458,10 +458,11 @@ def _decision_execution(selection_result: Mapping[str, Any]) -> dict[str, Any]:
     evidence that the scorers consumed their candidate inputs.
     """
     decision = selection_result.get("decision")
-    if not isinstance(decision, Mapping):
+    if not isinstance(decision, Mapping) or not decision:
         return {
             "decision_invoked": False, "hard_gate_checks_executed": False,
             "hard_gate_rejected": False, "actual_scoring_executed": False,
+            "decision_record_status": "NOT_RECORDED",
             "hard_gate_reason_codes": [], "scores": {},
         }
     trace = selection_result.get("decision_execution")
@@ -477,6 +478,7 @@ def _decision_execution(selection_result: Mapping[str, Any]) -> dict[str, Any]:
                       else complete_scores and not hard_gate_rejected)
     return {
         "decision_invoked": True,
+        "decision_record_status": "RECORDED",
         "hard_gate_checks_executed": True,
         "hard_gate_rejected": hard_gate_rejected,
         "hard_gate_reason_codes": (list(decision.get("reason_codes") or ())
@@ -568,9 +570,22 @@ def _explicit_trend_health(
         if isinstance(nested, Mapping):
             candidates.append((nested, "trend_health",
                                f"candidate_state.trend_evidence.{nested_key}.trend_health"))
+    absent_statuses = {"UNKNOWN", "MISSING", "NOT_RECORDED", "NOT_PROVIDED"}
     for container, key, source_field in candidates:
-        if isinstance(container, Mapping) and container.get(key) is not None:
-            return container, key, source_field
+        if not isinstance(container, Mapping):
+            continue
+        candidate = container.get(key)
+        if candidate is None:
+            continue
+        if isinstance(candidate, Mapping):
+            status = str(candidate.get("status") or candidate.get("source_status") or "").upper()
+            candidate = candidate.get("value")
+            if status in absent_statuses or candidate is None:
+                continue
+        if isinstance(candidate, str) and candidate.upper() in absent_statuses:
+            continue
+        if candidate is not None:
+            return {"trend_health": candidate}, "trend_health", source_field
     return {}, "trend_health", "not saved as a structured field"
 
 
@@ -606,32 +621,150 @@ def _pivot_evidence(
     return {"status": "NOT_RECORDED", "left": None, "right": None, "source": None}
 
 
-def _options_execution(options_status: Any, contract_status: Any) -> dict[str, Any]:
+def _options_execution(
+    row: Mapping[str, Any], state: Mapping[str, Any],
+    decision_execution: Mapping[str, Any],
+) -> dict[str, Any]:
+    options_status = row.get("options_status")
     status = str(options_status) if options_status is not None else "NOT_RECORDED"
+    contract_status = state.get("contract_evaluation_status")
     contract = str(contract_status) if contract_status is not None else "NOT_RECORDED"
-    if status in {"PASS", "REJECT"}:
-        kind, stage_execution, capability = "FORMAL_CONTRACT_EVALUATION", "EXECUTED", "COMPLETED"
-        formal = status
-    elif status == "DISCOVERED":
-        kind, stage_execution, capability = "CONTRACT_DISCOVERY", "EXECUTED", "COMPLETED"
-        formal = "NOT_EVALUATED"
-    elif status == "DATA_BLOCKED":
-        kind, stage_execution, capability = "OPTIONS_STAGE", "BLOCKED", "PARTIAL"
-        formal = "BLOCKED"
+    selection = row.get("selection_result")
+    has_selection_record = isinstance(selection, Mapping) and bool(selection)
+    explicit_selector = state.get("contract_selector_invoked")
+    selector_invoked = (bool(explicit_selector) if explicit_selector is not None
+                        else has_selection_record)
+    selection_status = (str(selection.get("status", "")).upper()
+                        if has_selection_record else "")
+
+    raw_count = row.get("spread_count")
+    discovered = row.get("discovered_contracts")
+    if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count >= 0:
+        candidate_count = raw_count
+        count_source = "ticker_result.spread_count"
+    elif isinstance(discovered, (list, tuple)):
+        candidate_count = len(discovered)
+        count_source = "ticker_result.discovered_contracts"
     else:
-        kind, stage_execution, capability = "NONE", "NOT_EVALUATED", "NOT_EVALUATED"
+        candidate_count = None
+        count_source = None
+    discovery_trace = str(state.get("options_discovery_status") or "").upper()
+    discovery_completed = (
+        selector_invoked
+        or discovery_trace in {"COMPLETED", "EXECUTED", "PASS"}
+        or (status in {"PASS", "REJECT", "DISCOVERED"} and candidate_count is not None)
+    )
+    discovery_status = ("COMPLETED" if discovery_completed else
+                        "BLOCKED" if status == "DATA_BLOCKED" else
+                        "NOT_RECORDED" if status in {"PASS", "REJECT", "DISCOVERED"}
+                        else "NOT_EVALUATED")
+    if selector_invoked and selection_status in {"PASS", "REJECT"}:
+        formal = selection_status
+        formal_execution = "EXECUTED"
+    elif (selector_invoked and decision_execution.get("decision_invoked")
+          and status in {"PASS", "REJECT"}):
+        formal = status
+        formal_execution = "EXECUTED"
+    elif selector_invoked and selection_status == "DATA_BLOCKED":
+        formal = "BLOCKED"
+        formal_execution = "BLOCKED"
+    elif status == "PASS":
+        formal = "NOT_RECORDED"
+        formal_execution = "NOT_EVALUATED"
+    else:
         formal = "NOT_EVALUATED"
-    consistent = (contract in {"NOT_RECORDED", status} or
-                  (status == "NOT_RECORDED" and contract == "NOT_RECORDED"))
+        formal_execution = "NOT_EVALUATED"
+
+    if status == "DATA_BLOCKED":
+        stage_execution = "BLOCKED"
+    elif status in {"PASS", "REJECT", "DISCOVERED"}:
+        stage_execution = "EXECUTED"
+    else:
+        stage_execution = "NOT_EVALUATED"
+    if formal_execution == "EXECUTED":
+        kind = "FORMAL_CONTRACT_EVALUATION"
+    elif discovery_completed:
+        kind = "CONTRACT_DISCOVERY"
+    else:
+        kind = "NONE"
+    count_mismatch = (isinstance(raw_count, int) and isinstance(discovered, (list, tuple))
+                      and raw_count != len(discovered))
+    consistent = (
+        contract in {"NOT_RECORDED", status}
+        and not (status == "PASS" and formal != "PASS")
+        and not (selection_status == "PASS" and status != "PASS")
+        and not count_mismatch
+    )
+    capability = ("PARTIAL" if not consistent or stage_execution == "BLOCKED" else
+                  "COMPLETED" if discovery_completed else "NOT_EVALUATED")
+    evidence_reasons = []
+    if status == "PASS" and formal != "PASS":
+        evidence_reasons.append("OPTIONS_FORMAL_EVALUATION_EVIDENCE_MISSING")
+    if count_mismatch:
+        evidence_reasons.append("OPTIONS_CANDIDATE_COUNT_EVIDENCE_MISMATCH")
+    if not consistent and not evidence_reasons:
+        evidence_reasons.append("OPTIONS_CONTRACT_EVIDENCE_STATUS_MISMATCH")
     return {
         "status": status, "stage_reached": status not in {"NOT_RECORDED", "NOT_EVALUATED"},
         "stage_execution_status": stage_execution,
+        "spread_discovery_status": discovery_status,
+        "candidate_count": candidate_count,
+        "candidate_count_source": count_source,
         "completed_evaluation_kind": kind,
         "formal_contract_evaluation_status": formal,
+        "formal_contract_evaluation_execution_status": formal_execution,
+        "contract_selector_invocation_status": ("EXECUTED" if selector_invoked
+                                                else "NOT_EVALUATED"),
         "contract_evaluation_status": contract,
         "contract_evidence_consistent": consistent,
+        "evidence_reason_codes": evidence_reasons,
         "capability_status": capability,
     }
+
+
+def _score_weights_evidence(
+    state: Mapping[str, Any], effective_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    candidates: list[tuple[Mapping[str, Any], str]] = []
+    if isinstance(effective_policy, Mapping):
+        candidates.append((effective_policy, "input.effective_policy"))
+    state_policy = state.get("effective_policy")
+    if isinstance(state_policy, Mapping):
+        candidates.append((state_policy, "candidate_state.effective_policy"))
+    applicable = state.get("applicable_rules")
+    if isinstance(applicable, Mapping):
+        candidates.append((applicable, "candidate_state.applicable_rules"))
+
+    def nested_weights(policy: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, str]:
+        direct = policy.get("score_weights")
+        if isinstance(direct, Mapping):
+            return direct, "score_weights"
+        scoring = policy.get("scoring")
+        if isinstance(scoring, Mapping) and isinstance(scoring.get("weights"), Mapping):
+            return scoring["weights"], "scoring.weights"
+        values = policy.get("values")
+        if isinstance(values, Mapping):
+            direct = values.get("score_weights")
+            if isinstance(direct, Mapping):
+                return direct, "values.score_weights"
+            scoring = values.get("scoring")
+            if isinstance(scoring, Mapping) and isinstance(scoring.get("weights"), Mapping):
+                return scoring["weights"], "values.scoring.weights"
+        return None, ""
+
+    for policy, source in candidates:
+        weights, suffix = nested_weights(policy)
+        if weights:
+            recorded = {
+                key: value for key, value in weights.items()
+                if key in _SCORE_FIELDS and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            }
+            if not recorded:
+                continue
+            return {"status": "RECORDED", "values": recorded,
+                    "source": f"{source}.{suffix}"}
+    return {"status": "NOT_RECORDED", "values": {}, "source": None}
 
 
 def _entrypoint_differences(
@@ -766,10 +899,9 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
     daily_time = row.get("feature_max_date")
     timing_status = row.get("timing_status")
     timing_executed = timing_status is not None and timing_status != "NOT_EVALUATED"
-    contract_evaluation_status = state.get("contract_evaluation_status")
-    options_execution = _options_execution(row.get("options_status"), contract_evaluation_status)
     selection_result = row.get("selection_result") or {}
     decision_execution = _decision_execution(selection_result)
+    options_execution = _options_execution(row, state, decision_execution)
     scoring_executed = decision_execution["actual_scoring_executed"]
 
     health_container, health_key, health_source = _explicit_trend_health(
@@ -903,6 +1035,7 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
             "decision_invocation_status": (ExecutionStatus.EXECUTED.value
                                            if decision_execution["decision_invoked"]
                                            else ExecutionStatus.NOT_EVALUATED.value),
+            "decision_record_status": decision_execution["decision_record_status"],
             "hard_gate_checks_status": (ExecutionStatus.EXECUTED.value
                                         if decision_execution["hard_gate_checks_executed"]
                                         else ExecutionStatus.NOT_EVALUATED.value),
@@ -923,15 +1056,22 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         "next_conditions": next_conditions,
     }
     pivot = _pivot_evidence(state, input.effective_policy, input.ai_evidence)
+    score_weights = _score_weights_evidence(state, input.effective_policy)
     effective_policy = {
         "source_run_applicable_rules": state.get("applicable_rules") or {},
-        "score_weights": {
+        "score_weights": score_weights["values"],
+        "score_weights_status": score_weights["status"],
+        "score_weights_source": score_weights["source"],
+        "score_weights_reference_default": {
+            "source": "config/pcs_rules.yaml:scoring.weights",
+            "status": "REFERENCE_ONLY_NOT_SOURCE_RUN_EVIDENCE",
+            "values": {
             "market_regime": .15, "underlying_quality": .12, "trend": .12,
             "support": .12, "liquidity": .12, "rollability": .08,
             "strike_buffer": .12, "iv_premium": .08,
             "portfolio_capacity": .06, "news_risk": .03,
+            },
         },
-        "score_weights_source": "config/pcs_rules.yaml:scoring.weights",
         "candidate_factory_assumptions": {
             "business_quality": 80, "support_score": 0,
             "price_confirmation": 0, "sector_alignment": 80,
@@ -964,8 +1104,11 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         "options_evaluation": {
             "status": options_execution["capability_status"],
             "execution_status": options_execution["stage_execution_status"],
+            "spread_discovery_status": options_execution["spread_discovery_status"],
+            "contract_selector_invocation_status": options_execution["contract_selector_invocation_status"],
             "completed_evaluation_kind": options_execution["completed_evaluation_kind"],
             "formal_contract_evaluation_status": options_execution["formal_contract_evaluation_status"],
+            "formal_contract_evaluation_execution_status": options_execution["formal_contract_evaluation_execution_status"],
         },
     }
     source_hash_validated = bool(input.source_references) and all(
@@ -975,6 +1118,9 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
          else ["SOURCE_REFERENCE_HASH_NOT_VALIDATED"]))
     if not options_execution["contract_evidence_consistent"]:
         source_validation_reasons.append("OPTIONS_CONTRACT_EVIDENCE_STATUS_MISMATCH")
+    source_validation_reasons.extend(
+        code for code in options_execution["evidence_reason_codes"]
+        if code not in source_validation_reasons)
     data = SelectionExplanationData(
         identity={"result_id": result_id, "scope": ctx.scope,
                   "source_run_id": ctx.run_id, "source_final_action": row.get("final_action")},
@@ -1099,11 +1245,13 @@ def selection_explanation_to_ai_view(result: SelectionExplanation) -> dict[str, 
         "key_facts": {
             "structure": detail["stock_structure"], "phase": detail["short_term_phase"],
             "support": detail["support"], "confirmation": detail["confirmation"],
+            "options_stage": detail["options_stage"],
         },
         "primary_reason": detail["primary_reason"],
         "secondary_reasons": detail["secondary_reasons"],
         "missing": result.data.data_quality["missing_fields"],
         "next_conditions": result.data.next_conditions,
+        "effective_policy": result.data.effective_policy,
         "score_provenance": [item.model_dump(mode="json") for item in result.data.score_provenance],
         "ai_boundary": {"may_change_authoritative_action": False,
                         "new_inferences_must_be_separate": True},
@@ -1130,10 +1278,21 @@ def selection_explanation_to_markdown(result: SelectionExplanation) -> str:
         f"{detail['options_stage']['stage_execution_status']}；完成的评估类型 "
         f"{detail['options_stage']['completed_evaluation_kind']}；合约评估证据 "
         f"{detail['options_stage']['contract_evaluation_status']}",
+        f"- 期权子阶段：价差发现 {detail['options_stage']['spread_discovery_status']}；"
+        f"候选数 {detail['options_stage']['candidate_count'] if detail['options_stage']['candidate_count'] is not None else '未记录'}；"
+        f"selector调用 {detail['options_stage']['contract_selector_invocation_status']}；"
+        f"正式合约评估 {detail['options_stage']['formal_contract_evaluation_execution_status']} / "
+        f"{detail['options_stage']['formal_contract_evaluation_status']}",
         f"- DecisionEngine：调用 {detail['options_stage']['decision_invocation_status']}；"
         f"硬门槛检查 {detail['options_stage']['hard_gate_checks_status']} / "
         f"{detail['options_stage']['hard_gate_outcome']}；实际评分 "
         f"{detail['options_stage']['actual_scoring_status']}",
+        f"- 评分权重：实际状态 {result.data.effective_policy['score_weights_status']}；"
+        f"来源 {result.data.effective_policy['score_weights_source'] or '未记录'}；"
+        f"iv_premium "
+        f"{result.data.effective_policy['score_weights'].get('iv_premium', '未记录')}；"
+        f"参考默认 "
+        f"{result.data.effective_policy['score_weights_reference_default']['values']['iv_premium']}",
         f"- 主要原因：{detail['primary_reason'] or '无'}",
         "", "下一观察条件：", "",
     ]
@@ -1160,7 +1319,11 @@ def selection_explanations_to_csv(results: Iterable[SelectionExplanation]) -> st
     fields = ["symbol", "as_of", "result_id", "eligibility_status", "static_metadata_status",
               "structural_trend", "trend_health", "short_term_phase", "pullback_depth_atr",
               "nearest_support", "support_distance_atr", "confirmation", "timing_status",
-              "options_status", "contract_evaluation_status", "decision_scoring_executed",
+              "options_status", "options_stage_execution", "spread_discovery_status",
+              "options_candidate_count", "contract_selector_invocation_status",
+              "contract_evaluation_status", "formal_contract_evaluation_status",
+              "decision_scoring_executed",
+              "score_weights_status", "iv_premium_weight",
               "final_action", "primary_reason", "missing_fields"]
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields)
@@ -1181,8 +1344,15 @@ def selection_explanations_to_csv(results: Iterable[SelectionExplanation]) -> st
             "confirmation": d["confirmation"]["value"],
             "timing_status": d["legacy_timing"]["status"],
             "options_status": d["options_stage"]["status"],
+            "options_stage_execution": d["options_stage"]["stage_execution_status"],
+            "spread_discovery_status": d["options_stage"]["spread_discovery_status"],
+            "options_candidate_count": d["options_stage"]["candidate_count"],
+            "contract_selector_invocation_status": d["options_stage"]["contract_selector_invocation_status"],
             "contract_evaluation_status": d["options_stage"]["contract_evaluation_status"],
+            "formal_contract_evaluation_status": d["options_stage"]["formal_contract_evaluation_status"],
             "decision_scoring_executed": d["options_stage"]["decision_scoring_executed"],
+            "score_weights_status": result.data.effective_policy["score_weights_status"],
+            "iv_premium_weight": result.data.effective_policy["score_weights"].get("iv_premium"),
             "final_action": d["final_action_unchanged"], "primary_reason": d["primary_reason"],
             "missing_fields": ";".join(result.data.data_quality["missing_fields"]),
         })
