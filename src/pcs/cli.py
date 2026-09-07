@@ -256,9 +256,32 @@ def pool_scan(args):
 
 def pool_evidence(args):
     """Read or upgrade saved pool artifacts; never invokes the scanner."""
-    from pcs.pool.ai_evidence import read_ai_evidence, upgrade_current_pool_artifacts
+    from pcs.pool.ai_evidence import (
+        build_selection_explanations, read_ai_evidence,
+        upgrade_current_pool_artifacts, write_selection_explanation_artifacts,
+    )
     from pathlib import Path
     root = Path(args.run_directory)
+    if args.explain_selection:
+        if args.upgrade:
+            raise SystemExit("--explain-selection cannot be combined with --upgrade")
+        symbols = [item.strip().upper() for item in (args.symbols or "").split(",") if item.strip()]
+        if args.symbol:
+            symbols = [args.symbol.upper(), *symbols]
+        symbols = list(dict.fromkeys(symbols))
+        if not symbols:
+            raise SystemExit("--explain-selection requires --symbol or --symbols")
+        if not args.output_directory:
+            raise SystemExit("--explain-selection requires --output-directory")
+        request_id = args.request_id or "pool-evidence-selection-explanation"
+        results = build_selection_explanations(root, symbols, request_id=request_id)
+        output = write_selection_explanation_artifacts(args.output_directory, results)
+        print(json.dumps({"status": "COMPLETED", "record_count": len(results),
+                          "symbols": [item.symbol for item in results],
+                          "output_directory": str(output.resolve()),
+                          "result_ids": [item.data.identity["result_id"] for item in results]},
+                         sort_keys=True, indent=2))
+        return
     if args.upgrade:
         upgrade_current_pool_artifacts(root, evidence_window=args.window)
     if args.symbol:
@@ -359,6 +382,11 @@ def main():
     evidence.add_argument("--symbol", help="read one ticker packet; omit for compact full-pool summary")
     evidence.add_argument("--upgrade", action="store_true", help="add evidence views to a hash-valid legacy run")
     evidence.add_argument("--window", type=int, default=60, help="saved evidence window in sessions")
+    evidence.add_argument("--explain-selection", action="store_true",
+                          help="export typed selection explanations without scanning or changing the source run")
+    evidence.add_argument("--symbols", help="comma-separated bounded symbols for --explain-selection")
+    evidence.add_argument("--output-directory", help="isolated destination for selection explanation views")
+    evidence.add_argument("--request-id", help="auditable invocation id for selection explanations")
     evidence.set_defaults(func=pool_evidence)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")

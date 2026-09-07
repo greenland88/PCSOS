@@ -32,6 +32,7 @@ Status values are `COMPLETE`, `IN_PROGRESS`, `BLOCKED`, `PLANNED`, and
 | Long-history PIT chunk/cache path | IN_PROGRESS | Bounded four-worker, 250-date checkpoint path exists; fresh/resume/parallel full equivalence and authoritative MSFT replay remain required. |
 | Ticker Bear-State Rule | IMPLEMENTED — RESEARCH VALIDATION REQUIRED | PIT-safe daily single-stock state (`NORMAL`, `WEAK_BEAR`, `BEAR_CONFIRMED`); separate from `MarketRegimeEngine` and not a production block. |
 | `breadth_positive` market input | COMPLETE — SEMANTICS VERSIONED | Legacy field name retained; current meaning is `SPY_QQQ_MARKET_CONFIRMATION` using SPY/QQQ close versus SMA50. It is not traditional constituent breadth. |
+| Selection explanation v1.4 | COMPLETE — STEP 1 ONLY | `pcs.pool.ai_evidence.explain_selection` explains saved per-ticker evidence, score provenance, execution state, and entrypoint implementation differences without changing decisions or scanning. CLI export is `pool-evidence --explain-selection`; real validation is limited to the recorded Step 1 sample. |
 
 The `options_v2` TSLA cutover remains blocked by the duplicate-key gate and the
 old canonical route's ambiguous quote keys. No strategy rule is changed by this
