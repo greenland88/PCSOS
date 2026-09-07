@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
 import csv
 import io
@@ -444,46 +444,210 @@ def _next_conditions(row: Mapping[str, Any]) -> list[dict[str, Any]]:
     return conditions
 
 
-def _score_provenance(scoring_executed: bool, data_time: str | None) -> list[EvidenceValue]:
-    execution = ExecutionStatus.EXECUTED if scoring_executed else ExecutionStatus.NOT_EVALUATED
-    common_note = ([] if scoring_executed else
-                   ["源码可达不等于本票已执行；来源run未保存DecisionEngine评分结果。"])
+_SCORE_FIELDS = (
+    "market_regime", "underlying_quality", "trend", "support", "liquidity",
+    "rollability", "strike_buffer", "iv_premium", "portfolio_capacity", "news_risk",
+)
+
+
+def _decision_execution(selection_result: Mapping[str, Any]) -> dict[str, Any]:
+    """Separate entering DecisionEngine, its hard gates, and post-gate scoring.
+
+    Current DecisionEngine persists a zero-filled ``scores`` object even when a
+    hard gate returns early.  Those zeroes are a return-shape placeholder, not
+    evidence that the scorers consumed their candidate inputs.
+    """
+    decision = selection_result.get("decision")
+    if not isinstance(decision, Mapping):
+        return {
+            "decision_invoked": False, "hard_gate_checks_executed": False,
+            "hard_gate_rejected": False, "actual_scoring_executed": False,
+            "hard_gate_reason_codes": [], "scores": {},
+        }
+    trace = selection_result.get("decision_execution")
+    trace = trace if isinstance(trace, Mapping) else {}
+    hard_gate_rejected = (bool(trace.get("hard_gate_rejected")) or
+                          decision.get("reason") == "hard eligibility gate failed" or
+                          decision.get("action") == "NO_TRADE")
+    scores = decision.get("scores")
+    scores = dict(scores) if isinstance(scores, Mapping) else {}
+    complete_scores = all(field in scores and scores[field] is not None for field in _SCORE_FIELDS)
+    explicitly_scored = trace.get("actual_scoring_executed")
+    actual_scoring = (bool(explicitly_scored) if explicitly_scored is not None
+                      else complete_scores and not hard_gate_rejected)
+    return {
+        "decision_invoked": True,
+        "hard_gate_checks_executed": True,
+        "hard_gate_rejected": hard_gate_rejected,
+        "hard_gate_reason_codes": (list(decision.get("reason_codes") or ())
+                                   if hard_gate_rejected else []),
+        "actual_scoring_executed": actual_scoring,
+        "scores": scores if actual_scoring else {},
+    }
+
+
+def _score_provenance(execution: Mapping[str, Any], data_time: str | None) -> list[EvidenceValue]:
+    scoring_executed = bool(execution["actual_scoring_executed"])
+    scores = execution.get("scores") or {}
+    scoring_status = ExecutionStatus.EXECUTED if scoring_executed else ExecutionStatus.NOT_EVALUATED
+    if scoring_executed:
+        common_note = []
+    elif execution.get("hard_gate_rejected"):
+        common_note = ["DecisionEngine已调用但硬门槛提前拒绝；零分返回形状不是实际评分，评分输入未消费。"]
+    elif execution.get("decision_invoked"):
+        common_note = ["DecisionEngine已调用，但来源run未保存可确认的完整实际评分。"]
+    else:
+        common_note = ["源码可达不等于本票已执行；来源run未保存DecisionEngine调用。"]
     return [
         _evidence("candidate.business_quality", 80, source_status=SourceStatus.CONFIGURED_ASSUMPTION,
                   producer="pcs_status._candidate", source_field="business_quality=80",
                   definition_ref="src/pcs/pcs_status.py::_candidate", unit="SCORE_0_100",
-                  data_time=data_time, execution_status=execution, consumed=scoring_executed,
+                  data_time=data_time, execution_status=scoring_status, consumed=scoring_executed,
                   notes=["固定候选输入，不是公司质量实测。", *common_note]),
         _evidence("candidate.support_score", 0, source_status=SourceStatus.CONFIGURED_ASSUMPTION,
                   producer="pcs_status._candidate", source_field="support_score=0",
                   definition_ref="src/pcs/pcs_status.py::_candidate", unit="SCORE_0_100",
-                  data_time=data_time, execution_status=execution, consumed=scoring_executed,
+                  data_time=data_time, execution_status=scoring_status, consumed=scoring_executed,
                   notes=["缺少实测支撑分的占位输入，不表示支撑实测为差。", *common_note]),
         _evidence("candidate.price_confirmation", 0, source_status=SourceStatus.CONFIGURED_ASSUMPTION,
                   producer="pcs_status._candidate", source_field="price_confirmation=0",
                   definition_ref="src/pcs/pcs_status.py::_candidate", unit="SCORE_0_100",
-                  data_time=data_time, execution_status=execution, consumed=scoring_executed,
+                  data_time=data_time, execution_status=scoring_status, consumed=scoring_executed,
                   notes=["固定候选输入，不表示价格确认实测失败；若执行会占trend score的30%。", *common_note]),
         _evidence("candidate.sector_alignment", 80, source_status=SourceStatus.CONFIGURED_ASSUMPTION,
                   producer="pcs_status._candidate", source_field="sector_alignment=80",
                   definition_ref="src/pcs/pcs_status.py::_candidate", unit="SCORE_0_100",
-                  data_time=data_time, execution_status=execution, consumed=False,
+                  data_time=data_time, execution_status=scoring_status, consumed=False,
                   notes=["字段被填入，但当前ScoreBreakdown与OpportunityScorer不消费该字段。", *common_note]),
-        _evidence("decision.iv_premium", None, source_status=SourceStatus.NOT_RECORDED,
-                  producer="DecisionEngine.evaluate_candidate", source_field=None,
+        _evidence("decision.iv_premium", scores.get("iv_premium"),
+                  source_status=(SourceStatus.DERIVED if scoring_executed
+                                 else SourceStatus.NOT_RECORDED),
+                  producer="DecisionEngine.evaluate_candidate",
+                  source_field=("ticker_result.selection_result.decision.scores.iv_premium"
+                                if scoring_executed else None),
                   definition_ref="min(100, credit / max(short_strike - long_strike, 1) * 500)",
-                  unit="SCORE_0_100", data_time=data_time, execution_status=execution,
+                  unit="SCORE_0_100", data_time=data_time, execution_status=scoring_status,
                   consumed=scoring_executed,
                   notes=["兼容字段名；实际语义是净信用/价差宽度衍生分，不是真实IV premium。",
                          "真实IV诊断未保存在本run的评分轨迹中。", *common_note]),
+    ] + [
+        _evidence(
+            f"decision.{field}", scores[field], source_status=SourceStatus.DERIVED,
+            producer="DecisionEngine.evaluate_candidate",
+            source_field=f"ticker_result.selection_result.decision.scores.{field}",
+            definition_ref="pcs.models.decision.ScoreBreakdown",
+            unit="SCORE_0_100", data_time=data_time,
+            execution_status=ExecutionStatus.EXECUTED, consumed=True,
+            notes=["来源run保存的实际评分分项。"],
+        )
+        for field in _SCORE_FIELDS if scoring_executed and field != "iv_premium"
     ]
 
 
-def _entrypoint_differences(source_run_executed_pool: bool) -> list[dict[str, Any]]:
+def _explicit_trend_health(
+    row: Mapping[str, Any], state: Mapping[str, Any], trend: Mapping[str, Any],
+    ai_evidence: Mapping[str, Any] | None,
+) -> tuple[Mapping[str, Any], str, str]:
+    candidates: list[tuple[Mapping[str, Any], str, str]] = []
+    if isinstance(ai_evidence, Mapping):
+        opportunity = ai_evidence.get("opportunity_context")
+        if isinstance(opportunity, Mapping):
+            value = opportunity.get("trend_health")
+            if isinstance(value, Mapping) and value.get("status") == "PROVIDED":
+                candidates.append((value, "value", "ai_evidence.opportunity_context.trend_health.value"))
+            else:
+                candidates.append((opportunity, "trend_health", "ai_evidence.opportunity_context.trend_health"))
+        candidates.append((ai_evidence, "trend_health", "ai_evidence.trend_health"))
+    candidates.extend([
+        (row, "trend_health", "ticker_result.trend_health"),
+        (state, "trend_health", "ticker_result.candidate_state.trend_health"),
+        (trend, "trend_health", "candidate_state.trend_evidence.trend_health"),
+    ])
+    for nested_key in ("interpretation", "trend_interpretation"):
+        nested = trend.get(nested_key)
+        if isinstance(nested, Mapping):
+            candidates.append((nested, "trend_health",
+                               f"candidate_state.trend_evidence.{nested_key}.trend_health"))
+    for container, key, source_field in candidates:
+        if isinstance(container, Mapping) and container.get(key) is not None:
+            return container, key, source_field
+    return {}, "trend_health", "not saved as a structured field"
+
+
+def _pivot_evidence(
+    state: Mapping[str, Any], effective_policy: Mapping[str, Any],
+    ai_evidence: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    candidates: list[tuple[Mapping[str, Any], str]] = []
+    rules = state.get("applicable_rules")
+    if isinstance(rules, Mapping):
+        candidates.append((rules, "candidate_state.applicable_rules"))
+    state_policy = state.get("effective_policy")
+    if isinstance(state_policy, Mapping):
+        state_values = state_policy.get("values")
+        if isinstance(state_values, Mapping):
+            candidates.append((state_values, "candidate_state.effective_policy.values"))
+        candidates.append((state_policy, "candidate_state.effective_policy"))
+    if isinstance(effective_policy, Mapping):
+        values = effective_policy.get("values")
+        if isinstance(values, Mapping):
+            candidates.append((values, "input.effective_policy.values"))
+        candidates.append((effective_policy, "input.effective_policy"))
+    if isinstance(ai_evidence, Mapping):
+        rule_context = ai_evidence.get("rule_context")
+        if isinstance(rule_context, Mapping):
+            values = rule_context.get("value")
+            if isinstance(values, Mapping):
+                candidates.append((values, "ai_evidence.rule_context.value"))
+    for values, source in candidates:
+        left, right = values.get("pivot_left_bars"), values.get("pivot_right_bars")
+        if left is not None and right is not None:
+            return {"status": "RECORDED", "left": left, "right": right, "source": source}
+    return {"status": "NOT_RECORDED", "left": None, "right": None, "source": None}
+
+
+def _options_execution(options_status: Any, contract_status: Any) -> dict[str, Any]:
+    status = str(options_status) if options_status is not None else "NOT_RECORDED"
+    contract = str(contract_status) if contract_status is not None else "NOT_RECORDED"
+    if status in {"PASS", "REJECT"}:
+        kind, stage_execution, capability = "FORMAL_CONTRACT_EVALUATION", "EXECUTED", "COMPLETED"
+        formal = status
+    elif status == "DISCOVERED":
+        kind, stage_execution, capability = "CONTRACT_DISCOVERY", "EXECUTED", "COMPLETED"
+        formal = "NOT_EVALUATED"
+    elif status == "DATA_BLOCKED":
+        kind, stage_execution, capability = "OPTIONS_STAGE", "BLOCKED", "PARTIAL"
+        formal = "BLOCKED"
+    else:
+        kind, stage_execution, capability = "NONE", "NOT_EVALUATED", "NOT_EVALUATED"
+        formal = "NOT_EVALUATED"
+    consistent = (contract in {"NOT_RECORDED", status} or
+                  (status == "NOT_RECORDED" and contract == "NOT_RECORDED"))
+    return {
+        "status": status, "stage_reached": status not in {"NOT_RECORDED", "NOT_EVALUATED"},
+        "stage_execution_status": stage_execution,
+        "completed_evaluation_kind": kind,
+        "formal_contract_evaluation_status": formal,
+        "contract_evaluation_status": contract,
+        "contract_evidence_consistent": consistent,
+        "capability_status": capability,
+    }
+
+
+def _entrypoint_differences(
+    source_run_executed_pool: bool, pivot: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    actual = (f"left={pivot['left']},right={pivot['right']}"
+              if pivot.get("status") == "RECORDED" else "NOT_RECORDED")
     return [
         {
             "difference_id": "PIVOT_CONFIRMATION_WINDOW",
-            "production_pool": {"value": "left=3,right=3", "source": "TrendIndicatorConfig"},
+            "production_pool": {
+                "actual_value": actual, "actual_status": pivot.get("status"),
+                "actual_source": pivot.get("source"),
+                "reference_default": "left=3,right=3",
+                "reference_default_source": "TrendIndicatorConfig defaults",
+            },
             "opportunity_replay": {"value": "left=2,right=2", "source": "opportunity_engine._confirmed_pivot_*"},
             "per_symbol_comparison_status": "IMPLEMENTATION_DIFFERENCE_ONLY",
             "production_pool_executed_in_source_run": source_run_executed_pool,
@@ -524,6 +688,67 @@ def _semantic_result_id(payload: Mapping[str, Any]) -> str:
     return "sha256:" + sha256(encoded).hexdigest()
 
 
+def _parse_temporal(value: Any, field_code: str) -> tuple[date, datetime | None]:
+    if value is None or str(value).strip() == "":
+        raise ValueError(f"EXPLANATION_{field_code}_NOT_RECORDED")
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        return value, None
+    else:
+        text = str(value).strip()
+        try:
+            if len(text) == 10:
+                return date.fromisoformat(text), None
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"EXPLANATION_{field_code}_INVALID") from exc
+    return parsed.date(), parsed
+
+
+def _same_temporal(left: tuple[date, datetime | None], right: tuple[date, datetime | None]) -> bool:
+    left_date, left_time = left
+    right_date, right_time = right
+    if left_time is None or right_time is None:
+        return left_date == right_date
+    left_aware = left_time.tzinfo is not None and left_time.utcoffset() is not None
+    right_aware = right_time.tzinfo is not None and right_time.utcoffset() is not None
+    if left_aware != right_aware:
+        return False
+    if left_aware:
+        return left_time.astimezone(timezone.utc) == right_time.astimezone(timezone.utc)
+    return left_time == right_time
+
+
+def _validate_explanation_time(ctx: CallContext, row: Mapping[str, Any]) -> None:
+    requested = _parse_temporal(ctx.requested_as_of, "REQUESTED_AS_OF")
+    ticker_as_of = _parse_temporal(row.get("as_of"), "TICKER_AS_OF")
+    if not _same_temporal(requested, ticker_as_of):
+        raise ValueError("EXPLANATION_REQUESTED_AS_OF_MISMATCH")
+
+    context_session = (_parse_temporal(ctx.effective_daily_session, "EFFECTIVE_DAILY_SESSION")
+                       if ctx.effective_daily_session is not None else None)
+    ticker_session = (_parse_temporal(row.get("effective_daily_session"),
+                                      "TICKER_EFFECTIVE_DAILY_SESSION")
+                      if row.get("effective_daily_session") is not None else None)
+    if context_session is not None and ticker_session is not None:
+        if context_session[0] != ticker_session[0]:
+            raise ValueError("EXPLANATION_EFFECTIVE_DAILY_SESSION_MISMATCH")
+    elif context_session is not None or ticker_session is not None:
+        raise ValueError("EXPLANATION_EFFECTIVE_DAILY_SESSION_MISMATCH")
+    if context_session is not None and context_session[0] > requested[0]:
+        raise ValueError("EXPLANATION_EFFECTIVE_DAILY_SESSION_AFTER_REQUESTED_AS_OF")
+
+    feature_raw = row.get("feature_max_date")
+    if feature_raw is None:
+        return
+    feature = _parse_temporal(feature_raw, "FEATURE_MAX_DATE")
+    if feature[0] > requested[0]:
+        raise ValueError("EXPLANATION_FEATURE_MAX_DATE_AFTER_REQUESTED_AS_OF")
+    if context_session is not None and feature[0] > context_session[0]:
+        raise ValueError("EXPLANATION_FEATURE_MAX_DATE_AFTER_EFFECTIVE_DAILY_SESSION")
+
+
 def explain_selection(input: ExplanationInput) -> SelectionExplanation:
     """Explain one persisted selection result without reading data or running strategy code."""
     ctx = input.call_context
@@ -532,18 +757,23 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         raise ValueError("EXPLANATION_SYMBOL_MISMATCH")
     if row.get("run_id") and row.get("run_id") != ctx.run_id:
         raise ValueError("EXPLANATION_RUN_ID_MISMATCH")
+    _validate_explanation_time(ctx, row)
 
     state = row.get("candidate_state") or {}
     trend = state.get("trend_evidence") or {}
     engine = trend.get("market_structure_engine") or {}
     support = trend.get("support") or {}
-    daily_time = row.get("feature_max_date") or ctx.effective_daily_session
-    timing_executed = row.get("timing_status") != "NOT_EVALUATED"
-    options_stage_reached = row.get("options_status") != "NOT_EVALUATED"
-    contract_evaluation_status = state.get("contract_evaluation_status", "NOT_EVALUATED")
+    daily_time = row.get("feature_max_date")
+    timing_status = row.get("timing_status")
+    timing_executed = timing_status is not None and timing_status != "NOT_EVALUATED"
+    contract_evaluation_status = state.get("contract_evaluation_status")
+    options_execution = _options_execution(row.get("options_status"), contract_evaluation_status)
     selection_result = row.get("selection_result") or {}
-    scoring_executed = bool(selection_result and
-                            (selection_result.get("decision") or selection_result.get("scores")))
+    decision_execution = _decision_execution(selection_result)
+    scoring_executed = decision_execution["actual_scoring_executed"]
+
+    health_container, health_key, health_source = _explicit_trend_health(
+        row, state, trend, input.ai_evidence)
 
     measurements = [
         _recorded_metric("close", state, "close", source_status=SourceStatus.OBSERVED,
@@ -560,8 +790,9 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
                          producer="trend.market_structure_engine",
                          source_field="ticker_result.structural_trend",
                          definition_ref="market-structure-engine", data_time=daily_time),
-        _recorded_metric("trend_health", {}, "trend_health", source_status=SourceStatus.DERIVED,
-                         producer="trend.interpretation", source_field="not saved as a field",
+        _recorded_metric("trend_health", health_container, health_key,
+                         source_status=SourceStatus.DERIVED,
+                         producer="trend.interpretation", source_field=health_source,
                          definition_ref="trend.interpretation", data_time=daily_time),
         _recorded_metric("short_term_phase", row, "short_term_phase", source_status=SourceStatus.DERIVED,
                          producer="trend.market_structure_engine",
@@ -597,7 +828,7 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         "static_liquidity_evidence", "event_detail",
     ]
     next_conditions = _next_conditions(row)
-    score_provenance = _score_provenance(scoring_executed, daily_time)
+    score_provenance = _score_provenance(decision_execution, daily_time)
     trend_reasons = list(row.get("trend_gate_reasons") or ())
     pullback_reasons = list(row.get("pullback_gate_reasons") or ())
     rule_evaluations = [
@@ -663,14 +894,24 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
             "confluence": by_id["support_confluence"].model_dump(mode="json"),
         },
         "confirmation": by_id["follow_through_confirmed"].model_dump(mode="json"),
-        "legacy_timing": {"status": row.get("timing_status", "NOT_RECORDED"),
+        "legacy_timing": {"status": timing_status or "NOT_RECORDED",
                           "execution_status": (ExecutionStatus.EXECUTED.value if timing_executed
                                                else ExecutionStatus.NOT_EVALUATED.value)},
         "options_stage": {
-            "status": row.get("options_status", "NOT_RECORDED"),
-            "stage_reached": options_stage_reached,
+            **options_execution,
             "quote_read_status": state.get("verified_read_status", "NOT_RECORDED"),
-            "contract_evaluation_status": contract_evaluation_status,
+            "decision_invocation_status": (ExecutionStatus.EXECUTED.value
+                                           if decision_execution["decision_invoked"]
+                                           else ExecutionStatus.NOT_EVALUATED.value),
+            "hard_gate_checks_status": (ExecutionStatus.EXECUTED.value
+                                        if decision_execution["hard_gate_checks_executed"]
+                                        else ExecutionStatus.NOT_EVALUATED.value),
+            "hard_gate_outcome": ("FAIL" if decision_execution["hard_gate_rejected"]
+                                  else "PASS" if decision_execution["hard_gate_checks_executed"]
+                                  else "NOT_EVALUATED"),
+            "hard_gate_reason_codes": decision_execution["hard_gate_reason_codes"],
+            "actual_scoring_status": (ExecutionStatus.EXECUTED.value if scoring_executed
+                                      else ExecutionStatus.NOT_EVALUATED.value),
             "decision_scoring_executed": scoring_executed,
         },
         "score_validity": ("RECORDED_EXECUTION" if scoring_executed else "NOT_EVALUATED"),
@@ -681,6 +922,7 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         "secondary_reasons": secondary,
         "next_conditions": next_conditions,
     }
+    pivot = _pivot_evidence(state, input.effective_policy, input.ai_evidence)
     effective_policy = {
         "source_run_applicable_rules": state.get("applicable_rules") or {},
         "score_weights": {
@@ -696,7 +938,7 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         },
         "input_policy": input.effective_policy,
     }
-    entrypoint_disagreements = _entrypoint_differences(timing_executed)
+    entrypoint_disagreements = _entrypoint_differences(timing_executed, pivot)
     semantic = {
         "module": "selection_explanation", "version": "1.0", "symbol": ctx.symbol,
         "as_of": ctx.requested_as_of, "source_run_id": ctx.run_id,
@@ -719,15 +961,28 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         "score_provenance": {"status": CapabilityStatus.COMPLETED.value,
                              "execution_status": (ExecutionStatus.EXECUTED.value if scoring_executed
                                                   else ExecutionStatus.NOT_EVALUATED.value)},
-        "options_evaluation": {"status": (CapabilityStatus.COMPLETED.value
-                                           if contract_evaluation_status == "EVALUATED"
-                                           else CapabilityStatus.NOT_EVALUATED.value)},
+        "options_evaluation": {
+            "status": options_execution["capability_status"],
+            "execution_status": options_execution["stage_execution_status"],
+            "completed_evaluation_kind": options_execution["completed_evaluation_kind"],
+            "formal_contract_evaluation_status": options_execution["formal_contract_evaluation_status"],
+        },
     }
+    source_hash_validated = bool(input.source_references) and all(
+        ref.validated for ref in input.source_references)
+    source_validation_reasons = ([] if source_hash_validated else
+        (["SOURCE_REFERENCES_NOT_RECORDED"] if not input.source_references
+         else ["SOURCE_REFERENCE_HASH_NOT_VALIDATED"]))
+    if not options_execution["contract_evidence_consistent"]:
+        source_validation_reasons.append("OPTIONS_CONTRACT_EVIDENCE_STATUS_MISMATCH")
     data = SelectionExplanationData(
         identity={"result_id": result_id, "scope": ctx.scope,
                   "source_run_id": ctx.run_id, "source_final_action": row.get("final_action")},
         time_context={"requested_as_of": ctx.requested_as_of,
                       "effective_daily_session": ctx.effective_daily_session,
+                      "ticker_result_as_of": row.get("as_of"),
+                      "ticker_result_effective_daily_session": row.get("effective_daily_session"),
+                      "feature_max_date": row.get("feature_max_date"),
                       "source_data_timestamp": None,
                       "source_data_timestamp_status": "NOT_RECORDED",
                       "completed_daily_bar": bool(row.get("feature_max_date")),
@@ -742,7 +997,8 @@ def explain_selection(input: ExplanationInput) -> SelectionExplanation:
         effective_policy=effective_policy,
         data_quality={"missing_fields": data_quality_missing,
                       "not_recorded_is_not_zero": True,
-                      "source_artifacts_hash_validated": all(ref.validated for ref in input.source_references)},
+                      "source_artifacts_hash_validated": source_hash_validated,
+                      "source_validation_reasons": source_validation_reasons},
         next_conditions=next_conditions, provenance=input.source_references,
         detail_index=[{"kind": "source_ai_evidence", "symbol": ctx.symbol,
                        "record_identity": ref.record_identity, "source_id": ref.source_id}
@@ -870,7 +1126,14 @@ def selection_explanation_to_markdown(result: SelectionExplanation) -> str:
         f"- 回调深度：{show(detail['pullback_depth'])}",
         f"- 支撑：{show(detail['support']['level'])}；距离 {show(detail['support']['distance_atr'])}",
         f"- 确认：{show(detail['confirmation'])}",
-        f"- 期权阶段：状态 {detail['options_stage']['status']}；合约评估 {detail['options_stage']['contract_evaluation_status']}；评分执行 {detail['options_stage']['decision_scoring_executed']}",
+        f"- 期权阶段：状态 {detail['options_stage']['status']}；阶段执行 "
+        f"{detail['options_stage']['stage_execution_status']}；完成的评估类型 "
+        f"{detail['options_stage']['completed_evaluation_kind']}；合约评估证据 "
+        f"{detail['options_stage']['contract_evaluation_status']}",
+        f"- DecisionEngine：调用 {detail['options_stage']['decision_invocation_status']}；"
+        f"硬门槛检查 {detail['options_stage']['hard_gate_checks_status']} / "
+        f"{detail['options_stage']['hard_gate_outcome']}；实际评分 "
+        f"{detail['options_stage']['actual_scoring_status']}",
         f"- 主要原因：{detail['primary_reason'] or '无'}",
         "", "下一观察条件：", "",
     ]
