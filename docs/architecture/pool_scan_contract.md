@@ -87,3 +87,23 @@ shared routing, scheduling, or handle changes cover cross-module items):
 
 A valid-JSON CLI smoke test with `spread_count=0` proves CLI completion only; it
 does not prove the verified options path or trade readiness.
+
+## Resumable execution and telemetry
+
+The current invocation and recovery guide is [Pool Scan 6.0](../pool_scan_6.0.md).
+
+The canonical runner writes an atomic checkpoint under
+`<output-directory>/.checkpoints/` after timing and each completed ticker. Its identity
+includes exact universe membership, effective daily session, mode,
+refresh policy, Python source, configuration and option rules. Per-row identities
+bind ticker daily inputs, shared benchmark, routed options and physical files. Compatible
+checkpoints are reused by default; `--no-resume` forces a fresh run. A changed
+manifest/generation, session, mode, code, or rules therefore cannot reuse stale
+results. Options-only changes retain compatible timing. A process timeout leaves
+saved stages reusable; an exact `--resume-run-id` validates the recovery anchor.
+`--new-run` assigns a fresh run identity while permitting valid cache reuse.
+
+Progress records are emitted as `POOL_SCAN_PROGRESS` on stderr. Each ticker
+row carries `stage_timings_ms` for verified daily read, trend/timing, and
+options work, plus checkpoint cache hits. Timeout, data-blocked, and strategy
+rejected outcomes remain distinct.

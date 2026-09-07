@@ -102,7 +102,9 @@ def persist_pool_artifacts(result: PoolScanResult, output_directory: str | Path,
     rows = json.dumps(flat_rows, default=str, sort_keys=True, indent=2)
     files["static_eligibility.json"] = _write_atomic(root / "static_eligibility.json", rows)
     files["daily_timing.json"] = _write_atomic(root / "daily_timing.json", rows)
-    parquet_rows = flat_rows
+    parquet_rows = [{**row, "stage_timings_ms": json.dumps(row.get("stage_timings_ms", {}), sort_keys=True),
+                    "stage_state": json.dumps(row.get("stage_state", {}), default=str, sort_keys=True)}
+                   for row in flat_rows]
     files["static_eligibility.parquet"] = _write_parquet_atomic(root / "static_eligibility.parquet", parquet_rows)
     files["daily_timing.parquet"] = _write_parquet_atomic(root / "daily_timing.parquet", parquet_rows)
     empty_schema = {"symbol": [], "run_id": [], "as_of": [], "status": [], "reason_codes": []}

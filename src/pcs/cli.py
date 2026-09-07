@@ -218,6 +218,8 @@ def pool_scan(args):
             max_workers=args.max_workers, stage_timeout_seconds=args.stage_timeout_seconds,
             manifest_path=args.manifest_path, parquet_root=args.parquet_root, rules=args.rules,
             output_directory=args.output_directory,
+            resume=args.resume,
+            new_run=args.new_run, resume_run_id=args.resume_run_id,
         )
         result = run_read_only_scan(request, timeout_seconds=args.scan_timeout_seconds)
         print(result.to_json(), flush=True)
@@ -241,6 +243,8 @@ def pool_scan(args):
         data_access=PCSDataAccess(manifest_path=args.manifest_path, parquet_root=args.parquet_root),
         option_rules=load_pool_option_rules(args.rules),
         output_directory=args.output_directory,
+        resume=args.resume,
+        new_run=args.new_run, resume_run_id=args.resume_run_id,
     )
     print(result.to_json())
 
@@ -322,6 +326,10 @@ def main():
     pool.add_argument("--manifest-path", default="data/manifests/storage_manifest.csv")
     pool.add_argument("--output-directory", default="pool_scan_runs",
                       help="directory for scan and reconciliation artifacts")
+    pool.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True,
+                      help="reuse compatible per-ticker checkpoint results (default: true)")
+    pool.add_argument("--new-run", action="store_true", help="new run identity, revalidate inputs and reuse compatible results")
+    pool.add_argument("--resume-run-id", help="require the compatible checkpoint to belong to this exact run")
     pool.set_defaults(func=pool_scan)
 
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")

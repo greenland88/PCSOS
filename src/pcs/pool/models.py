@@ -79,6 +79,12 @@ class TickerScanResult:
     feature_max_date: str | None = None
     timeframe: str = "daily"
     latency_ms: float = 0.0
+    stage_timings_ms: Mapping[str, float] = field(default_factory=dict)
+    cache_hits: tuple[str, ...] = ()
+    checkpoint_stage: str = "COMPLETE"
+    stage_state: Mapping[str, Any] = field(default_factory=dict)
+    input_identity: str = ""
+    daily_input_identity: str = ""
     spread_count: int = 0
     structural_trend: str | None = None
     short_term_phase: str | None = None

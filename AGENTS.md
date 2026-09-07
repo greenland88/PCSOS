@@ -14,6 +14,7 @@ task contract required by the work:
 - replay validation and parallel outputs: [`docs/architecture/validation_run_safety.md`](docs/architecture/validation_run_safety.md);
 - parameter experiments: also [`docs/research/PARAMETER_EXPERIMENT_STANDARD.md`](docs/research/PARAMETER_EXPERIMENT_STANDARD.md) and `config/research/parameter_experiment_policy.yaml`;
 - Pool Scan: [`docs/architecture/pool_scan_contract.md`](docs/architecture/pool_scan_contract.md);
+- routine natural-language PCS operations: [PCS daily operations](../PCSOS-pool-closure/docs/PCS_DAILY_OPERATIONS.md). The agent executes the authorized scan/preparation; do not hand commands to the user. Routine operation does not authorize code or strategy repairs;
 - a new module or materially changed interface: [`docs/architecture/agent_ready_interfaces.md`](docs/architecture/agent_ready_interfaces.md).
 
 Use [`docs/README.md`](docs/README.md) to locate other contracts. Read
@@ -102,3 +103,16 @@ with stage, reason code, confirmed facts, reusable checkpoint, and required inpu
 Distinguish code tests, fixtures, provider probes, canonical readiness, and real
 business runs. Do not report a commit or branch change unless one was actually
 created.
+
+## Frozen Pool Scan execution gate
+
+Any Codex formal/production pool scan must explicitly bind an approved committed
+SHA/tag, clean dedicated worktree, config snapshot and canonical manifest identity.
+Never edit or execute uncommitted source in the baseline worktree. The current
+release is POOL_SCAN_RECOVERY_BASELINE, not stable. The committed control
+entry at H:/workspace/PCSOS-pool-scan-control/scripts/run_frozen_pool_scan.py
+is for frozen-run reproduction only. Daily/candidate scans use an explicitly
+approved committed clean worktree and record current session, manifest and
+config identities per run; options data availability is a separate acceptance axis;
+see H:/workspace/PCSOS-pool-scan-control/docs/operations/pool-scan-baseline-20260904/README.md.
+Future fixes use fix/pool-scan-performance, separate from the baseline worktree.
