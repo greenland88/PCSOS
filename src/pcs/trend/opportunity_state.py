@@ -8,6 +8,7 @@ import math
 
 import pandas as pd
 import exchange_calendars as xc
+from pcs.trend.lifecycle import pending_sessions, committed_days, requested_applicability
 
 from pcs.analysis_contracts import CapabilityStatus
 from pcs.trend.selection_models import (
@@ -244,8 +245,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     episodes: list[OpportunityEpisode] = (deepcopy(input.prior_state.episodes)
         if compatible and input.prior_state else [])
     boundary = input.prior_state.evaluated_through if compatible else None
-    timeline: list[OpportunityDay] = (deepcopy([d for d in input.prior_timeline
-        if boundary and d.session <= boundary]) if compatible else [])
+    timeline: list[OpportunityDay] = (deepcopy(committed_days(input.prior_timeline, boundary)) if compatible else [])
     transitions: list[OpportunityTransition] = (deepcopy([t for t in input.prior_transitions
         if boundary and t.session <= boundary]) if compatible else [])
     detections = (deepcopy([d for d in input.prior_detections
@@ -260,7 +260,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     global_reasons = []
     processed_sessions = []
 
-    process_sessions = [s for s in expected if not compatible or not evaluated_through or s > evaluated_through]
+    process_sessions = pending_sessions(expected, analysis_start, ctx.effective_daily_session, evaluated_through)
     for session in process_sessions:
         processed_sessions.append(session)
         bar = bar_by_day.get(session)
@@ -645,14 +645,10 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         requested_eligible = False
     elif not current_episode:
         requested_eligible = None
-    elif request_semantics == "HISTORICAL":
-        requested_eligible = last_day.eligible
-    elif current_episode.entry_end and requested_session > current_episode.entry_end:
-        requested_eligible = False
-    elif requested_session != ctx.effective_daily_session:
-        requested_eligible = None
     else:
-        requested_eligible = last_day.eligible
+        requested_eligible = requested_applicability(requested=requested_session,
+            evidence=ctx.effective_daily_session, semantics=request_semantics,
+            eligible=last_day.eligible, entry_end=current_episode.entry_end)
     return EntryOpportunity(symbol=ctx.symbol, as_of=ctx.effective_daily_session,
         family=policy.family, shallow_pullback_timeline=setup_evidence,
         active_families=[policy.family] if requested_eligible is True else [],

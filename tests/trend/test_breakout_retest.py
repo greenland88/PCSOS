@@ -123,9 +123,8 @@ def test_close_break_invalidates_but_intraday_penetration_does_not():
 
 def test_missing_gap_stops_and_resume_matches_cold():
     partial=direct(sample(30,missing=28))
-    assert partial.status=="PARTIAL" and partial.evaluated_through==partial.timeline[-1].session
-    prefix=direct(sample(28))
-    resumed=direct(sample(32),prefix.next_state)
+    assert partial.status=="PARTIAL" and partial.evaluated_through==partial.timeline[-2].session
+    resumed=direct(sample(32),partial.next_state)
     cold=direct(sample(32))
     assert resumed.events==cold.events and resumed.timeline==cold.timeline
     assert resumed.result_id==cold.result_id

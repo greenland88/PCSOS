@@ -753,11 +753,12 @@ class OpportunityEvidenceGap(StrictModel):
     role: str
     reason_codes: list[str]
     affected_outputs: list[str]
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class EntryOpportunity(StrictModel):
     module: str = "entry_opportunity"
-    version: Literal["1.0", "1.1", "1.2"] = "1.2"
+    version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.2"
     symbol: str
     as_of: str
     status: CapabilityStatus
@@ -777,7 +778,7 @@ class EntryOpportunity(StrictModel):
     result_id: str
     matched_families: list[str]
     upstream_result_ids: list[str]
-    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2", "entry-opportunity-v2.3"] = "entry-opportunity-v2.3"
+    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2", "entry-opportunity-v2.3", "entry-opportunity-v2.4"] = "entry-opportunity-v2.3"
     run_id: str
     request_id: str
     received_at: str | None
@@ -812,7 +813,7 @@ class EntryOpportunity(StrictModel):
 
 class BreakoutRetestPolicy(StrictModel):
     policy_id: str = "breakout-retest-observation-v1"
-    calculation_version: Literal["breakout-retest-v1"] = "breakout-retest-v1"
+    calculation_version: Literal["breakout-retest-v2"] = "breakout-retest-v2"
     resistance_sessions: Literal[20] = 20
     resistance_tie_rule: Literal["LATEST_SESSION"] = "LATEST_SESSION"
     breakout_buffer_atr: float = Field(default=.10, ge=0)
@@ -871,11 +872,19 @@ class BreakoutRetestDay(StrictModel):
     confirmation_session: str | None = None
     eligible: bool | None = False
     support_test_id: str | None = None
+    breakout_session: str | None = None
+    support_zone_id: str | None = None
+    retest_deadline: str | None = None
+    confirmation_deadline: str | None = None
+    entry_start: str | None = None
+    entry_end: str | None = None
     conditions: list[OpportunityCondition] = Field(default_factory=list)
     reason_codes: list[str] = Field(default_factory=list)
 
 
 class BreakoutRetestState(StrictModel):
+    calculation_version: Literal["breakout-retest-v2"] = "breakout-retest-v2"
+    analysis_start: str
     symbol: str
     events: list[BreakoutEvent]
     timeline: list[BreakoutRetestDay]
@@ -902,12 +911,12 @@ class BreakoutRetestInput(StrictModel):
 
 class BreakoutRetestResult(StrictModel):
     module: str = "breakout_retest"
-    version: Literal["1.0"] = "1.0"
+    version: Literal["2.0"] = "2.0"
     symbol: str
     as_of: str
     status: CapabilityStatus
     data_timestamp: str | None = None
-    calculation_version: Literal["breakout-retest-v1"] = "breakout-retest-v1"
+    calculation_version: Literal["breakout-retest-v2"] = "breakout-retest-v2"
     run_id: str
     request_id: str
     result_id: str
@@ -919,6 +928,9 @@ class BreakoutRetestResult(StrictModel):
     timeline: list[BreakoutRetestDay]
     current_event_id: str | None = None
     eligible_at_requested_time: bool | None
+    requested_session: str
+    request_time_semantics: str
+    current_missing_details: list[OpportunityEvidenceGap] = Field(default_factory=list)
     evaluated_through: str | None
     missing_sessions: list[str]
     coverage_missing_evidence: list[OpportunityEvidenceGap]

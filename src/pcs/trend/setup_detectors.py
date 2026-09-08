@@ -7,6 +7,7 @@ not read data or calculate an alternative ATR.
 from __future__ import annotations
 
 import math
+from pcs.trend.lifecycle import required_conjunction
 
 from pcs.trend.shallow_pullback import detect_shallow_pullback
 
@@ -129,8 +130,7 @@ def detect_healthy_pullback(*, bar: OpportunityFeatureBar,
     # another required input is unknown; only an otherwise viable setup stays
     # unknown because of missing evidence.
     gates = [c for c in conditions if c.role == "DISCOVERY"]
-    detected = (False if any(c.predicate_value is False for c in gates) else
-                True if all(c.predicate_value is True for c in gates) else None)
+    detected = required_conjunction(gates)
     reasons = ["SUPPORT_SELECTION_DISTANCE_AVAILABLE_AT_ZONE_TEST_ID_V1"] if detected else list(dict.fromkeys(
         r for c in conditions for r in c.reason_codes)) or ["HEALTHY_PULLBACK_DISCOVERY_NOT_SATISFIED"]
     return OpportunityDetection(session=session, detected=detected, family=policy.family,

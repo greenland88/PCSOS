@@ -371,7 +371,8 @@ def _csv_view(results):
         "economic_episode_id", "opportunity_id", "setup_date", "touch_date",
         "confirmation_deadline", "confirmation_date", "entry_start", "entry_end",
         "support_zone_id", "support_test_id", "reason_codes", "conditions_ref",
-        "current_missing_evidence", "coverage_missing_evidence"]
+        "current_missing_evidence", "coverage_missing_evidence",
+        "requested_session", "request_time_semantics", "eligible_at_requested_time"]
     writer = csv.DictWriter(stream, fieldnames=columns)
     writer.writeheader()
     for result in results:
@@ -386,7 +387,12 @@ def _csv_view(results):
                 "entry_end": day.entry_end or "", "support_zone_id": day.support_zone_id or "",
                 "support_test_id": day.support_test_id or "", "reason_codes": ";".join(day.reason_codes),
                 "conditions_ref": f"{result.result_id}:{day.session}",
-                "current_missing_evidence": json.dumps(result.missing_evidence, ensure_ascii=False),
+                "current_missing_evidence": json.dumps(
+                    [c.condition_id for c in day.conditions if c.role != "DIAGNOSTIC" and c.predicate_value is None]
+                    if result.family == "BREAKOUT_RETEST" else result.missing_evidence, ensure_ascii=False),
+                "requested_session": result.requested_session,
+                "request_time_semantics": result.request_time_semantics,
+                "eligible_at_requested_time": "" if result.eligible_at_requested_time is None else str(result.eligible_at_requested_time).lower(),
                 "coverage_missing_evidence": json.dumps([g.model_dump(mode="json")
                     for g in result.coverage_missing_evidence if g.session == day.session],
                     ensure_ascii=False)})

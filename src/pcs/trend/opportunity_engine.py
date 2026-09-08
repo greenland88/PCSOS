@@ -73,6 +73,7 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
     from pcs.trend.opportunity_state import _hash
     display_order = ["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"]
     primary = min(results, key=lambda r: (r.eligible_at_requested_time is not True,
+        r.eligible_at_requested_time is False if "BREAKOUT_RETEST" in families else False,
         display_order.index(r.family)))
     events = {}
     for result in results:
@@ -86,7 +87,9 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
             if result.eligible_at_requested_time is True and result.opportunity_id == episode.opportunity_id:
                 event["currently_eligible_families"].append(result.family)
     return primary.model_copy(update={"family_results": results,
-        "result_id": "sha256:"+_hash(["family-observation-aggregate-v1", [r.result_id for r in results]]),
+        "result_id": "sha256:"+_hash(["family-observation-aggregate-v2" if "BREAKOUT_RETEST" in families else "family-observation-aggregate-v1", [r.result_id for r in results]]),
+        "version": "1.3" if "BREAKOUT_RETEST" in families else primary.version,
+        "calculation_version": "entry-opportunity-v2.4" if "BREAKOUT_RETEST" in families else primary.calculation_version,
         "matched_families": [r.family for r in results if r.episodes],
         "active_families": [r.family for r in results if r.eligible_at_requested_time is True],
         "economic_events": list(events.values())})

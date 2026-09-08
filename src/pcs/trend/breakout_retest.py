@@ -20,6 +20,9 @@ from pcs.trend.setup_detectors import (
     _condition, confirmation_conditions, current_eligibility_conditions, volume_ratio,
 )
 from pcs.trend.support_zones import create_fixed_support_zone, update_fixed_support_zone
+from pcs.trend.opportunity_state import _resolve_requested_session, _valid_price_bar
+from pcs.trend.lifecycle import (pending_sessions, committed_days,
+    required_conjunction, requested_applicability)
 
 
 def _hash(value):
@@ -81,6 +84,26 @@ def _fact(event, session):
         reason_codes=test.reason_codes)
 
 
+def _snapshot(event):
+    """Copy only facts already known at this point in the advancing lifecycle."""
+    if event is None:
+        return {}
+    return dict(breakout_id=event.breakout_id, breakout_session=event.breakout_session,
+        support_zone_id=event.zone.zone_id, retest_deadline=event.retest_deadline,
+        retest_session=event.retest_session, confirmation_session=event.confirmation_session,
+        confirmation_deadline=event.confirmation_deadline,
+        entry_start=event.entry_start, entry_end=event.entry_end,
+        support_test_id=event.zone.tests[0].test_id if event.retest_session and event.zone.tests else None)
+
+
+def _stage(event):
+    if event is None:
+        return "NO_BREAKOUT"
+    return {OpportunityStateName.WATCH: "WAITING_RETEST",
+        OpportunityStateName.CONFIRMING: "WAITING_CONFIRMATION",
+        OpportunityStateName.ENTRY_READY: "VERIFIED"}.get(event.state, event.state.value)
+
+
 def _discovery(bar, history, sessions, bars, policy, view, support_policy):
     day = bar.session.isoformat()
     i = sessions.index(day)
@@ -127,14 +150,14 @@ def _discovery(bar, history, sessions, bars, policy, view, support_policy):
             predicate=None if left is None else True,
             refs=[x for x in (producer, f"bar:{day}") if x],
             reasons=[cid+"_UNKNOWN"] if left is None else []))
-    gates = [c.predicate_value for c in conditions if c.role == "DISCOVERY"]
-    detected = False if False in gates else True if all(x is True for x in gates) else None
+    detected = required_conjunction(conditions)
     return detected, conditions, missing, resistance, resistance_session, candidates, rvol, denominator, line
 
 
 def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
     """Detect and advance breakout/retest facts; never reads or writes storage."""
     ctx, view, policy = input.call_context, input.feature_view, input.effective_policy
+    requested_session, request_semantics = _resolve_requested_session(ctx, input.calendar)
     day = ctx.effective_daily_session
     if view.symbol != ctx.symbol or not day:
         raise ValueError("BREAKOUT_INPUT_IDENTITY_MISMATCH")
@@ -164,36 +187,46 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
             prior.policy_identity != policy_identity or prior.indicator_identity != view.indicator_identity or
             prior.price_basis != view.price_basis or
             prior.corporate_action_version != view.corporate_action_version or
-            prior.evaluated_through is None or prior.evaluated_through > day or
-            prior.input_prefix_sha256 != prefix_hash(prior.evaluated_through)):
+            prior.calculation_version != policy.calculation_version or
+            (prior.evaluated_through is not None and (prior.evaluated_through > day or
+            prior.input_prefix_sha256 != prefix_hash(prior.evaluated_through)))):
         raise ValueError("BREAKOUT_PRIOR_REPLAY_REQUIRED")
+    if prior and ([d.session for d in committed_days(prior.timeline, prior.evaluated_through)] !=
+            [s for s in sessions if prior.evaluated_through and prior.analysis_start <= s <= prior.evaluated_through]):
+        raise ValueError("BREAKOUT_PRIOR_TIMELINE_INCOMPLETE")
     events = deepcopy(prior.events) if prior else []
-    timeline = deepcopy(prior.timeline) if prior else []
+    timeline = deepcopy(committed_days(prior.timeline, prior.evaluated_through)) if prior else []
     start_after = prior.evaluated_through if prior else None
-    process = [s for s in sessions if view.analysis_start <= s <= day and
-               (start_after is None or s > start_after)]
+    analysis_start = prior.analysis_start if prior else view.analysis_start
+    process = pending_sessions(sessions, analysis_start, day, start_after)
+    evaluated = start_after
+    committed_count = 0
     missing_sessions = []
-    coverage_gaps = deepcopy(prior.coverage_missing_evidence) if prior else []
+    coverage_gaps = []
     support_history = []
     parent = events[-1] if events else None
     active = next((e for e in reversed(events) if e.state not in {
         OpportunityStateName.EXPIRED, OpportunityStateName.INVALIDATED}), None)
     for session in process:
         bar = bars.get(session)
-        if bar is None or any(not _finite(getattr(bar, k)) for k in ("open", "high", "low", "close")):
-            missing_sessions = [s for s in sessions if session <= s <= day and s not in bars]
+        if bar is None or not _valid_price_bar(bar):
+            missing_sessions = [s for s in process if s >= session and
+                (s not in bars or not _valid_price_bar(bars[s]))]
+            why = "DAILY_BAR_MISSING" if bar is None else "DAILY_OHLC_INVALID"
+            known = active or parent
             timeline.append(BreakoutRetestDay(session=session,
-                breakout_id=active.breakout_id if active else None,
-                state=active.state if active else OpportunityStateName.NO_SETUP,
-                stage="WAITING_RETEST" if active and not active.retest_session else
-                      "WAITING_CONFIRMATION" if active else "NO_BREAKOUT",
-                eligible=None, reason_codes=["DAILY_BAR_MISSING", "PROCESSING_STOPPED_AT_FIRST_GAP"]))
-            coverage_gaps.append(OpportunityEvidenceGap(session=session,
-                condition_id="DAILY_BAR_MISSING", role="INPUT",
-                reason_codes=["DAILY_BAR_MISSING"], affected_outputs=["current_assessment", "coverage"]))
+                **_snapshot(known), state=known.state if known else OpportunityStateName.NO_SETUP,
+                stage=_stage(known),
+                eligible=None, reason_codes=[why, "PROCESSING_STOPPED_AT_FIRST_GAP"]))
+            for gap_session in missing_sessions:
+                gap_reason = "DAILY_BAR_MISSING" if gap_session not in bars else "DAILY_OHLC_INVALID"
+                coverage_gaps.append(OpportunityEvidenceGap(session=gap_session,
+                    condition_id=gap_reason, role="INPUT", evidence_refs=[view.source.source_id, f"bar:{gap_session}"],
+                    reason_codes=[gap_reason], affected_outputs=["current_assessment", "coverage"]))
             break
         i = sessions.index(session)
         conditions, reasons = [], []
+        detected = False
         if active and active.state in {OpportunityStateName.EXPIRED, OpportunityStateName.INVALIDATED}:
             parent, active = active, None
         if active:
@@ -203,7 +236,7 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
             active = active.model_copy(update={"zone": zone})
             events[-1] = active
             new_test = len(zone.tests) > old_test_count
-            if new_test and active.retest_session is None:
+            if new_test and active.retest_session is None and session <= active.retest_deadline:
                 test = zone.tests[0]
                 active = active.model_copy(update={"retest_session": test.touch_session,
                     "confirmation_deadline": test.confirmation_deadline,
@@ -217,7 +250,9 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
                     ">=", zone.invalidation_line, predicate=not close_break, unit="USD",
                     refs=[zone.zone_id, f"bar:{session}:close"]),
                 _condition("BREAKOUT_STRUCTURE_NOT_BEARISH", session, "INVALIDATION",
-                    bar.structure_state, "!=", "bearish", predicate=not structure_break,
+                    bar.structure_state, "!=", "bearish",
+                    predicate=None if bar.structure_state is None else not structure_break,
+                    reasons=["BREAKOUT_STRUCTURE_UNKNOWN"] if bar.structure_state is None else [],
                     refs=[f"structure:{session}"])])
             if close_break or structure_break:
                 reasons += ["FIXED_SUPPORT_INVALIDATED" if close_break else "STRUCTURE_INVALIDATED"]
@@ -245,7 +280,7 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
                         test_id=fact.test_id if fact else "UNAVAILABLE", support_fact=fact,
                         policy=input.opportunity_policy)
                     conditions.extend(confirm)
-                    if all(c.predicate_value is True for c in confirm if c.role != "DIAGNOSTIC"):
+                    if required_conjunction(conditions) is True:
                         entry_start = sessions[i+1]
                         entry_end = sessions[i+input.opportunity_policy.entry_window_sessions]
                         active = active.model_copy(update={"confirmation_session": session,
@@ -280,12 +315,6 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
                 bar, [bars[s] for s in sorted(bars) if s < session], sessions, bars,
                 policy, view, input.support_policy)
             conditions.extend(discovery)
-            for c in discovery:
-                if c.predicate_value is None and c.role != "DIAGNOSTIC":
-                    coverage_gaps.append(OpportunityEvidenceGap(session=session,
-                        condition_id=c.condition_id, role=c.role,
-                        reason_codes=c.reason_codes or ["CONDITION_INPUT_UNKNOWN"],
-                        affected_outputs=["coverage"]))
             if detected is True:
                 source_id = _hash([ctx.symbol, session, resistance, resistance_session,
                                    policy.calculation_version])
@@ -318,50 +347,73 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
         eligible = bool(current and current.state == OpportunityStateName.ENTRY_READY and
                     current.entry_start <= session <= current.entry_end and
                     all(c.predicate_value is True for c in conditions if c.role == "CURRENT_ELIGIBILITY"))
-        if current is None:
-            state, stage = OpportunityStateName.NO_SETUP, "NO_BREAKOUT"
-        elif current.state == OpportunityStateName.WATCH:
-            state, stage = current.state, "WAITING_RETEST"
-        elif current.state == OpportunityStateName.CONFIRMING:
-            state, stage = current.state, "WAITING_CONFIRMATION"
-        elif current.state == OpportunityStateName.ENTRY_READY:
-            state, stage = current.state, "VERIFIED"
-        else:
-            state, stage = current.state, current.state.value
+        if may_discover and detected is None:
+            eligible = None
+        elif current and current.state not in {OpportunityStateName.EXPIRED, OpportunityStateName.INVALIDATED}:
+            gates = required_conjunction(conditions)
+            if gates is None:
+                eligible = None
+            elif gates is False:
+                eligible = False
         timeline.append(BreakoutRetestDay(session=session,
-            breakout_id=current.breakout_id if current else None, state=state, stage=stage,
-            retest_session=current.retest_session if current else None,
-            confirmation_session=current.confirmation_session if current else None,
-            eligible=eligible, support_test_id=(current.zone.tests[0].test_id
-                if current and current.zone.tests else None), conditions=conditions,
+            **_snapshot(current), state=current.state if current else OpportunityStateName.NO_SETUP,
+            stage=_stage(current), eligible=eligible, conditions=conditions,
             reason_codes=reasons or (["BREAKOUT_RETEST_VERIFIED"] if eligible else [])))
-    evaluated = timeline[-1].session if timeline else prior.evaluated_through if prior else None
+        evaluated = session
+        committed_count += 1
     current = events[-1] if events else None
     current_day = timeline[-1] if timeline else None
-    status = CapabilityStatus.PARTIAL if missing_sessions or (current_day and current_day.eligible is None) else CapabilityStatus.COMPLETED
+    for item in timeline:
+        for c in item.conditions:
+            if c.role != "DIAGNOSTIC" and c.predicate_value is None:
+                coverage_gaps.append(OpportunityEvidenceGap(session=item.session,
+                    condition_id=c.condition_id, role=c.role,
+                    reason_codes=c.reason_codes or ["CONDITION_INPUT_UNKNOWN"],
+                    evidence_refs=c.source_refs or [view.source.source_id, f"bar:{item.session}"],
+                    affected_outputs=["current_assessment", "coverage"] if item == current_day else ["coverage"]))
+    current_gaps = [g for g in coverage_gaps if "current_assessment" in g.affected_outputs]
+    requested_eligible = requested_applicability(requested=requested_session,
+        evidence=day, semantics=request_semantics,
+        eligible=current_day.eligible if current_day else None,
+        entry_end=current.entry_end if current else None)
+    if request_semantics == "CURRENT_EOD" and requested_session != day and requested_eligible is None:
+        cal = xc.get_calendar(input.calendar)
+        needed = [str(s.date()) for s in cal.sessions_in_range(min(day, requested_session), max(day, requested_session))
+                  if str(s.date()) != day]
+        for s in needed:
+            current_gaps.append(OpportunityEvidenceGap(session=s,
+                condition_id="REQUESTED_SESSION_EVIDENCE_MISSING", role="INPUT",
+                reason_codes=["REQUESTED_SESSION_EVIDENCE_MISSING"],
+                evidence_refs=[view.source.source_id, f"bar:{s}"], affected_outputs=["current_assessment"]))
+    status = CapabilityStatus.PARTIAL if requested_eligible is None or missing_sessions else CapabilityStatus.COMPLETED
     state = BreakoutRetestState(symbol=ctx.symbol, events=events, timeline=timeline,
+        analysis_start=analysis_start,
         evaluated_through=evaluated, input_prefix_sha256=prefix_hash(evaluated) if evaluated else _hash([]),
         coverage_missing_evidence=coverage_gaps,
         source_identity=source_identity, policy_identity=policy_identity,
         indicator_identity=view.indicator_identity, price_basis=view.price_basis,
         corporate_action_version=view.corporate_action_version,
-        state_revision=(prior.state_revision if prior else 0)+len(process)-len(missing_sessions))
+        state_revision=(prior.state_revision if prior else 0)+committed_count)
     identity = [ctx.symbol, day, source_identity, policy_identity,
         [e.model_dump(mode="json") for e in events], [d.model_dump(mode="json") for d in timeline],
-        evaluated, missing_sessions, policy.calculation_version]
+        evaluated, missing_sessions, policy.calculation_version, requested_session, request_semantics]
     reasons = list(dict.fromkeys([r for d in timeline for r in d.reason_codes] +
-        (["DAILY_SESSION_GAPS"] if missing_sessions else [])))
+        (["DAILY_SESSION_GAPS"] if missing_sessions else []) +
+        [r for g in current_gaps for r in g.reason_codes]))
     return BreakoutRetestResult(symbol=ctx.symbol, as_of=day, status=status,
         data_timestamp=view.source_timestamp, run_id=ctx.run_id, request_id=ctx.request_id,
         result_id=_hash(identity), reason_codes=reasons, call_context=ctx,
         effective_policy=policy, policy_sha256=policy_identity, events=events,
         timeline=timeline, current_event_id=current.breakout_id if current else None,
-        eligible_at_requested_time=current_day.eligible if current_day else None,
+        eligible_at_requested_time=requested_eligible,
+        requested_session=requested_session, request_time_semantics=request_semantics,
+        current_missing_details=current_gaps,
         evaluated_through=evaluated, missing_sessions=missing_sessions,
         coverage_missing_evidence=coverage_gaps, next_state=state,
         provenance=[view.source, *view.auxiliary_sources],
         explanation=(f"评估至{evaluated}；突破事件{len(events)}个；当前状态"
-            f"{current_day.state.value if current_day else '未知'}。观察结果不是下单授权。"))
+            f"{current_day.state.value if current_day else '未知'}；请求交易日{requested_session}，"
+            f"请求时资格{requested_eligible if requested_eligible is not None else '未知'}。观察结果不是下单授权。"))
 
 
 def evaluate_breakout_opportunity(input):
@@ -379,7 +431,7 @@ def evaluate_breakout_opportunity(input):
         test = event.zone.tests[0]
         economic = _hash([input.call_context.symbol, event.retest_session])
         opportunity = _hash([economic, event.breakout_id, event.zone.zone_id, test.test_id,
-                             result.policy_sha256, "entry-opportunity-v2.3"])
+                             result.policy_sha256, "entry-opportunity-v2.4"])
         episodes.append(OpportunityEpisode(economic_episode_id=economic,
             opportunity_id=opportunity, family="BREAKOUT_RETEST",
             setup_date=event.breakout_session, touch_date=event.retest_session,
@@ -400,17 +452,16 @@ def evaluate_breakout_opportunity(input):
     transitions = []
     old = None
     for item in result.timeline:
-        event = by_breakout.get(item.breakout_id)
-        episode = by_opportunity.get(event.breakout_session) if event else None
+        episode = by_opportunity.get(item.breakout_session) if item.retest_session else None
         day = OpportunityDay(session=item.session, state=item.state,
             capability_status=CapabilityStatus.PARTIAL if item.eligible is None else CapabilityStatus.COMPLETED,
             economic_episode_id=episode.economic_episode_id if episode else None,
             opportunity_id=episode.opportunity_id if episode else None,
-            setup_date=event.breakout_session if event else None,
-            touch_date=item.retest_session, confirmation_deadline=event.confirmation_deadline if event else None,
+            setup_date=item.breakout_session,
+            touch_date=item.retest_session, confirmation_deadline=item.confirmation_deadline,
             confirmation_date=item.confirmation_session,
-            entry_start=event.entry_start if event else None, entry_end=event.entry_end if event else None,
-            eligible=item.eligible, support_zone_id=event.zone.zone_id if event else None,
+            entry_start=item.entry_start, entry_end=item.entry_end,
+            eligible=item.eligible, support_zone_id=item.support_zone_id,
             support_test_id=item.support_test_id, conditions=item.conditions,
             reason_codes=item.reason_codes)
         timeline.append(day)
@@ -434,9 +485,9 @@ def evaluate_breakout_opportunity(input):
         policy_sha256=policy_hash, indicator_identity=view.indicator_identity,
         price_basis=view.price_basis, corporate_action_version=view.corporate_action_version,
         analysis_start=view.analysis_start)
-    actual = [s for s in view.expected_sessions if view.analysis_start <= s <= result.evaluated_through]
+    actual = [s for s in view.expected_sessions if view.analysis_start <= s <= input.call_context.effective_daily_session]
     coverage = OpportunityCoverage(expected_sessions=actual,
-        actual_sessions=[s for s in actual if s not in result.missing_sessions],
+        actual_sessions=[s for s in actual if result.evaluated_through and s <= result.evaluated_through],
         missing_sessions=result.missing_sessions, analysis_start=view.analysis_start,
         evaluated_through=result.evaluated_through,
         indicator_seed_start=view.indicator_seed_start,
@@ -453,12 +504,12 @@ def evaluate_breakout_opportunity(input):
     current_episode = next((e for e in reversed(episodes)
         if current_event and e.setup_date == current_event.breakout_session), None)
     current_conditions = last.conditions if last else []
-    current_gaps = [g for g in result.coverage_missing_evidence
-                    if last and g.session == last.session]
-    entry_id = _hash(["entry-opportunity-v2.3-breakout", result.result_id,
+    current_gaps = result.current_missing_details
+    entry_id = _hash(["entry-opportunity-v2.3-breakout-v2", result.result_id,
                       [e.model_dump(mode="json") for e in episodes]])
     checkpoint = checkpoint.model_copy(update={"committed_result_id": entry_id})
     return EntryOpportunity(symbol=input.call_context.symbol,
+        version="1.3", calculation_version="entry-opportunity-v2.4",
         as_of=input.call_context.effective_daily_session, family="BREAKOUT_RETEST",
         status=result.status, state=last.state if last else None,
         last_known_state=last.state if last else None,
@@ -466,15 +517,15 @@ def evaluate_breakout_opportunity(input):
         entry_permitted_from=current_event.entry_start if current_event else None,
         entry_permitted_until=current_event.entry_end if current_event else None,
         confirmation_deadline_elapsed_at_requested_session=(
-            input.call_context.effective_daily_session > current_event.confirmation_deadline
+            result.requested_session > current_event.confirmation_deadline
             if current_event and current_event.confirmation_deadline and not current_event.confirmation_session else
             False if current_event else None),
         entry_window_elapsed_at_requested_session=(
-            input.call_context.effective_daily_session > current_event.entry_end
+            result.requested_session > current_event.entry_end
             if current_event and current_event.entry_end else False if current_event else None),
         eligible_at_requested_time=result.eligible_at_requested_time,
-        requested_session=input.call_context.effective_daily_session,
-        request_time_semantics=input.call_context.mode,
+        requested_session=result.requested_session,
+        request_time_semantics=result.request_time_semantics,
         economic_episode_id=current_episode.economic_episode_id if current_episode else None,
         opportunity_id=current_episode.opportunity_id if current_episode else None,
         result_id=entry_id, matched_families=["BREAKOUT_RETEST"] if result.events else [],
@@ -488,7 +539,8 @@ def evaluate_breakout_opportunity(input):
         current_conditions=current_conditions,
         supporting_evidence=[c.condition_id for c in current_conditions if c.predicate_value is True],
         opposing_evidence=[c.condition_id for c in current_conditions if c.predicate_value is False],
-        missing_evidence=[c.condition_id for c in current_conditions if c.predicate_value is None],
+        missing_evidence=list(dict.fromkeys([c.condition_id for c in current_conditions
+            if c.predicate_value is None and c.role != "DIAGNOSTIC"]+[g.condition_id for g in current_gaps])),
         current_missing_details=current_gaps,
         coverage_missing_evidence=result.coverage_missing_evidence,
         next_observation_conditions=(["等待首次回踩，最晚至ret​est_deadline"]
