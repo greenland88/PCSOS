@@ -47,7 +47,7 @@ Previous `aaa5279` real outputs were only hash-checked and typed-loaded (13 file
 7 saved results); canonical/real-business calculations were not rerun this round.
 See the current handoff section of `docs/operations/selection_v2/step_04.md`.
 
-Step 5 (2026-09-08): **IMPLEMENTED; REAL COVERAGE 7/8; AWAITING REVIEW**.
+Step 5 (2026-09-08): **ACCEPTED BY USER; REAL COVERAGE 7/8**.
 `detect_shallow_pullback(ShallowPullbackInput) -> SetupEvidence` freezes the
 pre-touch 20-session peak and previous-session ATR, retains cumulative depth,
 and feeds the same entry-opportunity state machine. Schema 1.2 /
@@ -59,6 +59,19 @@ reused verified canonical inputs for 7 symbols through 2026-09-04: no qualified
 shallow events; UBER retains insufficient warmup, and early health/phase coverage
 gaps remain explicit. No options, pool scan, production adoption or main merge.
 Evidence and exact commands: `docs/operations/selection_v2/step_05.md`.
+
+Step 6 (2026-09-08): **IMPLEMENTED; REAL COVERAGE 7/8; AWAITING REVIEW**.
+`detect_breakout_retest(BreakoutRetestInput) -> BreakoutRetestResult` adds a
+causal fixed-resistance breakout/retest family to the shared opportunity state
+machine. BreakoutRetestResult 1.0 / breakout-retest-v1 and aggregate
+entry-opportunity-v2.3 preserve b/r/c dates, frozen resistance/ATR/zone,
+invalidation, expiry, restart ancestry, evidence gaps and replayable state.
+170 focused checks passed with one accepted-baseline TA-Lib placement check
+separately deselected and recorded. Clean `a55963b` saved-input acceptance through
+2026-09-04 produced 7/8 results: five breakouts, three retests, no confirmations;
+UBER retains insufficient warmup. No canonical reread, options, pool scan,
+economics, production adoption or main merge. Company-leader profiling remains
+a future missing capability. Evidence: `docs/operations/selection_v2/step_06.md`.
 
 The `options_v2` TSLA cutover remains blocked by the duplicate-key gate and the
 old canonical route's ambiguous quote keys. No strategy rule is changed by this
