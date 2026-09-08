@@ -5,7 +5,9 @@ from datetime import date, timedelta
 from pcs.analysis_contracts import CallContext, SourceReference
 from pcs.market_context import evaluate_market_context_opportunity
 from pcs.pool.opportunities import evaluate_pool_opportunity_observation
-from pcs.pool.opportunities import load_opportunity_state, write_opportunity_artifacts
+from pcs.pool.opportunities import (load_opportunity_resume_evidence,
+                                    load_opportunity_state,
+                                    write_opportunity_artifacts)
 from pcs.trend.opportunity_engine import evaluate_entry_opportunity, replay_entry_opportunity
 from pcs.trend.selection_models import (
     OpportunityFeatureBar, OpportunityFeatureView, OpportunityInput,
@@ -51,7 +53,8 @@ def _input(*, through=31, confirm_offset=2, missing=None, atr=2.0,
             sma20=100.0, sma50=99.0, sma200=95.0, ema200=95.5,
             atr14=atr if i != touch_i+1 or atr > 0 else 0.0,
             rsi14=55.0, structure_state="bearish" if bearish_on == i else "bullish",
-            trend_health="HEALTHY"))
+            trend_health="healthy", trend_health_source="TEST",
+            short_term_phase="HEALTHY_PULLBACK", short_term_phase_source="TEST"))
     if missing is not None:
         bars = [b for b in bars if b.session.isoformat() != sessions[missing]]
     source = SourceReference(source_id="test:daily", source_kind="TEST",
@@ -179,7 +182,7 @@ def test_history_correction_changes_result_but_original_is_immutable():
                                                    prior=original.next_state))
     assert corrected.result_id != original.result_id
     assert original.model_dump_json() == old_json
-    assert corrected.call_diagnostics == ["PRIOR_STATE_INVALIDATED_REPLAYED"]
+    assert corrected.call_diagnostics == ["PRIOR_STATE_INVALIDATED_FULL_REPLAY"]
 
 
 def test_all_explicit_v2_entrypoints_use_same_core_and_legacy_is_untouched():
@@ -196,7 +199,7 @@ def test_confirmation_consumes_support_held_on_same_session():
     result = evaluate_entry_opportunity(_input(through=27, confirm_offset=2))
     assert result.timeline[-1].confirmation_date == _sessions()[27]
     held = next(c for c in result.timeline[-1].conditions
-                if c.condition_id == "SUPPORT_HELD_AND_STRUCTURE_NOT_BLOCKED")
+                if c.condition_id == "SUPPORT_HELD")
     assert held.predicate_value is True
 
 
@@ -232,6 +235,9 @@ def test_artifacts_round_trip_models_hashes_and_unknown_csv(tmp_path):
     reread = EntryOpportunity.model_validate(payload[0])
     assert reread.result_id == result.result_id
     assert load_opportunity_state(root, "TEST") == result.next_state
+    resume = load_opportunity_resume_evidence(root, "TEST")
+    assert resume["prior_state"] == result.next_state
+    assert resume["prior_timeline"] == result.timeline
     assert "entry_opportunities.ai.json" in __import__("json").loads(
         (root/"artifact_manifest.json").read_text(encoding="utf-8"))["sha256"]
     csv_text = (root/"entry_opportunities.csv").read_text(encoding="utf-8")
@@ -318,3 +324,93 @@ def test_bound_support_fact_can_carry_full_queryable_source():
     selected = next(d.selected_support for d in result.detections if d.detected)
     assert selected.sources == [source]
     assert selected.source_ids == [source.source_id]
+
+
+def _replace_bars(inp, **changes):
+    return inp.model_copy(update={"feature_view": inp.feature_view.model_copy(update={
+        "bars": [b.model_copy(update=changes) for b in inp.feature_view.bars]})})
+
+
+def test_discovery_requires_bullish_structure_and_qualified_real_health():
+    for changes in ({"structure_state": "neutral", "trend_health": "mixed"},
+                    {"structure_state": "deteriorating", "trend_health": "weakening"},
+                    {"structure_state": "bullish", "trend_health": "broken"}):
+        result = evaluate_entry_opportunity(_replace_bars(_input(through=28), **changes))
+        assert all(d.detected is not True for d in result.detections)
+        assert result.state != OpportunityStateName.ENTRY_READY
+
+
+def test_explicit_short_term_phase_blocks_otherwise_favorable_confirmation():
+    inp = _input(through=27)
+    bars = [b.model_copy(update={"short_term_phase": "FAILED_FOLLOW_THROUGH"})
+            if b.session.isoformat() == _sessions()[27] else b
+            for b in inp.feature_view.bars]
+    result = evaluate_entry_opportunity(inp.model_copy(update={
+        "feature_view": inp.feature_view.model_copy(update={"bars": bars})}))
+    phase = next(c for c in result.timeline[-1].conditions
+                 if c.condition_id == "SHORT_TERM_PHASE_NOT_BLOCKED_CONFIRMATION")
+    assert phase.predicate_value is False
+    assert result.timeline[-1].confirmation_date is None
+
+
+def test_required_unknown_is_not_no_setup_but_optional_rsi_is_non_blocking():
+    unknown = evaluate_entry_opportunity(_replace_bars(_input(through=25), trend_health=None))
+    assert unknown.state is None and unknown.eligible_at_requested_time is None
+    assert unknown.status.value == "PARTIAL"
+    inp = _input(through=27)
+    bars = [b.model_copy(update={"rsi14": None})
+            if b.session.isoformat() == _sessions()[27] else b
+            for b in inp.feature_view.bars]
+    optional = evaluate_entry_opportunity(inp.model_copy(update={
+        "feature_view": inp.feature_view.model_copy(update={"bars": bars})}))
+    assert optional.timeline[-1].confirmation_date == _sessions()[27]
+    assert optional.timeline[-1].capability_status.value == "COMPLETED"
+
+    explicit = evaluate_entry_opportunity(_input(through=24))
+    assert explicit.state == OpportunityStateName.NO_SETUP
+    assert explicit.eligible_at_requested_time is False
+
+
+def test_current_eod_uses_calendar_resolved_request_session():
+    historical = evaluate_entry_opportunity(_input(through=30))
+    inp = _input(through=30)
+    request_day = _sessions()[32]
+    current = evaluate_entry_opportunity(inp.model_copy(update={"call_context":
+        inp.call_context.model_copy(update={"mode": "CURRENT_EOD",
+            "requested_as_of": f"{request_day}T22:00:00Z"})}))
+    assert historical.eligible_at_requested_time is True
+    assert current.requested_session == request_day
+    assert current.entry_window_elapsed_at_requested_session is True
+    assert current.eligible_at_requested_time is False
+    assert current.result_id != historical.result_id
+
+
+def test_checkpoint_continuation_processes_only_new_sessions_and_can_match_cold():
+    partial = evaluate_entry_opportunity(_input(through=27))
+    full_input = _input(through=30, prior=partial.next_state)
+    resumed_input = full_input.model_copy(update={
+        "prior_timeline": partial.timeline,
+        "prior_transitions": partial.transitions,
+        "prior_detections": partial.detections})
+    resumed = evaluate_entry_opportunity(resumed_input)
+    cold = evaluate_entry_opportunity(_input(through=30))
+    assert resumed.timeline == cold.timeline
+    assert resumed.transitions == cold.transitions
+    assert resumed.result_id == cold.result_id
+    assert resumed.call_diagnostics == ["PRIOR_STATE_COMPATIBLE_INCREMENTAL"]
+
+    sliding = full_input.model_copy(update={"feature_view":
+        full_input.feature_view.model_copy(update={"analysis_start": _sessions()[28]})})
+    advanced = evaluate_entry_opportunity(sliding)
+    assert advanced.episodes[0].economic_episode_id == partial.episodes[0].economic_episode_id
+    assert [d.session for d in advanced.timeline] == _sessions()[28:31]
+
+
+def test_corrected_sliding_prefix_requires_full_replay_prefix():
+    import pytest
+    partial = evaluate_entry_opportunity(_input(through=27))
+    inp = _input(through=30, prior=partial.next_state, correction=0.5)
+    sliding = inp.model_copy(update={"feature_view": inp.feature_view.model_copy(update={
+        "analysis_start": _sessions()[28]})})
+    with pytest.raises(ValueError, match="OPPORTUNITY_REPLAY_PREFIX_REQUIRED"):
+        evaluate_entry_opportunity(sliding)

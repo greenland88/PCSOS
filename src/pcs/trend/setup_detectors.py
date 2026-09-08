@@ -18,6 +18,20 @@ def _finite(value) -> bool:
     return value is not None and math.isfinite(float(value))
 
 
+_BLOCKING_PHASES = {
+    "RECLAIM_DAY_1", "FAILED_FOLLOW_THROUGH", "RECLAIM_UNCONFIRMED",
+    "UPTREND_EXHAUSTION", "DISTRIBUTION", "DOWNTREND_RALLY",
+    "SUPPORT_BREAKDOWN", "BREAKOUT_REJECTED",
+}
+
+
+def _trend_predicates(bar):
+    structure_ok = None if bar.structure_state is None else bar.structure_state == "bullish"
+    health_ok = None if bar.trend_health is None else str(bar.trend_health).lower() in {"strong", "healthy"}
+    phase_ok = None if bar.short_term_phase is None else bar.short_term_phase not in _BLOCKING_PHASES
+    return structure_ok, health_ok, phase_ok
+
+
 def _condition(condition_id, session, role, left=None, operator=None, right=None,
                unit=None, predicate=None, refs=(), reasons=()):
     status = "UNKNOWN" if predicate is None else "EVALUATED"
@@ -71,14 +85,31 @@ def detect_healthy_pullback(*, bar: OpportunityFeatureBar,
     conditions.append(_condition("PULLBACK_CLASSIFIED_HEALTHY", session, "DISCOVERY",
         classification, "==", "healthy_pullback", predicate=(classification == "healthy_pullback") if classification else None,
         refs=[f"bar:{session}", f"legacy_pullback:{session}"], reasons=legacy_reasons))
-    structure_ok = None if bar.structure_state is None else bar.structure_state != "bearish"
-    conditions.append(_condition("STRUCTURE_NOT_BEARISH", session, "DISCOVERY",
-        bar.structure_state, "!=", "bearish", predicate=structure_ok,
+    structure_ok, trend_ok, phase_ok = _trend_predicates(bar)
+    conditions.append(_condition("STRUCTURE_BULLISH", session, "DISCOVERY",
+        bar.structure_state, "==", "bullish", predicate=structure_ok,
         refs=[f"structure:{session}"], reasons=["STRUCTURE_UNKNOWN"] if structure_ok is None else []))
-    trend_ok = None if bar.trend_health is None else bar.trend_health != "BLOCKED"
-    conditions.append(_condition("TREND_HEALTH_NOT_BLOCKED", session, "DISCOVERY",
-        bar.trend_health, "!=", "BLOCKED", predicate=trend_ok,
-        refs=[f"trend_health:{session}"], reasons=["TREND_HEALTH_UNKNOWN"] if trend_ok is None else []))
+    conditions.append(_condition("TREND_HEALTH_QUALIFIED", session, "DISCOVERY",
+        bar.trend_health, "IN", "strong|healthy", predicate=trend_ok,
+        refs=[x for x in (f"trend_health:{session}", bar.trend_health_source) if x],
+        reasons=["TREND_HEALTH_UNKNOWN"] if trend_ok is None else []))
+    conditions.append(_condition("SHORT_TERM_PHASE_NOT_BLOCKED", session, "DISCOVERY",
+        bar.short_term_phase, "NOT_IN", "explicit_blocking_phases", predicate=phase_ok,
+        refs=[x for x in (f"short_term_phase:{session}", bar.short_term_phase_source) if x],
+        reasons=["SHORT_TERM_PHASE_UNKNOWN"] if phase_ok is None else
+                [f"SHORT_TERM_PHASE_BLOCKED:{bar.short_term_phase}"] if not phase_ok else []))
+    conditions.append(_condition("LEGACY_TREND_GATE_RESULT", session, "DIAGNOSTIC",
+        bar.legacy_trend_gate_result, "==", "PASS",
+        predicate=(bar.legacy_trend_gate_result == "PASS"
+                   if bar.legacy_trend_gate_status == "EXECUTED" else None),
+        refs=["pcs.entry.trend_gate.evaluate_trend_gate"],
+        reasons=bar.legacy_trend_gate_reasons or [f"LEGACY_TREND_GATE_{bar.legacy_trend_gate_status}"]))
+    conditions.append(_condition("LEGACY_PULLBACK_GATE_RESULT", session, "DIAGNOSTIC",
+        bar.legacy_pullback_gate_result, "==", "PASS",
+        predicate=(bar.legacy_pullback_gate_result == "PASS"
+                   if bar.legacy_pullback_gate_status == "EXECUTED" else None),
+        refs=["pcs.entry.pullback_gate.evaluate_pullback_gate"],
+        reasons=bar.legacy_pullback_gate_reasons or [f"LEGACY_PULLBACK_GATE_{bar.legacy_pullback_gate_status}"]))
 
     legal = [f for f in support_facts if f.session == session and f.touch_session == session
              and f.zone_available_at < session and f.broken_at is None]
@@ -92,8 +123,12 @@ def detect_healthy_pullback(*, bar: OpportunityFeatureBar,
         refs=[selected.support_result_id, selected.zone_id, selected.test_id] if selected else [],
         reasons=[] if selected else ["NO_SUPPORT_ZONE_KNOWN_BEFORE_TOUCH"]))
 
-    known = all(c.predicate_value is not None for c in conditions)
-    detected = all(c.predicate_value for c in conditions) if known else None
+    # Three-valued AND: one explicit false proves there is no setup even when
+    # another required input is unknown; only an otherwise viable setup stays
+    # unknown because of missing evidence.
+    gates = [c for c in conditions if c.role == "DISCOVERY"]
+    detected = (False if any(c.predicate_value is False for c in gates) else
+                True if all(c.predicate_value is True for c in gates) else None)
     reasons = ["SUPPORT_SELECTION_DISTANCE_AVAILABLE_AT_ZONE_TEST_ID_V1"] if detected else list(dict.fromkeys(
         r for c in conditions for r in c.reason_codes)) or ["HEALTHY_PULLBACK_DISCOVERY_NOT_SATISFIED"]
     return OpportunityDetection(session=session, detected=detected, family=policy.family,
@@ -148,8 +183,7 @@ def confirmation_conditions(*, bar: OpportunityFeatureBar,
             support_fact.first_held_at is not None and support_fact.first_held_at <= session and
             support_fact.broken_at is None)
     support_ok = held if support_fact is not None else None
-    structure_ok = None if bar.structure_state is None else bar.structure_state != "bearish"
-    support_structure = (support_ok and structure_ok if support_ok is not None and structure_ok is not None else None)
+    structure_ok, health_ok, phase_ok = _trend_predicates(bar)
     distance = ((float(bar.close)-zone_upper)/float(bar.atr14)
                 if valid_atr and _finite(bar.close) else None)
     distance_ok = distance <= policy.maximum_entry_distance_atr if _finite(distance) else None
@@ -170,12 +204,22 @@ def confirmation_conditions(*, bar: OpportunityFeatureBar,
         _condition("RVOL20", session, "CONFIRMATION", rvol, ">=", policy.minimum_rvol20,
                    "ratio", rvol_ok, refs+[f"volume_denominator:{volume_denominator}"],
                    rvol_reasons),
-        _condition("SUPPORT_HELD_AND_STRUCTURE_NOT_BLOCKED", session, "CONFIRMATION",
-                   support_structure, "==", True, "boolean", support_structure, refs,
+        _condition("SUPPORT_HELD", session, "CONFIRMATION", support_ok, "==", True,
+                   "boolean", support_ok, refs,
                    ["SUPPORT_FACT_MISSING"] if support_fact is None else
-                   ["SUPPORT_NOT_HELD"] if not support_ok else
-                   ["STRUCTURE_UNKNOWN"] if structure_ok is None else
-                   ["STRUCTURE_BEARISH"] if not structure_ok else []),
+                   ["SUPPORT_NOT_HELD"] if not support_ok else []),
+        _condition("STRUCTURE_BULLISH_CONFIRMATION", session, "CONFIRMATION",
+                   bar.structure_state, "==", "bullish", predicate=structure_ok,
+                   refs=[f"structure:{session}"], reasons=["STRUCTURE_UNKNOWN"] if structure_ok is None else []),
+        _condition("TREND_HEALTH_QUALIFIED_CONFIRMATION", session, "CONFIRMATION",
+                   bar.trend_health, "IN", "strong|healthy", predicate=health_ok,
+                   refs=[x for x in (f"trend_health:{session}", bar.trend_health_source) if x],
+                   reasons=["TREND_HEALTH_UNKNOWN"] if health_ok is None else []),
+        _condition("SHORT_TERM_PHASE_NOT_BLOCKED_CONFIRMATION", session, "CONFIRMATION",
+                   bar.short_term_phase, "NOT_IN", "explicit_blocking_phases", predicate=phase_ok,
+                   refs=[x for x in (f"short_term_phase:{session}", bar.short_term_phase_source) if x],
+                   reasons=["SHORT_TERM_PHASE_UNKNOWN"] if phase_ok is None else
+                           [f"SHORT_TERM_PHASE_BLOCKED:{bar.short_term_phase}"] if not phase_ok else []),
         _condition("DISTANCE_FROM_FIXED_ZONE", session, "CONFIRMATION", distance, "<=",
                    policy.maximum_entry_distance_atr, "ATR", distance_ok, refs,
                    ["CURRENT_ATR_INVALID"] if distance_ok is None else []),
@@ -198,16 +242,25 @@ def current_eligibility_conditions(*, bar: OpportunityFeatureBar, zone_upper: fl
     distance = ((float(bar.close)-zone_upper)/float(bar.atr14)
                 if valid_atr and _finite(bar.close) else None)
     support_alive = None if support_fact is None else support_fact.broken_at is None
-    structure_ok = None if bar.structure_state is None else bar.structure_state != "bearish"
+    structure_ok, health_ok, phase_ok = _trend_predicates(bar)
     return [
         _condition("SUPPORT_STILL_VALID", session, "CURRENT_ELIGIBILITY",
                    support_alive, "==", True, "boolean", support_alive,
                    [support_fact.support_result_id, support_fact.zone_id] if support_fact else [],
                    ["SUPPORT_FACT_MISSING"] if support_fact is None else
                    ["SUPPORT_BROKEN"] if not support_alive else []),
-        _condition("STRUCTURE_STILL_VALID", session, "CURRENT_ELIGIBILITY",
-                   bar.structure_state, "!=", "bearish", predicate=structure_ok,
+        _condition("STRUCTURE_STILL_BULLISH", session, "CURRENT_ELIGIBILITY",
+                   bar.structure_state, "==", "bullish", predicate=structure_ok,
                    refs=[f"structure:{session}"], reasons=["STRUCTURE_UNKNOWN"] if structure_ok is None else []),
+        _condition("TREND_HEALTH_STILL_QUALIFIED", session, "CURRENT_ELIGIBILITY",
+                   bar.trend_health, "IN", "strong|healthy", predicate=health_ok,
+                   refs=[x for x in (f"trend_health:{session}", bar.trend_health_source) if x],
+                   reasons=["TREND_HEALTH_UNKNOWN"] if health_ok is None else []),
+        _condition("SHORT_TERM_PHASE_STILL_VALID", session, "CURRENT_ELIGIBILITY",
+                   bar.short_term_phase, "NOT_IN", "explicit_blocking_phases", predicate=phase_ok,
+                   refs=[x for x in (f"short_term_phase:{session}", bar.short_term_phase_source) if x],
+                   reasons=["SHORT_TERM_PHASE_UNKNOWN"] if phase_ok is None else
+                           [f"SHORT_TERM_PHASE_BLOCKED:{bar.short_term_phase}"] if not phase_ok else []),
         _condition("CURRENT_DISTANCE_FROM_FIXED_ZONE", session, "CURRENT_ELIGIBILITY",
                    distance, "<=", policy.maximum_entry_distance_atr, "ATR",
                    distance <= policy.maximum_entry_distance_atr if _finite(distance) else None,

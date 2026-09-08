@@ -17,6 +17,11 @@ from pcs.pool.underlying_profiles import ProfileDataReader
 from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.indicators import calculate_base_indicators
 from pcs.trend.market_structure import analyze_market_structure
+from pcs.trend.snapshot import build_trend_snapshot
+from pcs.trend.interpretation import interpret_trend
+from pcs.trend.scoring import score_trend
+from pcs.entry.trend_gate import evaluate_trend_gate
+from pcs.entry.pullback_gate import evaluate_pullback_gate
 from pcs.trend.opportunity_engine import evaluate_entry_opportunity
 from pcs.trend.pullback import analyze_pullback
 from pcs.trend.selection_models import (
@@ -52,8 +57,17 @@ class OpportunityDataReader:
         if day is None:
             raise ValueError("OPPORTUNITY_EFFECTIVE_SESSION_REQUIRED")
         daily = self.daily._read(context.symbol, day, policy, calendar)
+        benchmark = None
+        benchmark_error = None
+        try:
+            benchmark = self.daily._read("SPY", day, policy, calendar)
+        except (ValueError, RuntimeError) as exc:
+            benchmark_error = str(exc)
         frame = pd.DataFrame([{"date": b.session, "open": b.open, "high": b.high,
             "low": b.low, "close": b.close, "volume": b.volume} for b in daily.bars])
+        benchmark_frame = (pd.DataFrame([{"date": b.session, "open": b.open,
+            "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
+            for b in benchmark.bars]) if benchmark else None)
         if len(frame) < policy.indicator_warmup_sessions:
             raise ValueError("OPPORTUNITY_INDICATOR_WARMUP_INSUFFICIENT")
         config = TrendIndicatorConfig(pivot_left_bars=3, pivot_right_bars=3)
@@ -86,12 +100,42 @@ class OpportunityDataReader:
         legacy_by_day = {}
         for i, row in frame.iterrows():
             session = str(pd.Timestamp(row.date).date())
+            ind = indicators.iloc[i]
             structure = analyze_market_structure(indicator_frame, config, as_of_date=session,
                                                  precomputed_swings=swings)
             pullback = analyze_pullback(indicator_frame, indicators, None, structure, config,
                                         as_of_date=session)
-            legacy_by_day[session] = pullback
-            ind = indicators.iloc[i]
+            health = phase = None
+            trend_status = pullback_status = "NOT_EVALUATED"
+            trend_result = pullback_result = None
+            trend_reasons, pullback_reasons = [], []
+            if session in analysis:
+                snapshot = build_trend_snapshot(indicator_frame, benchmark_frame, config,
+                    as_of_date=session, symbol=context.symbol, benchmark="SPY" if benchmark else None,
+                    precomputed_indicators=indicators, precomputed_swings=swings)
+                interpretation = interpret_trend(snapshot, config)
+                # Trend health consumes relative strength.  If that optional
+                # source is absent, only this dependent fact remains unknown.
+                if interpretation.available and snapshot.relative_strength.available:
+                    health = interpretation.trend_health
+                phase = (snapshot.market_structure_engine.short_term_phase
+                         if snapshot.market_structure_engine and
+                         snapshot.market_structure_engine.available else None)
+                score = score_trend(snapshot, interpretation, config)
+                trend_gate = evaluate_trend_gate(score, interpretation, snapshot)
+                trend_status = "EXECUTED" if trend_gate.available else "BLOCKED"
+                trend_result = trend_gate.trend_gate_result
+                trend_reasons = list(trend_gate.reasons or trend_gate.warnings)
+                pullback_gate = evaluate_pullback_gate(trend_gate, snapshot, interpretation)
+                pullback_status = "EXECUTED" if pullback_gate.available else "BLOCKED"
+                pullback_result = pullback_gate.pullback_gate_result
+                pullback_reasons = list(pullback_gate.reasons or pullback_gate.warnings)
+            legacy_by_day[session] = {"pullback": pullback,
+                "trend_gate_status": trend_status, "trend_gate_result": trend_result,
+                "trend_gate_reasons": trend_reasons,
+                "pullback_gate_status": pullback_status,
+                "pullback_gate_result": pullback_result,
+                "pullback_gate_reasons": pullback_reasons}
             feature_bars.append(OpportunityFeatureBar(session=session,
                 open=_number(row.open), high=_number(row.high), low=_number(row.low),
                 close=_number(row.close), volume=_number(row.volume),
@@ -99,9 +143,16 @@ class OpportunityDataReader:
                 sma200=_number(ind.sma200), ema200=_number(ind.ema200),
                 atr14=_number(ind.atr14), rsi14=_number(ind.rsi14),
                 structure_state=structure.structure_state if structure.available else None,
-                trend_health=("HEALTHY" if structure.structure_state == "bullish" else
-                              "BLOCKED" if structure.structure_state == "bearish" else
-                              "MIXED" if structure.available else None),
+                trend_health=health,
+                trend_health_source="pcs.trend.interpretation.interpret_trend" if health else None,
+                short_term_phase=phase,
+                short_term_phase_source="pcs.trend.market_structure_engine" if phase else None,
+                legacy_trend_gate_status=trend_status,
+                legacy_trend_gate_result=trend_result,
+                legacy_trend_gate_reasons=trend_reasons,
+                legacy_pullback_gate_status=pullback_status,
+                legacy_pullback_gate_result=pullback_result,
+                legacy_pullback_gate_reasons=pullback_reasons,
                 legacy_pullback_state=pullback.pullback_state,
                 legacy_pullback_reasons=list(pullback.reasons)))
             if session in analysis:
@@ -127,7 +178,9 @@ class OpportunityDataReader:
                        "ema200": 200, "atr": 14, "rsi": 14,
                        "pivot_left": 3, "pivot_right": 3},
             "indicator_seed_start": str(pd.Timestamp(frame.date.iloc[0]).date()),
-            "daily_source": [daily.source.sha256, daily.source.record_identity]}
+            "daily_source": [daily.source.sha256, daily.source.record_identity],
+            "benchmark_source": ([benchmark.source.sha256, benchmark.source.record_identity]
+                                 if benchmark else None)}
         indicator_identity = "sha256:"+_hash(indicator_payload)
         support_view = SupportFeatureView(symbol=context.symbol, bars=support_bars,
             confirmed_swings=confirmed, expected_sessions=expected,
@@ -177,16 +230,26 @@ class OpportunityDataReader:
             expected_sessions=expected, analysis_start=analysis[0],
             indicator_seed_start=str(pd.Timestamp(frame.date.iloc[0]).date()),
             indicator_identity=indicator_identity, source=daily.source,
+            auxiliary_sources=[benchmark.source] if benchmark else [],
             price_basis=daily.price_basis,
             corporate_action_version=daily.corporate_action_version,
             input_kind="VERIFIED_CANONICAL", source_timestamp=daily.source_timestamp,
             received_at=daily.received_at)
         last_legacy = legacy_by_day.get(day)
+        last_pullback = last_legacy["pullback"] if last_legacy else None
         legacy = {"producer": "pcs.trend.pullback.analyze_pullback",
-            "execution_status": "EXECUTED" if last_legacy and last_legacy.available else "NOT_EVALUATED",
+            "execution_status": "EXECUTED" if last_pullback and last_pullback.available else "NOT_EVALUATED",
             "as_of": day,
-            "pullback_state": last_legacy.pullback_state if last_legacy else None,
-            "reason_codes": list(last_legacy.reasons) if last_legacy else [],
+            "pullback_state": last_pullback.pullback_state if last_pullback else None,
+            "reason_codes": list(last_pullback.reasons) if last_pullback else [],
+            "trend_gate_execution_status": last_legacy["trend_gate_status"] if last_legacy else "NOT_EVALUATED",
+            "trend_gate_result": last_legacy["trend_gate_result"] if last_legacy else None,
+            "trend_gate_reason_codes": last_legacy["trend_gate_reasons"] if last_legacy else [],
+            "pullback_gate_execution_status": last_legacy["pullback_gate_status"] if last_legacy else "NOT_EVALUATED",
+            "pullback_gate_result": last_legacy["pullback_gate_result"] if last_legacy else None,
+            "pullback_gate_reason_codes": last_legacy["pullback_gate_reasons"] if last_legacy else [],
+            "benchmark_status": "AVAILABLE" if benchmark else "UNAVAILABLE",
+            "benchmark_reason": benchmark_error,
             "production_action": "UNCHANGED_NOT_EVALUATED_BY_V2"}
         self.audit.append({"symbol": context.symbol, "requested_as_of": day,
             "physical_verified_rows": len(frame), "analysis_start": analysis[0],
@@ -215,6 +278,8 @@ def opportunity_to_ai_view(result: EntryOpportunity):
         "as_of": result.as_of, "state": result.state.value if result.state else None,
         "capability_status": result.status.value,
         "eligible_at_requested_time": result.eligible_at_requested_time,
+        "requested_session": result.requested_session,
+        "request_time_semantics": result.request_time_semantics,
         "economic_episode_id": result.economic_episode_id,
         "opportunity_id": result.opportunity_id,
         "evaluated_through": result.evaluated_through,
@@ -354,6 +419,22 @@ def load_opportunity_state(output_directory, symbol):
     states = [OpportunityStateCheckpoint.model_validate(x) for x in json.loads(
         (root/"opportunity_states.json").read_text(encoding="utf-8"))]
     return next((s for s in states if s.symbol == symbol.strip().upper()), None)
+
+
+def load_opportunity_resume_evidence(output_directory, symbol):
+    """Load hash-verified detailed history kept outside the small checkpoint."""
+    root = Path(output_directory)
+    manifest = json.loads((root/"artifact_manifest.json").read_text(encoding="utf-8"))
+    raw = (root/"entry_opportunities.json").read_bytes()
+    if sha256(raw).hexdigest() != manifest["sha256"]["entry_opportunities.json"]:
+        raise ValueError("OPPORTUNITY_RESULT_HASH_MISMATCH")
+    result = next((EntryOpportunity.model_validate(x) for x in json.loads(raw)
+                   if x.get("symbol") == symbol.strip().upper()), None)
+    if result is None:
+        return None
+    return {"prior_state": result.next_state, "prior_timeline": result.timeline,
+            "prior_transitions": result.transitions,
+            "prior_detections": result.detections}
 
 
 def find_opportunity_episode(result: EntryOpportunity, economic_episode_id: str):

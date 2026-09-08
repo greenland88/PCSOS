@@ -6,6 +6,9 @@ import hashlib
 import json
 import math
 
+import pandas as pd
+import exchange_calendars as xc
+
 from pcs.analysis_contracts import CapabilityStatus
 from pcs.trend.selection_models import (
     EntryOpportunity, OpportunityCoverage, OpportunityDay, OpportunityEpisode,
@@ -17,6 +20,8 @@ from pcs.trend.setup_detectors import (
     detect_healthy_pullback,
 )
 
+_IMPLEMENTATION_ID = "entry-opportunity-v2-step4-review-f1-f4"
+
 
 def _hash(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -26,11 +31,36 @@ def _hash(value) -> str:
 
 def _source_identity(view) -> str:
     return "sha256:" + _hash([view.source.source_kind, view.source.sha256,
-        view.source.record_identity, view.price_basis, view.corporate_action_version])
+        view.source.record_identity,
+        [[s.source_kind, s.sha256, s.record_identity] for s in view.auxiliary_sources],
+        view.price_basis, view.corporate_action_version])
 
 
 def _policy_identity(policy) -> str:
     return "sha256:" + _hash(policy.model_dump(mode="json"))
+
+
+def _resolve_requested_session(ctx, calendar):
+    mode = str(ctx.mode).upper()
+    try:
+        requested = pd.Timestamp(ctx.requested_as_of)
+    except (TypeError, ValueError):
+        raise ValueError("OPPORTUNITY_REQUEST_TIME_INVALID") from None
+    if mode == "HISTORICAL":
+        if pd.isna(requested):
+            raise ValueError("OPPORTUNITY_REQUEST_TIME_INVALID")
+        return ctx.effective_daily_session, "HISTORICAL"
+    if mode != "CURRENT_EOD":
+        raise ValueError(f"OPPORTUNITY_REQUEST_MODE_UNSUPPORTED:{ctx.mode}")
+    if pd.isna(requested) or requested.tzinfo is None:
+        raise ValueError("OPPORTUNITY_CURRENT_EOD_REQUIRES_TIMEZONE_AWARE_TIMESTAMP")
+    cal = xc.get_calendar(calendar)
+    utc = requested.tz_convert("UTC")
+    local_date = requested.tz_convert(str(cal.tz)).date()
+    label = cal.date_to_session(pd.Timestamp(local_date), direction="previous")
+    if utc < cal.session_close(label):
+        label = cal.previous_session(label)
+    return str(label.date()), "CURRENT_EOD"
 
 
 def _valid_price_bar(bar) -> bool:
@@ -65,6 +95,10 @@ def _current_status(conditions):
     return all(c.predicate_value is True for c in conditions)
 
 
+def _required_unknown(conditions):
+    return any(c.role != "DIAGNOSTIC" and c.predicate_value is None for c in conditions)
+
+
 def _episode_for_detection(symbol, detection, policy_hash, source_identity,
                            indicator_identity, calculation_version, expected):
     support = detection.selected_support
@@ -94,6 +128,7 @@ def _episode_for_detection(symbol, detection, policy_hash, source_identity,
 def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     """Evaluate a complete typed prefix; storage and data access stay outside."""
     ctx, view, policy = input.call_context, input.feature_view, input.effective_policy
+    requested_session, request_semantics = _resolve_requested_session(ctx, input.calendar)
     if view.symbol != ctx.symbol:
         raise ValueError("OPPORTUNITY_SYMBOL_MISMATCH")
     if not ctx.effective_daily_session:
@@ -124,6 +159,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         "facts": [f.model_dump(mode="json") for f in input.support_facts]})
 
     diagnostics = []
+    compatible = False
     if input.prior_state is not None:
         p = input.prior_state
         current_prior_prefix = "sha256:"+_hash([b.model_dump(mode="json") for b in bars
@@ -139,19 +175,36 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
             p.corporate_action_version == view.corporate_action_version and
             p.input_prefix_sha256 == current_prior_prefix and
             p.support_identity == current_prior_support)
-        diagnostics.append("PRIOR_STATE_COMPATIBLE_REPLAY_VERIFIED" if compatible
-                           else "PRIOR_STATE_INVALIDATED_REPLAYED")
+        if compatible:
+            diagnostics.append("PRIOR_STATE_COMPATIBLE_INCREMENTAL")
+        else:
+            prior_start = p.analysis_start
+            if prior_start and view.analysis_start > prior_start:
+                raise ValueError("OPPORTUNITY_REPLAY_PREFIX_REQUIRED")
+            diagnostics.append("PRIOR_STATE_INVALIDATED_FULL_REPLAY")
 
-    episodes: list[OpportunityEpisode] = []
-    timeline: list[OpportunityDay] = []
-    transitions: list[OpportunityTransition] = []
-    detections = []
-    active = None
-    evaluated_through = None
+    if (compatible and input.prior_state and not input.prior_timeline and
+            view.analysis_start <= (input.prior_state.analysis_start or view.analysis_start)):
+        # A legacy checkpoint has no detailed committed events.  Rebuild the
+        # supplied full prefix once; sliding-window continuation below uses the
+        # checkpoint directly and processes only later sessions.
+        diagnostics[:] = ["PRIOR_STATE_COMPATIBLE_REPLAY_VERIFIED"]
+        compatible = False
+
+    episodes: list[OpportunityEpisode] = (deepcopy(input.prior_state.episodes)
+        if compatible and input.prior_state else [])
+    timeline: list[OpportunityDay] = (deepcopy(input.prior_timeline) if compatible else [])
+    transitions: list[OpportunityTransition] = (deepcopy(input.prior_transitions) if compatible else [])
+    detections = deepcopy(input.prior_detections) if compatible else []
+    active = episodes[-1] if episodes else None
+    evaluated_through = input.prior_state.evaluated_through if compatible and input.prior_state else None
     missing_sessions = []
-    global_reasons = []
+    global_reasons = (["REQUIRED_DISCOVERY_EVIDENCE_UNKNOWN"]
+        if compatible and any(d.capability_status == CapabilityStatus.PARTIAL
+                              for d in timeline) else [])
 
-    for session in expected:
+    process_sessions = [s for s in expected if not compatible or not evaluated_through or s > evaluated_through]
+    for session in process_sessions:
         bar = bar_by_day.get(session)
         support_snapshot_known = session in input.support_result_ids
         if bar is None or not _valid_price_bar(bar) or not support_snapshot_known:
@@ -188,7 +241,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         if active is not None and active.state in {
                 OpportunityStateName.EXPIRED, OpportunityStateName.INVALIDATED}:
             candidate = (_episode_for_detection(ctx.symbol, detection, policy_hash,
-                source_identity, view.indicator_identity, policy.calculation_version,
+                source_identity, view.indicator_identity, _IMPLEMENTATION_ID,
                 expected_all) if detection.detected is True else None)
             if candidate is not None and candidate.economic_episode_id != active.economic_episode_id:
                 active = candidate
@@ -215,13 +268,26 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
 
         if active is None and detection.detected is True:
             active = _episode_for_detection(ctx.symbol, detection, policy_hash,
-                source_identity, view.indicator_identity, policy.calculation_version,
+                source_identity, view.indicator_identity, _IMPLEMENTATION_ID,
                 expected_all)
             episodes.append(active)
             _transition(transitions, session, active, None, OpportunityStateName.WATCH,
                 "SETUP_DISCOVERED", active.reason_codes,
                 [active.zone_id, active.test_id])
             day_reasons.extend(active.reason_codes)
+        elif active is None and detection.detected is None:
+            day_reasons.extend(list(dict.fromkeys(detection.reason_codes +
+                ["REQUIRED_DISCOVERY_EVIDENCE_UNKNOWN"])))
+            global_reasons.append("REQUIRED_DISCOVERY_EVIDENCE_UNKNOWN")
+            timeline.append(OpportunityDay(session=session, state=None,
+                capability_status=CapabilityStatus.PARTIAL,
+                economic_episode_id=None, opportunity_id=None, setup_date=None,
+                touch_date=None, confirmation_deadline=None, confirmation_date=None,
+                entry_start=None, entry_end=None, eligible=None,
+                support_zone_id=None, support_test_id=None,
+                conditions=day_conditions, reason_codes=day_reasons))
+            evaluated_through = session
+            continue
         elif active is None:
             state = OpportunityStateName.NO_SETUP
             day_reasons.extend(detection.reason_codes)
@@ -361,7 +427,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                     eligible = False
                     day_reasons.append("OUTSIDE_ENTRY_WINDOW")
 
-        capability = (CapabilityStatus.PARTIAL if any(c.predicate_value is None for c in day_conditions)
+        capability = (CapabilityStatus.PARTIAL if _required_unknown(day_conditions)
                       else CapabilityStatus.COMPLETED)
         if capability == CapabilityStatus.PARTIAL:
             global_reasons.append("CONDITION_INPUT_UNKNOWN")
@@ -387,15 +453,21 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                   if evaluated_through and f.session <= evaluated_through]
     support_identity = "sha256:"+_hash({"results": used_support_results, "facts": used_facts})
     prefix_hash = "sha256:"+_hash(prefix_bars)
-    state_revision = (expected.index(evaluated_through)+1
-                      if evaluated_through in expected else 0)
+    if evaluated_through:
+        new_known = len([s for s in process_sessions if s <= evaluated_through])
+    else:
+        new_known = 0
+    state_revision = ((input.prior_state.state_revision if compatible and input.prior_state else 0)
+                      + new_known)
     checkpoint = OpportunityStateCheckpoint(symbol=ctx.symbol, episodes=episodes,
         evaluated_through=evaluated_through,
         state_revision=state_revision, input_prefix_sha256=prefix_hash,
         source_identity=source_identity, support_identity=support_identity,
         policy_sha256=policy_hash, indicator_identity=view.indicator_identity,
         price_basis=view.price_basis,
-        corporate_action_version=view.corporate_action_version)
+        corporate_action_version=view.corporate_action_version,
+        analysis_start=(input.prior_state.analysis_start if compatible and input.prior_state
+                        and input.prior_state.analysis_start else view.analysis_start))
     last_day = timeline[-1] if timeline else None
     current_episode = next((e for e in reversed(episodes)
                             if last_day and e.economic_episode_id == last_day.economic_episode_id), None)
@@ -412,6 +484,8 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     missing = [c.condition_id for c in relevant if c.predicate_value is None]
     status = CapabilityStatus.PARTIAL if missing_sessions or global_reasons else CapabilityStatus.COMPLETED
     semantic = {"symbol": ctx.symbol, "as_of": ctx.effective_daily_session,
+        "requested_session": requested_session, "request_semantics": request_semantics,
+        "implementation": _IMPLEMENTATION_ID,
         "policy": policy_hash, "source": source_identity, "support": support_identity,
         "indicator": view.indicator_identity, "price_basis": view.price_basis,
         "corporate_action_version": view.corporate_action_version,
@@ -442,6 +516,26 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         "reason_code": "LEGACY_PULLBACK_CLASSIFICATION_IS_NOT_V2_LIFECYCLE_STATE"})
     upstream_ids = list(dict.fromkeys(f.support_result_id for f in input.support_facts
         if evaluated_through and f.session <= evaluated_through))
+    confirmation_elapsed = (requested_session > current_episode.confirmation_deadline
+        if current_episode and current_episode.confirmation_date is None else
+        False if current_episode else None)
+    entry_elapsed = (requested_session > current_episode.entry_end
+        if current_episode and current_episode.entry_end else False if current_episode else None)
+    if not last_day or missing_sessions:
+        requested_eligible = None
+    elif (last_day.state == OpportunityStateName.NO_SETUP and
+          last_day.capability_status == CapabilityStatus.COMPLETED):
+        requested_eligible = False
+    elif not current_episode:
+        requested_eligible = None
+    elif request_semantics == "HISTORICAL":
+        requested_eligible = last_day.eligible
+    elif current_episode.entry_end and requested_session > current_episode.entry_end:
+        requested_eligible = False
+    elif requested_session != ctx.effective_daily_session:
+        requested_eligible = None
+    else:
+        requested_eligible = last_day.eligible
     return EntryOpportunity(symbol=ctx.symbol, as_of=ctx.effective_daily_session,
         status=status, state=last_day.state if last_day else None,
         last_known_state=last_day.state if last_day else None,
@@ -449,15 +543,10 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         last_known_session=evaluated_through,
         entry_permitted_from=current_episode.entry_start if current_episode else None,
         entry_permitted_until=current_episode.entry_end if current_episode else None,
-        confirmation_deadline_elapsed_at_requested_session=(
-            ctx.effective_daily_session > current_episode.confirmation_deadline
-            if current_episode and current_episode.confirmation_date is None else
-            False if current_episode else None),
-        entry_window_elapsed_at_requested_session=(
-            ctx.effective_daily_session > current_episode.entry_end
-            if current_episode and current_episode.entry_end else
-            False if current_episode else None),
-        eligible_at_requested_time=(None if missing_sessions or not last_day else last_day.eligible),
+        confirmation_deadline_elapsed_at_requested_session=confirmation_elapsed,
+        entry_window_elapsed_at_requested_session=entry_elapsed,
+        eligible_at_requested_time=requested_eligible,
+        requested_session=requested_session, request_time_semantics=request_semantics,
         economic_episode_id=current_episode.economic_episode_id if current_episode else None,
         opportunity_id=current_episode.opportunity_id if current_episode else None,
         result_id=result_id, matched_families=[policy.family] if episodes else [],
@@ -470,7 +559,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         missing_evidence=missing, next_observation_conditions=_next_conditions(last_day),
         legacy_opinion=legacy, opinion_differences=differences, coverage=coverage,
         next_state=checkpoint, call_diagnostics=diagnostics,
-        provenance=[view.source],
+        provenance=[view.source, *view.auxiliary_sources],
         explanation=_explanation(last_day, status, evaluated_through))
 
 

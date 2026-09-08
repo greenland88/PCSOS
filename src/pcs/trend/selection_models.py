@@ -470,6 +470,15 @@ class OpportunityFeatureBar(StrictModel):
     rsi14: float | None = None
     structure_state: Literal["bullish", "neutral", "deteriorating", "bearish"] | None = None
     trend_health: str | None = None
+    trend_health_source: str | None = None
+    short_term_phase: str | None = None
+    short_term_phase_source: str | None = None
+    legacy_trend_gate_status: Literal["EXECUTED", "BLOCKED", "NOT_EVALUATED"] = "NOT_EVALUATED"
+    legacy_trend_gate_result: str | None = None
+    legacy_trend_gate_reasons: list[str] = Field(default_factory=list)
+    legacy_pullback_gate_status: Literal["EXECUTED", "BLOCKED", "NOT_EVALUATED"] = "NOT_EVALUATED"
+    legacy_pullback_gate_result: str | None = None
+    legacy_pullback_gate_reasons: list[str] = Field(default_factory=list)
     legacy_pullback_state: str | None = None
     legacy_pullback_reasons: list[str] = Field(default_factory=list)
 
@@ -482,6 +491,7 @@ class OpportunityFeatureView(StrictModel):
     indicator_seed_start: str
     indicator_identity: str
     source: SourceReference
+    auxiliary_sources: list[SourceReference] = Field(default_factory=list)
     price_basis: str
     corporate_action_version: str
     input_kind: Literal["VERIFIED_CANONICAL", "TEST"]
@@ -608,6 +618,7 @@ class OpportunityStateCheckpoint(StrictModel):
     indicator_identity: str
     price_basis: str
     corporate_action_version: str
+    analysis_start: str | None = None
 
 
 class OpportunityInput(StrictModel):
@@ -617,6 +628,9 @@ class OpportunityInput(StrictModel):
     support_result_ids: dict[str, str] = Field(default_factory=dict)
     effective_policy: OpportunityPolicy = Field(default_factory=OpportunityPolicy)
     prior_state: OpportunityStateCheckpoint | None = None
+    prior_timeline: list[OpportunityDay] = Field(default_factory=list)
+    prior_transitions: list[OpportunityTransition] = Field(default_factory=list)
+    prior_detections: list[OpportunityDetection] = Field(default_factory=list)
     calendar: str = "XNYS"
     legacy_opinion: dict = Field(default_factory=dict)
 
@@ -651,6 +665,8 @@ class EntryOpportunity(StrictModel):
     confirmation_deadline_elapsed_at_requested_session: bool | None
     entry_window_elapsed_at_requested_session: bool | None
     eligible_at_requested_time: bool | None
+    requested_session: str
+    request_time_semantics: Literal["HISTORICAL", "CURRENT_EOD"]
     economic_episode_id: str | None
     opportunity_id: str | None
     result_id: str
