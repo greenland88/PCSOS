@@ -4,7 +4,7 @@
 
 - 基线：`3b4d674ec418106e5ba24cd7a52204a6199084a8`，包含已验收第3步及计划v1.7。
 - 分支：`codex/selection-v2-step-04`。
-- 计算源码提交：`8865306745a138126bc75ecd1c023a60d5a069a5`（含前置实现提交 `e0452ab9d8dbc08ef469162a7d5c233e1d0bad6c` 与证据/身份补强 `ca259923b4f4ddce7ef2d7c55100adc9340b3f36`）。
+- 最终计算源码提交：`b167a4bff501b06f72879e94671c643951376851`（含前置实现提交 `e0452ab9d8dbc08ef469162a7d5c233e1d0bad6c`、证据/身份补强 `ca259923b4f4ddce7ef2d7c55100adc9340b3f36`及失效证据角色修复 `8865306745a138126bc75ecd1c023a60d5a069a5`）。
 - 公共接口：`pcs.trend.opportunity_engine.evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity`。
 - schema `1.0`；算法 `entry-opportunity-v2`；policy `healthy-pullback-opportunity-v1.7`。
 
@@ -75,8 +75,8 @@ python H:/workspace/PCSOS-selection-v2-step-04/examples/entry_opportunity.py --s
 有界批量与验收：
 
 ```powershell
-python -m pcs.cli entry-opportunity --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --run-id step_04_acceptance_8865306_20260904 --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_8865306_20260904
-python H:/workspace/PCSOS-selection-v2-step-04/scripts/accept_entry_opportunities.py H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_8865306_20260904
+python -m pcs.cli entry-opportunity --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --run-id step_04_acceptance_b167a4b_20260904 --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b167a4b_20260904
+python H:/workspace/PCSOS-selection-v2-step-04/scripts/accept_entry_opportunities.py H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b167a4b_20260904
 ```
 
 输出包括统一 `entry_opportunities.json`、AI视图、中文报告、CSV摘要、逐日timeline、完整conditions、transitions、checkpoint、输入/结果schema、字段字典、正常/缺失示例、读取审计及artifact manifest。CSV的null写为空值并引用JSON明细，不转成false。`find_opportunity_episode()`、`find_opportunity_day()`和`find_opportunity_condition()`可独立查询；`load_opportunity_state()`先核验保存状态文件hash。
@@ -95,7 +95,7 @@ git diff --check 3b4d674ec418106e5ba24cd7a52204a6199084a8 HEAD
 
 ## 真实8票验收
 
-最终产物：`H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_8865306_20260904`。产物manifest绑定干净源码 `8865306745a138126bc75ecd1c023a60d5a069a5`。
+最终产物：`H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b167a4b_20260904`。产物manifest绑定干净源码 `b167a4bff501b06f72879e94671c643951376851`。
 
 | 股票 | 结果 | 9月4日状态 | 当前可评估 | 当前事件触及/确认 | 原窗口 | 事件/转换数 |
 |---|---|---|---|---|---|---:|
