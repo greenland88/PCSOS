@@ -290,3 +290,12 @@ def test_false_invalidation_is_supporting_not_opposing_evidence():
     assert "CLOSE_BELOW_FIXED_INVALIDATION" in result.supporting_evidence
     assert "SUPPORT_ZONE_BROKEN" in result.supporting_evidence
     assert "CLOSE_BELOW_FIXED_INVALIDATION" not in result.opposing_evidence
+
+
+def test_gap_keeps_market_state_unknown_but_reports_calendar_deadline_elapsed():
+    result = evaluate_entry_opportunity(_input(through=30, missing=26))
+    assert result.state == OpportunityStateName.WATCH
+    assert result.eligible_at_requested_time is None
+    assert result.confirmation_deadline_elapsed_at_requested_session is True
+    assert result.entry_window_elapsed_at_requested_session is False
+    assert "DAILY_BAR_MISSING" in result.coverage.reason_codes

@@ -34,7 +34,7 @@ canonical适配器通过 `ProfileDataReader` 固定ManifestSnapshot和active ver
 
 ## 状态与确认语义
 
-业务状态严格为 `NO_SETUP/WATCH/CONFIRMING/ENTRY_READY/EXPIRED/INVALIDATED`。缺日、缺量或未知条件是能力状态，不新增DATA_BLOCKED市场状态。首个缺失交易日停止推进，保存 `evaluated_through`、`last_known_state`，请求时当前可评估为null；冷启动缺数据时state也是null，不伪称NO_SETUP。
+业务状态严格为 `NO_SETUP/WATCH/CONFIRMING/ENTRY_READY/EXPIRED/INVALIDATED`。缺日、缺量或未知条件是能力状态，不新增DATA_BLOCKED市场状态。首个缺失交易日停止推进，保存 `evaluated_through`、`last_known_state`，请求时当前可评估为null；冷启动缺数据时state也是null，不伪称NO_SETUP。日历仍可独立报告确认截止或入场窗口在请求session是否已经过去，但该事实不会推演缺失期间的价格、结构或市场终态。
 
 首次合法触及为b：b日WATCH且不可确认；b+1至b+3（含两端）按未舍入值同时检查：
 
@@ -91,7 +91,7 @@ python -m pytest tests/trend/test_entry_opportunity_v2.py tests/trend/test_oppor
 git diff --check 3b4d674ec418106e5ba24cd7a52204a6199084a8 HEAD
 ```
 
-本步新增20项，连同旧机会、回调、support-zones、support和market structure专项共83项。覆盖S0触及/S1等待/S2确认、b+3/b+4边界、确认日不入场、同日相反证据优先级、缺日停步、调用身份稳定、短prefix恢复与冷批量一致、历史修正重放、超距后窗口内恢复、固定支撑、未来数据隔离、精确5%分支、high=low、异常ATR、缺量、零分母、同日HELD消费、终态不复活、经济/机会身份分层、三类入口同核、typed落盘/哈希/恢复和CSV未知语义。第3步既有未确认pivot与future-as-of专项同时运行。
+本步新增21项，连同旧机会、回调、support-zones、support和market structure专项共84项。覆盖S0触及/S1等待/S2确认、b+3/b+4边界、确认日不入场、同日相反证据优先级、缺日停步及独立日历截止事实、调用身份稳定、短prefix恢复与冷批量一致、历史修正重放、超距后窗口内恢复、固定支撑、未来数据隔离、精确5%分支、high=low、异常ATR、缺量、零分母、同日HELD消费、终态不复活、经济/机会身份分层、三类入口同核、typed落盘/哈希/恢复和CSV未知语义。第3步既有未确认pivot与future-as-of专项同时运行。
 
 ## 真实8票验收
 

@@ -431,6 +431,14 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         last_known_session=evaluated_through,
         entry_permitted_from=current_episode.entry_start if current_episode else None,
         entry_permitted_until=current_episode.entry_end if current_episode else None,
+        confirmation_deadline_elapsed_at_requested_session=(
+            ctx.effective_daily_session > current_episode.confirmation_deadline
+            if current_episode and current_episode.confirmation_date is None else
+            False if current_episode else None),
+        entry_window_elapsed_at_requested_session=(
+            ctx.effective_daily_session > current_episode.entry_end
+            if current_episode and current_episode.entry_end else
+            False if current_episode else None),
         eligible_at_requested_time=(None if missing_sessions or not last_day else last_day.eligible),
         economic_episode_id=current_episode.economic_episode_id if current_episode else None,
         opportunity_id=current_episode.opportunity_id if current_episode else None,

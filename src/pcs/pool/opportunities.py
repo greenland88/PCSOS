@@ -219,6 +219,8 @@ def opportunity_to_ai_view(result: EntryOpportunity):
         "evaluated_through": result.evaluated_through,
         "entry_permitted_from": result.entry_permitted_from,
         "entry_permitted_until": result.entry_permitted_until,
+        "confirmation_deadline_elapsed_at_requested_session": result.confirmation_deadline_elapsed_at_requested_session,
+        "entry_window_elapsed_at_requested_session": result.entry_window_elapsed_at_requested_session,
         "upstream_result_ids": result.upstream_result_ids,
         "dates": ({"setup": result.timeline[-1].setup_date,
                    "touch": result.timeline[-1].touch_date,

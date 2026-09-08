@@ -647,6 +647,8 @@ class EntryOpportunity(StrictModel):
     last_known_session: str | None
     entry_permitted_from: str | None
     entry_permitted_until: str | None
+    confirmation_deadline_elapsed_at_requested_session: bool | None
+    entry_window_elapsed_at_requested_session: bool | None
     eligible_at_requested_time: bool | None
     economic_episode_id: str | None
     opportunity_id: str | None
