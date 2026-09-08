@@ -35,12 +35,16 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
     unchanged so existing production consumers retain their current behavior.
     """
     from pcs.trend.opportunity_state import evaluate_opportunity_state
-    families = [f for f in ("HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST")
+    families = [f for f in ("HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST", "CONSTRUCTIVE_BASE")
                 if f in input.enabled_families]
     if not families:
         raise ValueError("OPPORTUNITY_FAMILY_REQUIRED")
     results = []
     for family in families:
+        if family == "CONSTRUCTIVE_BASE":
+            from pcs.trend.constructive_base import evaluate_base_opportunity
+            results.append(evaluate_base_opportunity(input))
+            continue
         if family == "BREAKOUT_RETEST":
             from pcs.trend.breakout_retest import evaluate_breakout_opportunity
             results.append(evaluate_breakout_opportunity(input))
@@ -71,9 +75,9 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
     if len(results) == 1:
         return results[0]
     from pcs.trend.opportunity_state import _hash
-    display_order = ["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"]
+    display_order = ["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"]
     primary = min(results, key=lambda r: (r.eligible_at_requested_time is not True,
-        r.eligible_at_requested_time is False if "BREAKOUT_RETEST" in families else False,
+        r.eligible_at_requested_time is False if set(families) & {"BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"} else False,
         display_order.index(r.family)))
     events = {}
     for result in results:
@@ -86,10 +90,14 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
             event["historical_families"].append(result.family)
             if result.eligible_at_requested_time is True and result.opportunity_id == episode.opportunity_id:
                 event["currently_eligible_families"].append(result.family)
-    return primary.model_copy(update={"family_results": results,
-        "result_id": "sha256:"+_hash(["family-observation-aggregate-v2" if "BREAKOUT_RETEST" in families else "family-observation-aggregate-v1", [r.result_id for r in results]]),
-        "version": "1.3" if "BREAKOUT_RETEST" in families else primary.version,
-        "calculation_version": "entry-opportunity-v2.4" if "BREAKOUT_RETEST" in families else primary.calculation_version,
+    relationships = []
+    if "CONSTRUCTIVE_BASE" in families:
+        from pcs.trend.constructive_base import base_breakout_relationships
+        relationships = base_breakout_relationships(results)
+    return primary.model_copy(update={"family_results": results, "relationships": relationships,
+        "result_id": "sha256:"+_hash(["family-observation-aggregate-v3" if "CONSTRUCTIVE_BASE" in families else "family-observation-aggregate-v2" if "BREAKOUT_RETEST" in families else "family-observation-aggregate-v1", [r.result_id for r in results]]),
+        "version": "1.4" if "CONSTRUCTIVE_BASE" in families else "1.3" if "BREAKOUT_RETEST" in families else primary.version,
+        "calculation_version": "entry-opportunity-v2.5" if "CONSTRUCTIVE_BASE" in families else "entry-opportunity-v2.4" if "BREAKOUT_RETEST" in families else primary.calculation_version,
         "matched_families": [r.family for r in results if r.episodes],
         "active_families": [r.family for r in results if r.eligible_at_requested_time is True],
         "economic_events": list(events.values())})

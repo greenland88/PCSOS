@@ -274,6 +274,8 @@ def opportunity_to_ai_view(result: EntryOpportunity):
         "economic_events": result.economic_events,
         "breakout_retest": (result.breakout_result.model_dump(mode="json")
                             if result.breakout_result else None),
+        "constructive_base": result.base_result.model_dump(mode="json") if result.base_result else None,
+        "relationships": [r.model_dump(mode="json") for r in result.relationships],
         "shallow_pullback_timeline": [e.model_dump(mode="json") for e in result.shallow_pullback_timeline],
         "as_of": result.as_of, "state": result.state.value if result.state else None,
         "capability_status": result.status.value,
@@ -361,6 +363,9 @@ def opportunities_to_markdown(results):
                     f"{day.retest_session or '未发生'} | {day.confirmation_session or '未发生'} | "
                     f"{day.eligible if day.eligible is not None else '未知'} | "
                     f"{', '.join(day.reason_codes) or '—'} |")
+        if result.base_result:
+            from pcs.trend.constructive_base import base_markdown
+            out += ["", base_markdown(result.base_result)]
     return "\n".join(out)
 
 
@@ -372,12 +377,19 @@ def _csv_view(results):
         "confirmation_deadline", "confirmation_date", "entry_start", "entry_end",
         "support_zone_id", "support_test_id", "reason_codes", "conditions_ref",
         "current_missing_evidence", "coverage_missing_evidence",
-        "requested_session", "request_time_semantics", "eligible_at_requested_time"]
+        "requested_session", "request_time_semantics", "eligible_at_requested_time",
+        "base_id", "base_lower", "base_upper", "base_position", "base_validity", "first_touch_deadline"]
     writer = csv.DictWriter(stream, fieldnames=columns)
     writer.writeheader()
     for result in results:
+        base_days = {d.session: d for d in result.base_result.timeline} if result.base_result else {}
         for day in result.timeline:
+            base = base_days.get(day.session)
             writer.writerow({"symbol": result.symbol, "family": result.family, "session": day.session,
+                "base_id": base.base_id if base else '', "base_lower": base.lower if base else '',
+                "base_upper": base.upper if base else '', "base_position": base.base_position if base else '',
+                "base_validity": base.base_validity if base else '',
+                "first_touch_deadline": base.first_touch_deadline if base else '',
                 "state": day.state.value if day.state else "", "capability_status": day.capability_status.value,
                 "eligible": "" if day.eligible is None else str(day.eligible).lower(),
                 "economic_episode_id": day.economic_episode_id or "",
@@ -389,7 +401,7 @@ def _csv_view(results):
                 "conditions_ref": f"{result.result_id}:{day.session}",
                 "current_missing_evidence": json.dumps(
                     [c.condition_id for c in day.conditions if c.role != "DIAGNOSTIC" and c.predicate_value is None]
-                    if result.family == "BREAKOUT_RETEST" else result.missing_evidence, ensure_ascii=False),
+                    if result.family in {"BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"} else result.missing_evidence, ensure_ascii=False),
                 "requested_session": result.requested_session,
                 "request_time_semantics": result.request_time_semantics,
                 "eligible_at_requested_time": "" if result.eligible_at_requested_time is None else str(result.eligible_at_requested_time).lower(),
@@ -405,7 +417,21 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None, inputs
         raise ValueError("OPPORTUNITY_OUTPUT_DIRECTORY_NOT_EMPTY")
     root.mkdir(parents=True, exist_ok=True)
     children = [child for r in results for child in (r.family_results or [r])]
+    from pcs.trend.selection_models import BaseResult, ConstructiveBaseInput
     documents = {
+        "base_result.schema.json": BaseResult.model_json_schema(),
+        "constructive_base_input.schema.json": ConstructiveBaseInput.model_json_schema(),
+        "base_results.json": [r.base_result.model_dump(mode="json") for r in children if r.base_result],
+        "base_regions.json": [{"symbol": r.symbol, **e.model_dump(mode="json")}
+            for r in children if r.base_result for e in r.base_result.base_events],
+        "base_timeline.json": [{"symbol": r.symbol, **d.model_dump(mode="json")}
+            for r in children if r.base_result for d in r.base_result.timeline],
+        "base_formation_candidates.json": [{"symbol": r.symbol, **c.model_dump(mode="json")}
+            for r in children if r.base_result for c in r.base_result.formation_candidates],
+        "base_retrospective_evidence.json": [{"symbol": r.symbol, **t.model_dump(mode="json")}
+            for r in children if r.base_result for t in r.base_result.retrospective_evidence],
+        "base_relationships.json": [{"symbol": r.symbol, **rel.model_dump(mode="json")}
+            for r in results for rel in (r.relationships or (r.base_result.relationships if r.base_result else []))],
         "entry_opportunities.json": [r.model_dump(mode="json") for r in results],
         "entry_opportunities.ai.json": [opportunity_to_ai_view(r) for r in results],
         "family_opportunities.json": [r.model_dump(mode="json") for r in children],
@@ -565,7 +591,7 @@ def run_opportunity_command(args):
     resume_directory = getattr(args, "resume_directory", None)
     render_only = getattr(args, "render_only", False)
     families = list(dict.fromkeys(getattr(args, "families", "HEALTHY_PULLBACK").split(",")))
-    if not set(families) <= {"HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"}:
+    if not set(families) <= {"HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"}:
         raise ValueError("OPPORTUNITY_FAMILY_INVALID")
     saved_inputs, prior_results = {}, {}
     if input_directory:
@@ -629,3 +655,7 @@ def run_opportunity_command(args):
         raise ValueError("STALE — RERUN REQUIRED")
     print(json.dumps({"output_directory": str(root.resolve()), "results": len(results),
                       "failures": failures}, ensure_ascii=False, indent=2))
+    if getattr(args, "summary", False):
+        for result in results:
+            for child in result.family_results or [result]:
+                print(f"{child.symbol} / {child.family}：{child.explanation}")

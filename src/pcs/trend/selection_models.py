@@ -249,7 +249,7 @@ class SupportFeatureView(StrictModel):
 
 class SupportSourceAnchor(StrictModel):
     source_id: str
-    source_type: Literal["SMA20", "SMA50", "CONFIRMED_SWING_LOW", "BREAKOUT_RESISTANCE"]
+    source_type: Literal["SMA20", "SMA50", "CONFIRMED_SWING_LOW", "BREAKOUT_RESISTANCE", "BASE_LOWER_BOUNDARY"]
     price: float
     observed_at: str
     available_at: str
@@ -283,7 +283,7 @@ class SupportIntradayBreach(StrictModel):
 class SupportZone(StrictModel):
     zone_id: str
     symbol: str
-    zone_type: Literal["MA_REFERENCE", "SWING_LOW", "CONFLUENCE", "BREAKOUT_RESISTANCE"]
+    zone_type: Literal["MA_REFERENCE", "SWING_LOW", "CONFLUENCE", "BREAKOUT_RESISTANCE", "BASE_LOWER_BOUNDARY"]
     lower: float
     upper: float
     anchor_price: float
@@ -419,7 +419,7 @@ class OpportunityPolicy(StrictModel):
     policy_id: str = "healthy-pullback-opportunity-v1.7"
     schema_version: Literal["1.0"] = "1.0"
     calculation_version: Literal["entry-opportunity-v2"] = "entry-opportunity-v2"
-    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"] = "HEALTHY_PULLBACK"
+    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"] = "HEALTHY_PULLBACK"
     analysis_sessions: int = Field(default=60, ge=20, le=252)
     indicator_warmup_sessions: int = Field(default=200, ge=50, le=1000)
     recent_high_sessions: Literal[20] = 20
@@ -671,7 +671,7 @@ class OpportunityDay(StrictModel):
 class OpportunityEpisode(StrictModel):
     economic_episode_id: str
     opportunity_id: str
-    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"] = "HEALTHY_PULLBACK"
+    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"] = "HEALTHY_PULLBACK"
     setup_date: str
     touch_date: str
     confirmation_deadline: str
@@ -723,9 +723,12 @@ class OpportunityInput(StrictModel):
     prior_detections: list[OpportunityDetection] = Field(default_factory=list)
     calendar: str = "XNYS"
     legacy_opinion: dict = Field(default_factory=dict)
-    enabled_families: list[Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"]] = Field(default_factory=lambda: ["HEALTHY_PULLBACK"])
+    enabled_families: list[Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST", "CONSTRUCTIVE_BASE"]] = Field(default_factory=lambda: ["HEALTHY_PULLBACK"])
     shallow_policy: ShallowPullbackPolicy = Field(default_factory=ShallowPullbackPolicy)
     breakout_policy: "BreakoutRetestPolicy" = Field(default_factory=lambda: BreakoutRetestPolicy())
+    base_policy: "ConstructiveBasePolicy" = Field(default_factory=lambda: ConstructiveBasePolicy())
+    base_structure_evidence: list["BaseStructureEvidence"] = Field(default_factory=list)
+    base_replay_of_result_id: str | None = None
     prior_setup_evidence: list[SetupEvidence] = Field(default_factory=list)
     prior_family_results: list["EntryOpportunity"] = Field(default_factory=list)
 
@@ -758,7 +761,7 @@ class OpportunityEvidenceGap(StrictModel):
 
 class EntryOpportunity(StrictModel):
     module: str = "entry_opportunity"
-    version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.2"
+    version: Literal["1.0", "1.1", "1.2", "1.3", "1.4"] = "1.2"
     symbol: str
     as_of: str
     status: CapabilityStatus
@@ -778,7 +781,7 @@ class EntryOpportunity(StrictModel):
     result_id: str
     matched_families: list[str]
     upstream_result_ids: list[str]
-    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2", "entry-opportunity-v2.3", "entry-opportunity-v2.4"] = "entry-opportunity-v2.3"
+    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2", "entry-opportunity-v2.3", "entry-opportunity-v2.4", "entry-opportunity-v2.5"] = "entry-opportunity-v2.3"
     run_id: str
     request_id: str
     received_at: str | None
@@ -809,6 +812,8 @@ class EntryOpportunity(StrictModel):
     shallow_pullback_timeline: list[SetupEvidence] = Field(default_factory=list)
     economic_events: list[dict] = Field(default_factory=list)
     breakout_result: "BreakoutRetestResult | None" = None
+    base_result: "BaseResult | None" = None
+    relationships: list["BaseBreakoutRelationship"] = Field(default_factory=list)
 
 
 class BreakoutRetestPolicy(StrictModel):
@@ -939,4 +944,226 @@ class BreakoutRetestResult(StrictModel):
     explanation: str
 
 
+class ConstructiveBasePolicy(StrictModel):
+    policy_id: str = "constructive-base-observation-v1"
+    calculation_version: Literal["constructive-base-v1"] = "constructive-base-v1"
+    formation_sessions: Literal[20] = 20
+    preceding_uptrend_sessions: Literal[20] = 20
+    maximum_width_atr: float = Field(default=4., gt=0)
+    contraction_recent: Literal[5] = 5
+    contraction_reference: Literal[15] = 15
+    minimum_held_tests: int = Field(default=2, ge=2)
+    first_live_touch_wait_sessions: Literal[20] = 20
+    maximum_base_position: float = Field(default=.5, ge=0, le=1)
+    upside_exit_buffer_atr: float = Field(default=.1, ge=0)
+    reformation_sessions: Literal[20] = 20
+    extreme_tie_rule: Literal["LATEST_SESSION"] = "LATEST_SESSION"
+    parameter_source: Literal["STEP_07_OBSERVATION_INITIAL", "REQUEST"] = "STEP_07_OBSERVATION_INITIAL"
+
+    @model_validator(mode="before")
+    @classmethod
+    def mark_overrides(cls, values):
+        if isinstance(values, dict) and "parameter_source" not in values:
+            values = dict(values)
+            if any(k in values and values[k] != f.default for k, f in cls.model_fields.items()
+                   if k not in {"parameter_source", "calculation_version", "policy_id"}):
+                values["parameter_source"] = "REQUEST"
+        return values
+
+
+class BaseStructureEvidence(StrictModel):
+    session: str
+    source: SourceReference
+    structure_state: Literal["bullish", "neutral", "deteriorating", "bearish"] | None = None
+    confirmed_swings: list[ConfirmedSwingEvidence] = Field(default_factory=list)
+    high_comparison: Literal["higher", "lower", "equal"] | None = None
+    low_comparison: Literal["higher", "lower", "equal"] | None = None
+    calculation_version: str
+
+
+class BaseBoundary(StrictModel):
+    source_id: str
+    source_type: Literal["BASE_LOWER_BOUNDARY", "BASE_UPPER_BOUNDARY"]
+    base_id: str
+    formed_at: str
+    known_at: str
+    window: list[str]
+    price: float
+    extreme_sessions: list[str]
+    representative_session: str
+    source_refs: list[str]
+
+
+class BaseRetrospectiveTest(StrictModel):
+    test: SupportTestEvent
+    boundary_id: str
+    known_at: str
+    retrospective: Literal[True] = True
+    available_for_entry: Literal[False] = False
+    price_evidence: list[dict]
+
+
+class BaseLiveTest(StrictModel):
+    test: SupportTestEvent
+    known_at: str
+    retrospective: Literal[False] = False
+    boundary_id: str
+
+
+class BaseFormationCandidate(StrictModel):
+    candidate_id: str
+    session: str
+    preceding_window: list[str]
+    formation_window: list[str]
+    uptrend_evidence_sessions: list[str]
+    lower: float | None = None
+    upper: float | None = None
+    formation_atr: float | None = None
+    width_atr: float | None = None
+    lower_extreme_sessions: list[str] = Field(default_factory=list)
+    upper_extreme_sessions: list[str] = Field(default_factory=list)
+    tr_samples: list[dict] = Field(default_factory=list)
+    recent_tr_median: float | None = None
+    reference_tr_median: float | None = None
+    retrospective_tests: list[BaseRetrospectiveTest] = Field(default_factory=list)
+    held_count: int | None = None
+    detected: bool | None
+    conditions: list[OpportunityCondition]
+    missing_details: list[OpportunityEvidenceGap] = Field(default_factory=list)
+
+
+class BaseEvent(StrictModel):
+    base_id: str
+    parent_base_id: str | None = None
+    formed_at: str
+    formation_window: list[str]
+    preceding_window: list[str]
+    lower: float
+    upper: float
+    formation_atr: float
+    lower_boundary: BaseBoundary
+    upper_boundary: BaseBoundary
+    lower_zone: SupportZone
+    retrospective_tests: list[BaseRetrospectiveTest]
+    first_touch_deadline: str
+    retest_session: str | None = None
+    live_test_id: str | None = None
+    confirmation_deadline: str | None = None
+    confirmation_session: str | None = None
+    entry_start: str | None = None
+    entry_end: str | None = None
+    state: OpportunityStateName = OpportunityStateName.WATCH
+    base_validity: Literal["VALID", "INVALIDATED", "UNKNOWN"] = "VALID"
+    terminal_session: str | None = None
+    upside_exit_session: str | None = None
+    upside_exit_line: float
+    reason_codes: list[str] = Field(default_factory=list)
+    terminal_conditions: list[OpportunityCondition] = Field(default_factory=list)
+
+
+class BaseDay(StrictModel):
+    session: str
+    base_id: str | None = None
+    formed_at: str | None = None
+    lower: float | None = None
+    upper: float | None = None
+    formation_atr: float | None = None
+    lower_zone_id: str | None = None
+    first_touch_deadline: str | None = None
+    retest_session: str | None = None
+    live_test_id: str | None = None
+    confirmation_deadline: str | None = None
+    confirmation_session: str | None = None
+    entry_start: str | None = None
+    entry_end: str | None = None
+    base_detected: bool | None
+    base_validity: Literal["VALID", "INVALIDATED", "UNKNOWN", "NOT_FORMED"]
+    opportunity_state: OpportunityStateName
+    eligible: bool | None
+    base_position: float | None = None
+    conditions: list[OpportunityCondition]
+    reason_codes: list[str]
+
+
+class BaseState(StrictModel):
+    calculation_version: Literal["constructive-base-v1"]
+    symbol: str
+    analysis_start: str
+    evaluated_through: str | None
+    state_revision: int
+    input_prefix_sha256: str
+    source_identity: str
+    policy_identity: str
+    base_events: list[BaseEvent]
+    formation_candidates: list[BaseFormationCandidate]
+    timeline: list[BaseDay]
+
+
+class ConstructiveBaseInput(StrictModel):
+    call_context: CallContext
+    feature_view: OpportunityFeatureView
+    effective_policy: ConstructiveBasePolicy = Field(default_factory=ConstructiveBasePolicy)
+    opportunity_policy: OpportunityPolicy = Field(default_factory=OpportunityPolicy)
+    support_policy: SupportZonePolicy = Field(default_factory=SupportZonePolicy)
+    structure_evidence: list[BaseStructureEvidence] = Field(default_factory=list)
+    prior_state: BaseState | None = None
+    replay_of_result_id: str | None = None
+    calendar: str = "XNYS"
+
+
+class BaseBreakoutRelationship(StrictModel):
+    base_id: str
+    session: str
+    breakout_id: str | None = None
+    handoff: Literal["NOT_EVALUATED", "QUALIFIED", "NOT_QUALIFIED", "UNKNOWN"]
+    base_upper: float
+    base_exit_line: float
+    breakout_resistance: float | None = None
+    breakout_line: float | None = None
+    resistance_difference: float | None = None
+    line_difference: float | None = None
+    reason_codes: list[str]
+
+
+class BaseResult(StrictModel):
+    module: Literal["constructive_base"] = "constructive_base"
+    version: Literal["1.0"] = "1.0"
+    calculation_version: Literal["constructive-base-v1"] = "constructive-base-v1"
+    symbol: str
+    as_of: str
+    run_id: str
+    request_id: str
+    result_id: str
+    replay_of_result_id: str | None = None
+    status: CapabilityStatus
+    data_timestamp: str | None
+    call_context: CallContext
+    effective_policy: ConstructiveBasePolicy
+    support_policy: SupportZonePolicy
+    opportunity_policy_values: dict
+    policy_sha256: str
+    price_basis: str
+    calendar: str
+    requested_session: str
+    request_time_semantics: Literal["HISTORICAL", "CURRENT_EOD"]
+    base_detected: bool | None
+    base_validity: Literal["VALID", "INVALIDATED", "UNKNOWN", "NOT_FORMED"]
+    opportunity_state: OpportunityStateName
+    eligible_at_requested_time: bool | None
+    formation_candidates: list[BaseFormationCandidate]
+    base_events: list[BaseEvent]
+    retrospective_evidence: list[BaseRetrospectiveTest]
+    timeline: list[BaseDay]
+    transitions: list[OpportunityTransition]
+    relationships: list[BaseBreakoutRelationship]
+    current_missing_details: list[OpportunityEvidenceGap]
+    coverage_missing_evidence: list[OpportunityEvidenceGap]
+    coverage: OpportunityCoverage
+    next_state: BaseState
+    provenance: list[SourceReference]
+    reason_codes: list[str]
+    explanation: str
+
+
 OpportunityInput.model_rebuild()
+EntryOpportunity.model_rebuild()

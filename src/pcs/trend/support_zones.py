@@ -99,7 +99,8 @@ def _new_zone(symbol, anchors, atr, policy, view):
     kinds = {a.source_type for a in anchors}
     zone_type = ("CONFLUENCE" if len(kinds) > 1 else
                  "SWING_LOW" if kinds == {"CONFIRMED_SWING_LOW"} else
-                 "BREAKOUT_RESISTANCE" if kinds == {"BREAKOUT_RESISTANCE"} else "MA_REFERENCE")
+                 "BREAKOUT_RESISTANCE" if kinds == {"BREAKOUT_RESISTANCE"} else
+                 "BASE_LOWER_BOUNDARY" if kinds == {"BASE_LOWER_BOUNDARY"} else "MA_REFERENCE")
     return SupportZone(zone_id="sha256:" + _hash(semantic), symbol=symbol, zone_type=zone_type,
         lower=center-half, upper=center+half, anchor_price=center, anchor_atr=atr,
         invalidation_line=center-half-policy.break_buffer_atr*atr,
@@ -125,6 +126,15 @@ def _deadline(expected, touch, count):
 def _update_zone(zone, bar, expected, policy, history, changes):
     session = bar.session.isoformat()
     if session <= zone.available_at or zone.broken_at or not zone.active:
+        return zone
+    return _advance_zone_prices(zone, bar, expected, policy, history, changes)
+
+
+def _advance_zone_prices(zone, bar, expected, policy, history, changes,
+                         intersection_reason="ZONE_INTERSECTION_AFTER_AVAILABLE_AT"):
+    """Price-test arithmetic; causal availability is enforced by the caller."""
+    session = bar.session.isoformat()
+    if zone.broken_at or not zone.active:
         return zone
     tests = list(zone.tests)
     breaches = list(zone.intraday_breaches)
@@ -205,7 +215,7 @@ def _update_zone(zone, bar, expected, policy, history, changes):
                 touch_low=bar.low, touch_high=bar.high, cumulative_low=bar.low,
                 confirmation_deadline=_deadline(expected, session, policy.confirmation_sessions),
                 status="IN_PROGRESS", penetration_atr=max(0, zone.lower-bar.low)/zone.anchor_atr,
-                reason_codes=["ZONE_INTERSECTION_AFTER_AVAILABLE_AT", "TOUCH_DAY_NOT_CONFIRMABLE"])
+                reason_codes=[intersection_reason, "TOUCH_DAY_NOT_CONFIRMABLE"])
             tests.append(test)
             zone = zone.model_copy(update={"tests": tests, "intraday_breaches": breaches})
             changes.append(_record(history, session=session, zone=zone, event_type="TEST_STARTED",
@@ -221,6 +231,25 @@ def create_fixed_support_zone(symbol, anchor, atr, policy, feature_view):
     if not _finite_positive(atr):
         raise ValueError("SUPPORT_ZONE_FORMATION_ATR_INVALID")
     return _new_zone(symbol, [anchor], float(atr), policy, feature_view)
+
+
+def describe_retrospective_tests(zone, bars, expected_sessions, policy, known_at):
+    """Describe historical prices against F's boundary, never mutate live tests."""
+    from pcs.trend.selection_models import BaseRetrospectiveTest
+    if zone.available_at != known_at or zone.tests:
+        raise ValueError("BASE_RETROSPECTIVE_REQUIRES_NEW_FROZEN_ZONE")
+    retrospective = zone.model_copy(deep=True)
+    prices = []
+    for bar in bars:
+        if bar.session.isoformat() > known_at:
+            raise ValueError("BASE_RETROSPECTIVE_FUTURE_PRICE")
+        prices.append(bar.model_dump(mode="json"))
+        retrospective = _advance_zone_prices(retrospective, bar, expected_sessions,
+            policy, [], [], "RETROSPECTIVE_INTERSECTION_KNOWN_AT_FORMATION")
+    return [BaseRetrospectiveTest(test=t, known_at=known_at,
+        boundary_id=zone.zone_id, price_evidence=[p for p in prices
+            if t.touch_session <= p['session'] <= (t.departure_session or known_at)])
+        for t in retrospective.tests]
 
 
 def update_fixed_support_zone(zone, bar, expected_sessions, policy, history):
