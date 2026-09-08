@@ -101,7 +101,8 @@ class SupportZoneDataReader:
 
 def support_zone_to_ai_view(result):
     return {"result_id": result.result_id, "symbol": result.symbol, "as_of": result.as_of,
-        "status": result.status.value,
+        "status": result.status.value, "call_diagnostics": result.call_diagnostics,
+        "sources": support_source_details(result),
         "current_zones": [{"zone_id": z.zone_id, "bounds": [z.lower, z.upper],
             "invalidation_line": z.invalidation_line, "state": z.state,
             "evidence_grade": z.evidence_grade, "held_tests": sum(t.status == "HELD" for t in z.tests),
@@ -112,7 +113,24 @@ def support_zone_to_ai_view(result):
         "selections": [s.model_dump(mode="json") for s in result.selections],
         "coverage": result.coverage.model_dump(mode="json"), "reason_codes": result.reason_codes,
         "detail_refs": {"zones": "support_zones.json", "tests": "support_tests.json",
-            "history": "support_history.json"}}
+            "history": "support_history.json", "sources": "support_sources.json"}}
+
+
+def support_source_details(result):
+    """Typed anchor contents indexed by (symbol, zone_id, source_id)."""
+    return [{"symbol": result.symbol, "zone_id": z.zone_id,
+             "role": "CREATION" if a.source_id in {s.source_id for s in z.creation_sources} else "LATER_OBSERVATION",
+             **a.model_dump(mode="json")}
+            for z in result.current_zones+result.archived_zones
+            for a in (z.observed_sources if z.observed_sources is not None else z.creation_sources)]
+
+
+def find_support_source(result, zone_id, source_id):
+    zone = find_support_zone(result, zone_id)
+    if zone is None:
+        return None
+    sources = zone.observed_sources if zone.observed_sources is not None else zone.creation_sources
+    return next((a for a in sources if a.source_id == source_id), None)
 
 
 def support_zones_to_markdown(results):
@@ -134,8 +152,15 @@ def support_zones_to_markdown(results):
                 out.append(f"| `{z.zone_id}` | {t.touch_session} | {t.confirmation_deadline} | {t.status} | {t.first_held_at or '—'} | {t.cumulative_low:.6g} | {t.rebound_atr if t.rebound_atr is not None else '—'} | {t.penetration_atr:.6g} | {t.departure_session or '—'} |")
         if not any(z.tests for z in zones):
             out.append("| 无测试 | — | — | — | — | — | — | — | — |")
+        out += ["", "来源价格单位：与区域相同的每股价格及价格口径。旧版未记录的后续来源不可从ID补造。", "",
+            "| 区域ID | 来源ID | 角色 | 类型 | 价格 | 形成/观测日 | 首次可知 | pivot日 |",
+            "|---|---|---|---|---:|---|---|---|"]
+        for a in support_source_details(r):
+            role = "创建来源" if a["role"] == "CREATION" else "后续观测"
+            out.append(f"| `{a['zone_id']}` | `{a['source_id']}` | {role} | {a['source_type']} | {a['price']!r} | {a['observed_at']} | {a['available_at']} | {a['pivot_date'] or '不适用'} |")
         out += ["", "选择角色：" + "；".join(f"{s.role}={s.zone_id or s.status}" for s in r.selections),
-            "", "缺口/原因：" + ("、".join(r.reason_codes) if r.reason_codes else "无"), ""]
+            "", "缺口/原因：" + ("、".join(r.reason_codes) if r.reason_codes else "无"),
+            "", "调用诊断：" + ("、".join(r.call_diagnostics) if r.call_diagnostics else "无"), ""]
     return "\n".join(out)
 
 
@@ -158,6 +183,7 @@ def write_support_zone_artifacts(output_directory, results, *, audit=None):
     history = [{"symbol": r.symbol, **h.model_dump(mode="json")} for r in results for h in r.support_history]
     docs = {"support_zone_results.json": [r.model_dump(mode="json") for r in results],
         "support_zones.json": zones, "support_tests.json": tests, "support_history.json": history,
+        "support_sources.json": [a for r in results for a in support_source_details(r)],
         "support_states.json": [r.next_state.model_dump(mode="json") for r in results],
         "support_zones.ai.json": [support_zone_to_ai_view(r) for r in results],
         "support_zone_result.schema.json": SupportZoneResult.model_json_schema(),
@@ -167,7 +193,11 @@ def write_support_zone_artifacts(output_directory, results, *, audit=None):
             "held": "touch+1 through touch+3: close >= upper and rebound from cumulative low >= 0.5 formation ATR",
             "retest": "after ended test, close >= upper+0.5 formation ATR, then later intersection",
             "intraday": "low below invalidation is recorded separately from close break",
-            "missing": "null or PARTIAL with stable reason code; no imputation"},
+            "missing": "null or PARTIAL with stable reason code; no imputation",
+            "observed_sources": "Full typed anchors including creation and later observations; null in legacy artifacts means not recorded, not empty. Creation anchors remain frozen.",
+            "source_reference": "(symbol, zone_id, source_id) indexes support_sources.json; history.source_ids links exact source records.",
+            "policy_sha256": "zone_id includes full effective policy hash, algorithm and price identities; v2 IDs are not v1-compatible.",
+            "call_diagnostics": "Invocation-only replay diagnostics; excluded from completeness and semantic result_id."},
         "read_audit.json": audit or {}}
     hashes = {name: _write_atomic(root/name, json.dumps(doc, ensure_ascii=False, indent=2, allow_nan=False))
               for name, doc in docs.items()}

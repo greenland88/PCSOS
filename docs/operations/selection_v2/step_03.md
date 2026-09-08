@@ -5,7 +5,7 @@
 - 基线：`fd5cecbcc9f5d44f36400b512abc45a36c89050e`。
 - 分支：`codex/selection-v2-step-03`；工作区：`H:/workspace/PCSOS-selection-v2-step-03`。
 - 公共接口：`pcs.trend.support_zones.evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult`。
-- schema `1.0`；算法 `support-zones-v1`；policy `support-zones-research-v1`。
+- 当前结果schema `1.1`；算法 `support-zones-v2`；policy `support-zones-research-v1`（研究初值不变，policy schema仍为1.0）。下文原37项及旧7票记录为v1历史证据；限定修复验收见末节。
 - 本步只生成研究/描述证据。旧 `trend.support.SupportResult`、扫描、评分、交易规则及第1、2步成果不变。
 
 核心函数仅消费准备好的 `SupportFeatureView`、显式policy与可选 `SupportZoneState`，不读路径、供应商、扫描器、benchmark、期权或账户。可信读取适配器、视图和保存位于 `pcs.pool.support_zones`。
@@ -39,7 +39,7 @@ canonical适配器先用 `ProfileDataReader` 的 PCSDataAccess、active verified
 
 `SupportZoneState` 保存完整区域、历史、`evaluated_through`、revision、合法前缀hash、source/policy/indicator/价格身份。续算先复核全部身份及截至旧session的bar hash；不兼容则从当前合法前缀重放，并返回PRIOR_STATE_INVALIDATED_REPLAYED。原保存状态不被覆盖。
 
-遇到中间交易日缺失即停在最后已知session，返回INTERMEDIATE_DAILY_SESSION_MISSING；不会跳过未知日补造HELD/BROKEN。相同输入重复调用不会增加区域或测试。`run_id`、`request_id`、`received_at`和本次state_changes不参与最终业务 `result_id`；有效行情日、完整业务状态、policy、指标身份和canonical来源身份继续参与。
+遇到中间交易日缺失即停在最后已知session，返回INTERMEDIATE_DAILY_SESSION_MISSING；不会跳过未知日补造HELD/BROKEN。相同输入重复调用不会增加区域或测试。`run_id`、`request_id`、`received_at`、本次state_changes及call_diagnostics不参与最终业务 `result_id`；有效行情日、完整业务状态、policy、指标身份和canonical来源身份继续参与。
 
 ## 输出与独立查询
 
@@ -47,6 +47,7 @@ canonical适配器先用 `ProfileDataReader` 的 PCSDataAccess、active verified
 
 - `support_zone_results.json`：完整typed结果；
 - `support_zones.json`、`support_tests.json`、`support_history.json`：可按实体独立查询的明细；
+- `support_sources.json`：按(symbol, zone_id, source_id)查询完整来源及创建/后续角色；
 - `support_states.json`：可校验恢复状态；
 - `support_zones.ai.json`、`support_zones.zh-CN.md`：从同一结果生成；
 - 输入/结果schema、字段字典、读取审计和artifact manifest。
@@ -85,7 +86,7 @@ git diff --check
 
 覆盖未确认pivot、真实known_at、单来源、均线共振、非链式聚类、触及日限制、连续触及去重、第3/4日边界、离开后重触、固定失效线、盘中/收盘跌破分离、历史HELD保留、未来隔离、批量/续算/重复等价、来源修正重放、缺日停止、绑定角色、调用时间身份及结构化输出。旧support和market structure测试原样运行。
 
-## 真实验收
+## v1历史真实验收（保留，包含已复现的F1–F4局限）
 
 干净代码提交 `2b192acab15a7d4a3bb988cab4b332ac9e678d67` 在固定行情日 `2026-09-04` 完成有界验收。输出目录为：
 
@@ -107,3 +108,16 @@ git diff --check
 验收脚本实际通过：8票身份唯一且齐全（7结果+1明确失败）、本步typed模型 `SupportZoneResult` 往返读取、保存文件hash、AI/中文视图同源、区域/测试/历史扁平明细数量、独立NVDA结果与批量结果（含 `result_id`）一致。独立NVDA结果ID为 `sha256:de34f727ea8cb079342540aa023433b77d8688a00486fa2d4d632d6fec86e881`。读取前后14个canonical文件hash及manifest hash `e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d` 均未变化。
 
 专项命令结果为 `37 passed in 1.76s`。这是代码/fixture和7票canonical只读验收，不是全池扫描、期权请求、交易规则验收或研究晋级。旧的 `step_03_acceptance_df5569c_20260904` 和 `step_03_acceptance_1061103_20260904` 目录保留，最终验收以 `step_03_acceptance_2b192ac_20260904` 为准。
+
+## F1–F4限定修复：版本及恢复边界
+
+复核起点为本地及origin相同的 `9af01c688966697fb9585f86e4c0b72d743eff10`，干净功能工作树。只修改支撑核心、typed模型、来源视图、对应专项、验收脚本及交接/能力登记。当前用户消息授权必要验证后自动提交并普通推送功能分支、回读远端HEAD；main合并仍需另行明确决定。收到的 `PCS_selection_implementation_plan (3).md` 文件头实际为v1.5，本轮按用户明确列出的F1–F4执行，不将它改标为v1.6或覆盖项目计划。
+
+- F1：区域ID加入完整生效policy哈希，区域保存 `policy_sha256`；宽度、失效缓冲等变动生成新对象身份，测试和历史引用随区域一致变化。算法升级为 `support-zones-v2`，旧对象ID不改写。旧v1结果仍可typed读取；重算旧算法须使用旧提交，不允许当前核心声称执行v1。旧状态的policy身份与v2不兼容，必须由完整合法输入重放。
+- F2：统一返回路径保存全部 `intraday_breaches`；无相交、无离开确认的日线也保留穿透。盘中低于失效线不等于收盘BROKEN，不因此添加测试。
+- F3：`creation_sources`继续冻结；`observed_sources`保存创建及后续完整 `SupportSourceAnchor`。历史 `source_ids`链接该区具体来源；来源明细和AI视图保留实际价格、类型、observed_at、available_at、pivot_date及角色。`find_support_source(result, zone_id, source_id)`可独立查询。旧版 `observed_sources=null`表示未记录，不能推定没有后续来源；视图只能回显其真实创建来源。
+- F4：`call_diagnostics`仅记录调用发生过不兼容状态重放，不参与完整性或业务ID。完整冷启动与重放结果ID一致；真实缺日/缺字段仍在业务reason_codes和coverage内，保持PARTIAL与最后已知日期。
+
+必要专项：`python -m pytest tests/trend/test_support_zones.py tests/trend/test_support.py tests/trend/test_market_structure.py -q`，结果 **42 passed in 4.74s**。保留原37项并增加5项参数化/场景回归，原重放及缺日断言按分离后的诊断契约增强。覆盖实际盘中穿透保存/恢复/去重、后续pivot及均线来源内容/引用/视图、参数身份及完整/缺失重放。未扩大全仓库测试。
+
+真实验收将在本节修复代码提交后，以该干净提交命名的新隔离目录进行原8票、2026-09-04的一次批量读取。验收脚本对比旧产物实际边界、冻结ATR、状态及每条测试（忽略版本升级后的ID），逐条核对来源内容和历史引用、盘中穿透与保存状态，并使用保存状态验证NVDA重复恢复。结果补记在下一节；旧产物完整保留。

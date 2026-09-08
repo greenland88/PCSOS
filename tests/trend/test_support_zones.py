@@ -175,10 +175,17 @@ def test_changed_prefix_or_price_identity_replays_instead_of_continuing():
     first = evaluate_support_zones(support_input(rows, asof="2025-01-07"))
     changed = rows.copy(); changed[1] = {"close": 99.9}
     replay = evaluate_support_zones(support_input(changed, prior=first.next_state))
-    assert "PRIOR_STATE_INVALIDATED_REPLAYED" in replay.reason_codes
+    assert "PRIOR_STATE_INVALIDATED_REPLAYED" in replay.call_diagnostics
+    cold = evaluate_support_zones(support_input(changed))
+    assert replay.status.value == cold.status.value == "COMPLETED"
+    assert replay.result_id == cold.result_id
+    assert replay.next_state == cold.next_state
+    assert replay.current_zones == cold.current_zones
+    assert replay.archived_zones == cold.archived_zones
+    assert replay.support_history == cold.support_history
     rebased = evaluate_support_zones(support_input(rows, prior=first.next_state,
         price_basis="OTHER_ADJUSTED"))
-    assert "PRIOR_STATE_INVALIDATED_REPLAYED" in rebased.reason_codes
+    assert "PRIOR_STATE_INVALIDATED_REPLAYED" in rebased.call_diagnostics
 
 
 def test_missing_intermediate_session_stops_at_last_known_state():
@@ -187,6 +194,7 @@ def test_missing_intermediate_session_stops_at_last_known_state():
     missing = inp.feature_view.model_copy(update={"bars": [inp.feature_view.bars[0], inp.feature_view.bars[2]]})
     r = evaluate_support_zones(inp.model_copy(update={"feature_view": missing}))
     assert r.coverage.evaluated_through == "2025-01-06"
+    assert r.status.value == "PARTIAL"
     assert "INTERMEDIATE_DAILY_SESSION_MISSING" in r.reason_codes
     assert not any(h.session == "2025-01-08" for h in r.support_history)
 
@@ -240,3 +248,83 @@ def test_artifacts_roundtrip_queries_hashes_and_saved_state(tmp_path):
                for name, digest in manifest["sha256"].items())
     with pytest.raises(ValueError, match="NOT_EMPTY"):
         write_support_zone_artifacts(root, [result])
+
+
+@pytest.mark.parametrize("parameter,value", [("zone_width_atr", .70), ("break_buffer_atr", .90)])
+def test_zone_identity_binds_effective_definition(parameter, value):
+    from pcs.trend.selection_models import SupportZonePolicy
+    inp = support_input([{}, {"low": 99.8}])
+    original = evaluate_support_zones(inp)
+    changed = evaluate_support_zones(inp.model_copy(update={
+        "effective_policy": SupportZonePolicy(**{parameter: value})}))
+    assert first_zone(original).zone_id != first_zone(changed).zone_id
+    assert first_zone(original).policy_sha256 != first_zone(changed).policy_sha256
+    assert first_zone(original).tests[0].test_id != first_zone(changed).tests[0].test_id
+    assert {h.zone_id for h in changed.support_history} == {first_zone(changed).zone_id}
+    assert changed.next_state.zones == changed.current_zones + changed.archived_zones
+    assert evaluate_support_zones(inp).result_id == original.result_id
+
+
+def test_intraday_only_breach_survives_all_views_and_saved_resume(tmp_path):
+    rows = [{}, {"open": 99.3, "high": 99.5, "low": 98.9, "close": 99.3}]
+    result = evaluate_support_zones(support_input(rows))
+    zone = first_zone(result)
+    assert zone.state == "REFERENCE_ONLY" and not zone.tests and zone.broken_at is None
+    assert len(zone.intraday_breaches) == 1
+    breach = zone.intraday_breaches[0]
+    history = events(result, "INTRADAY_PENETRATION")
+    assert len(history) == 1
+    assert (history[0].session, history[0].low, history[0].invalidation_line) == (
+        breach.session, breach.low, breach.invalidation_line)
+    root = write_support_zone_artifacts(tmp_path/"breach", [result])
+    state = load_support_zone_state(root, "TEST")
+    repeat = evaluate_support_zones(support_input(rows, prior=state))
+    assert repeat.result_id == result.result_id
+    assert first_zone(repeat).intraday_breaches == [breach]
+    extended = rows + [{"open": 99.3, "high": 99.5, "low": 99.2, "close": 99.3}]
+    resumed = evaluate_support_zones(support_input(extended, prior=state))
+    assert resumed.next_state == evaluate_support_zones(support_input(extended)).next_state
+    assert first_zone(resumed).intraday_breaches == [breach]
+
+
+def test_later_sources_have_queryable_values_and_causal_links(tmp_path):
+    import json
+    from pcs.pool.support_zones import find_support_source, support_source_details
+    swing = ConfirmedSwingEvidence(source_id="later-pivot", pivot_date="2025-01-06",
+        confirmed_at="2025-01-09", swing_type="low", price=100.1)
+    rows = [{}, {}, {}, {"sma20": 100.3}]
+    result = evaluate_support_zones(support_input(rows, swings=[swing]))
+    zone = first_zone(result)
+    assert len(zone.creation_sources) == 2 and not zone.tests
+    assert (zone.lower, zone.upper) == pytest.approx((99.75, 100.45))
+    assert len(zone.observed_source_ids) == len(set(zone.observed_source_ids)) == len(zone.observed_sources)
+    anchor = find_support_source(result, zone.zone_id, "later-pivot")
+    assert (anchor.price, anchor.observed_at, anchor.available_at, anchor.pivot_date) == (
+        100.1, "2025-01-06", "2025-01-09", "2025-01-06")
+    assert anchor not in zone.creation_sources
+    ma = find_support_source(result, zone.zone_id, "SMA20:2025-01-09")
+    assert ma.price == 100.3 and ma.available_at == "2025-01-09"
+    links = [h for h in result.support_history if "later-pivot" in h.source_ids]
+    assert len(links) == 1 and links[0].known_at == "2025-01-09"
+    assert links[0].event_type == "SOURCE_RESONANCE"
+    root = write_support_zone_artifacts(tmp_path/"sources", [result])
+    detail = json.loads((root/"support_sources.json").read_text(encoding="utf-8"))
+    assert detail == support_source_details(result) == support_zone_to_ai_view(result)["sources"]
+    assert any(a["source_id"] == "later-pivot" and a["role"] == "LATER_OBSERVATION" and a["price"] == 100.1 for a in detail)
+    assert "100.3 | 2025-01-09 | 2025-01-09" in (root/"support_zones.zh-CN.md").read_text(encoding="utf-8")
+    state = load_support_zone_state(root, "TEST")
+    repeated = evaluate_support_zones(support_input(rows, swings=[swing], prior=state))
+    assert repeated.next_state == result.next_state and repeated.result_id == result.result_id
+
+
+def test_legacy_state_replays_and_missing_replay_stays_partial():
+    inp = support_input([{}, {}, {}])
+    full = evaluate_support_zones(inp)
+    old = full.next_state.model_copy(update={"policy_sha256": "legacy-v1-policy"})
+    replay = evaluate_support_zones(inp.model_copy(update={"prior_state": old}))
+    assert replay.status.value == "COMPLETED" and replay.result_id == full.result_id
+    assert replay.call_diagnostics == ["PRIOR_STATE_INVALIDATED_REPLAYED"]
+    missing = inp.feature_view.model_copy(update={"bars": inp.feature_view.bars[::2]})
+    partial = evaluate_support_zones(inp.model_copy(update={"feature_view": missing, "prior_state": old}))
+    assert partial.status.value == "PARTIAL" and partial.coverage.evaluated_through == "2025-01-06"
+    assert partial.call_diagnostics and "INTERMEDIATE_DAILY_SESSION_MISSING" in partial.reason_codes

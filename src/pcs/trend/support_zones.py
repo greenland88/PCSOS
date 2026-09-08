@@ -46,14 +46,14 @@ def _finite_positive(value):
 
 
 def _record(history, *, session, zone, event_type, retrospective=False, test_id=None,
-            close=None, low=None, high=None, reasons=()):
-    payload = [zone.zone_id, session, event_type, test_id, list(reasons)]
+            close=None, low=None, high=None, reasons=(), source_ids=()):
+    payload = [zone.zone_id, session, event_type, test_id, list(reasons), list(source_ids)]
     item = SupportHistoryRecord(history_id="sha256:" + _hash(payload), session=session,
         zone_id=zone.zone_id, event_type=event_type, known_at=session,
         retrospective=retrospective, close=close, low=low, high=high,
         zone_lower=zone.lower, zone_upper=zone.upper, invalidation_line=zone.invalidation_line,
         anchor_atr=zone.anchor_atr, zone_state=_zone_state(zone),
-        test_id=test_id, reason_codes=list(reasons))
+        test_id=test_id, reason_codes=list(reasons), source_ids=list(source_ids))
     if item.history_id not in {x.history_id for x in history}:
         history.append(item)
     return item
@@ -95,7 +95,7 @@ def _new_zone(symbol, anchors, atr, policy, view):
     available = max(a.available_at for a in anchors)
     semantic = [symbol, round(center, 12), round(atr, 12), formed, available,
                 [a.model_dump(mode="json") for a in anchors], policy.calculation_version,
-                view.price_basis, view.corporate_action_version]
+                view.price_basis, view.corporate_action_version, _policy_identity(policy)]
     kinds = {a.source_type for a in anchors}
     zone_type = "CONFLUENCE" if len(kinds) > 1 else "SWING_LOW" if kinds == {"CONFIRMED_SWING_LOW"} else "MA_REFERENCE"
     return SupportZone(zone_id="sha256:" + _hash(semantic), symbol=symbol, zone_type=zone_type,
@@ -103,6 +103,7 @@ def _new_zone(symbol, anchors, atr, policy, view):
         invalidation_line=center-half-policy.break_buffer_atr*atr,
         formed_at=formed, available_at=available, creation_sources=anchors,
         observed_source_ids=[a.source_id for a in anchors], price_basis=view.price_basis,
+        observed_sources=list(anchors), policy_sha256=_policy_identity(policy),
         corporate_action_version=view.corporate_action_version, policy_id=policy.policy_id,
         calculation_version=policy.calculation_version, state="REFERENCE_ONLY", evidence_grade="REFERENCE", tests=[],
         intraday_breaches=[], reason_codes=["SUPPORT_ZONE_FIXED_AT_FORMATION"])
@@ -209,7 +210,8 @@ def _update_zone(zone, bar, expected, policy, history, changes):
                 test_id=test_id, low=bar.low, high=bar.high, close=bar.close,
                 reasons=["TOUCH_DAY_NOT_CONFIRMABLE"]))
     state = _zone_state(zone)
-    return zone.model_copy(update={"state": state, "evidence_grade": _evidence_grade(state)})
+    return zone.model_copy(update={"state": state, "evidence_grade": _evidence_grade(state),
+                                   "intraday_breaches": breaches})
 
 
 def _anchors_for_session(view, bar):
@@ -253,6 +255,8 @@ def _select(zones, close, bound_zone_id):
 def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
     """Replay or advance fixed zones using only completed typed daily facts."""
     ctx, view, policy = input.call_context, input.feature_view, input.effective_policy
+    if policy.calculation_version != "support-zones-v2":
+        raise ValueError("SUPPORT_LEGACY_ALGORITHM_REQUIRES_VERSIONED_CHECKOUT")
     if view.symbol != ctx.symbol:
         raise ValueError("SUPPORT_SYMBOL_MISMATCH")
     if ctx.effective_daily_session is None:
@@ -301,7 +305,8 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
     history = deepcopy(prior.support_history) if compatible else []
     start_after = prior.evaluated_through if compatible else None
     state_revision = prior.state_revision if compatible else 0
-    reason_codes = [] if prior is None or compatible else ["PRIOR_STATE_INVALIDATED_REPLAYED"]
+    call_diagnostics = [] if prior is None or compatible else ["PRIOR_STATE_INVALIDATED_REPLAYED"]
+    reason_codes = []
     changes = []
     actual_by_date = {b.session.isoformat(): b for b in bars}
     process_expected = [s for s in expected if start_after is None or s > start_after]
@@ -328,10 +333,15 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
                           all(z.lower <= a.price <= z.upper for a in group)), None)
             if match:
                 ids = list(dict.fromkeys(match.observed_source_ids+[a.source_id for a in group]))
-                replacement = match.model_copy(update={"observed_source_ids": ids})
+                observations = {a.source_id: a for a in match.observed_sources or []}
+                for anchor in group:
+                    observations[anchor.source_id] = anchor
+                replacement = match.model_copy(update={"observed_source_ids": ids,
+                    "observed_sources": list(observations.values())})
                 zones[zones.index(match)] = replacement
                 _record(history, session=session, zone=replacement, event_type="SOURCE_RESONANCE",
-                        reasons=["SOURCE_WITHIN_EXISTING_FIXED_ZONE"])
+                        reasons=["SOURCE_WITHIN_EXISTING_FIXED_ZONE"],
+                        source_ids=[a.source_id for a in group])
             else:
                 moving_types = {a.source_type for a in group} & {"SMA20", "SMA50"}
                 if moving_types:
@@ -351,7 +361,8 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
                     zone = zone.model_copy(update={"bound": True})
                 zones.append(zone)
                 changes.append(_record(history, session=session, zone=zone, event_type="ZONE_FORMED",
-                    reasons=["BOUNDED_NON_CHAIN_CLUSTER", "ZONE_KNOWN_AFTER_SESSION_CLOSE"]))
+                    reasons=["BOUNDED_NON_CHAIN_CLUSTER", "ZONE_KNOWN_AFTER_SESSION_CLOSE"],
+                    source_ids=[a.source_id for a in group]))
                 for anchor in group:
                     pivot_bar = actual_by_date.get(anchor.pivot_date) if anchor.pivot_date else None
                     if anchor.retrospective:
@@ -387,7 +398,8 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
     result = SupportZoneResult(symbol=ctx.symbol, as_of=ctx.effective_daily_session, status=status,
         data_timestamp=view.source_timestamp, received_at=view.received_at,
         run_id=ctx.run_id, request_id=ctx.request_id,
-        result_id="pending", reason_codes=reason_codes, call_context=ctx, effective_policy=policy,
+        result_id="pending", reason_codes=reason_codes, call_diagnostics=call_diagnostics,
+        call_context=ctx, effective_policy=policy, calculation_version=policy.calculation_version,
         policy_sha256=policy_sha, current_zones=[z for z in zones if z.active and z.state != "BROKEN"],
         archived_zones=[z for z in zones if not z.active or z.state == "BROKEN"], support_history=history,
         state_changes=changes, selections=selections, unselected_zones=unselected,
@@ -397,7 +409,7 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
             legal_input_sha256=input_hash, source_identity=source_identity, fields=fields,
             reason_codes=reason_codes), next_state=next_state, provenance=[view.source],
         explanation="区域边界、建区ATR和失效线在形成时冻结。HELD仅记录区域可知后的独立测试，不构成交易许可。")
-    semantic = result.model_dump(mode="json", exclude={"run_id", "request_id", "result_id", "received_at", "call_context", "provenance", "state_changes"})
+    semantic = result.model_dump(mode="json", exclude={"run_id", "request_id", "result_id", "received_at", "call_context", "provenance", "state_changes", "call_diagnostics"})
     semantic["sources"] = [(view.source.source_kind, view.source.sha256, view.source.record_identity)]
     return result.model_copy(update={"result_id": "sha256:" + _hash(semantic)})
 

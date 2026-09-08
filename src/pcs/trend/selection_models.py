@@ -183,7 +183,7 @@ class UnderlyingProfile(StrictModel):
 class SupportZonePolicy(StrictModel):
     policy_id: str = "support-zones-research-v1"
     schema_version: Literal["1.0"] = "1.0"
-    calculation_version: Literal["support-zones-v1"] = "support-zones-v1"
+    calculation_version: Literal["support-zones-v1", "support-zones-v2"] = "support-zones-v2"
     analysis_sessions: int = Field(default=60, ge=7, le=252)
     indicator_warmup_sessions: int = Field(default=200, ge=50, le=1000)
     pivot_left_bars: Literal[3] = 3
@@ -292,6 +292,8 @@ class SupportZone(StrictModel):
     available_at: str
     creation_sources: list[SupportSourceAnchor]
     observed_source_ids: list[str]
+    observed_sources: list[SupportSourceAnchor] | None = None
+    policy_sha256: str | None = None
     price_basis: str
     corporate_action_version: str
     policy_id: str
@@ -325,6 +327,7 @@ class SupportHistoryRecord(StrictModel):
     anchor_atr: float
     zone_state: str
     test_id: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
     reason_codes: list[str]
 
 
@@ -373,16 +376,17 @@ class SupportZoneSelection(StrictModel):
 
 class SupportZoneResult(StrictModel):
     module: str = "support_zones"
-    version: Literal["1.0"] = "1.0"
+    version: Literal["1.0", "1.1"] = "1.1"
     symbol: str
     as_of: str
     status: CapabilityStatus
     data_timestamp: str | None
     received_at: str | None
-    calculation_version: str = "support-zones-v1"
+    calculation_version: str = "support-zones-v2"
     run_id: str
     request_id: str
     result_id: str
+    call_diagnostics: list[Literal["PRIOR_STATE_INVALIDATED_REPLAYED"]] = Field(default_factory=list)
     reason_codes: list[str]
     call_context: CallContext
     effective_policy: SupportZonePolicy
