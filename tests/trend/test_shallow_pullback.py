@@ -191,6 +191,8 @@ def test_bundle_exports_and_saved_typed_inputs(tmp_path):
     ai = json.loads((tmp_path/"entry_opportunities.ai.json").read_text())
     assert ai[0]["result_id"] == result.result_id
     assert len(ai[0]["family_results"]) == 2
+    from pcs.trend.selection_models import EntryOpportunity
+    assert EntryOpportunity.model_validate(docs["entry_opportunities.json"][0]) == result
     assert "SHALLOW_PULLBACK" in (tmp_path/"entry_opportunities.zh-CN.md").read_text(encoding="utf-8")
 
 

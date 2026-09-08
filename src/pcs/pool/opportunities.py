@@ -491,7 +491,7 @@ def read_opportunity_bundle(output_directory):
         raw = path.read_bytes()
         if sha256(raw).hexdigest() != digest:
             raise ValueError(f"OPPORTUNITY_ARTIFACT_HASH_MISMATCH:{name}")
-        if name in {"entry_opportunities.json", "prepared_opportunity_inputs.json"}:
+        if name in {"entry_opportunities.json", "prepared_opportunity_inputs.json", "read_audit.json"}:
             contents[name] = json.loads(raw)
     return manifest, contents
 
@@ -563,7 +563,9 @@ def run_opportunity_command(args):
         try:
             if input_directory:
                 if symbol not in saved_inputs:
-                    raise ValueError("OPPORTUNITY_SAVED_SYMBOL_MISSING")
+                    original = next((f for f in contents.get("read_audit.json", {}).get("failures", [])
+                                     if f["symbol"] == symbol), None)
+                    raise ValueError(original["reason"] if original else "OPPORTUNITY_SAVED_SYMBOL_MISSING")
                 loaded = saved_inputs[symbol]
                 if args.as_of > loaded.call_context.effective_daily_session:
                     raise ValueError("OPPORTUNITY_SAVED_INPUT_END_EXCEEDED")
@@ -578,7 +580,9 @@ def run_opportunity_command(args):
         except (ValueError, RuntimeError) as exc:
             failures.append({"symbol": symbol, "stage": "OPPORTUNITY_READ_OR_EVALUATE",
                              "reason": str(exc)})
-    verification = reader.verify_unchanged() if reader else {"status": "SAVED_ARTIFACT_HASHES_VERIFIED"}
+    verification = reader.verify_unchanged() if reader else {
+        "status": "SAVED_ARTIFACT_HASHES_VERIFIED", "origin_directory": input_directory,
+        "origin_manifest": saved_manifest}
     root = write_opportunity_artifacts(args.output_directory, results,
         audit={"reads": reader.audit if reader else [], "source_unchanged": verification,
                "failures": failures, "input_directory": input_directory,

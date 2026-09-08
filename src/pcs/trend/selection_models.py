@@ -442,7 +442,7 @@ class OpportunityPolicy(StrictModel):
     @model_validator(mode="before")
     @classmethod
     def mark_opportunity_overrides(cls, values):
-        if isinstance(values, dict):
+        if isinstance(values, dict) and "parameter_source" not in values:
             values = dict(values)
             ignored = {"parameter_source", "schema_version", "calculation_version", "family"}
             if any(k in values and k not in ignored and values[k] != f.default
