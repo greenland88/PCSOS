@@ -113,3 +113,36 @@ UBER在读取阶段返回 `INSUFFICIENT_FEATURE_WARMUP`，沿用真实数据缺�
 验收脚本实际核对：8票唯一齐全（7结果+1明确失败）；`EntryOpportunity` typed回读；artifact全部已登记hash；JSON/AI/中文/CSV共同字段和逐日/条件/转换明细内容一致；NVDA独立API与批量的episodes、timeline、transitions和result_id一致；保存NVDA checkpoint恢复后相同；读取前后canonical manifest与14个文件hash一致。manifest identity为 `5af72f892609519c0293b922f8515b3abdeb14683b904e7922a30501683c6400`，manifest SHA256为 `e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d`。NVDA result_id为 `sha256:a799129ee2cb2e588182728989e4d7519ea56786c4c93756d6e06d3628d051c1`。
 
 真实总验收状态为PARTIAL，仅因UBER暖机不足；组件和其余合法样本继续完成。本步未做收益研究、正式策略采用、期权或实盘验证。下一步若获独立任务授权，可在同一状态机接浅回调；本分支停在第4步边界。
+
+## 2026-09-08 限定复核修复（F1–F4）
+
+本节取代上文中关于趋势健康来源、请求时点、恢复方式和最终真实样本状态的旧验收描述；旧产物保留，不覆盖。计算源码提交为 `aaa52798c6830c2a0d4058d207927d80ff0e5085`。
+
+- F1：发现、确认和窗口复核均明确要求 `bullish` 结构及 `strong/healthy` 健康度，并消费现有 `interpret_trend()` 的真实健康度和 market-structure-engine 的短期阶段。`FAILED_FOLLOW_THROUGH` 等现有明确阶段会阻断；不再以“不是 bearish/BLOCKED”放行。支撑仍为 support-zones-v2。逐日证据同时保存旧 trend gate 与 pullback gate 的真实执行状态、结果、原因和生产者引用；benchmark 缺失只使依赖它的健康判断未知。
+- F2：`HISTORICAL` 与 `CURRENT_EOD` 分开。CURRENT_EOD 要求带时区的请求时间，并由 XNYS 日历解析最近已完成 session；请求在固定窗口之后返回 false，窗口内但缺少该请求 session 的事实返回 null。请求 session/语义进入结果身份；run、request 和 received 时间仍不进入。
+- F3：兼容 checkpoint 从 `evaluated_through` 后的 session 继续，episode、固定窗口和 revision 不重置；完整旧逐日证据通过 `load_opportunity_resume_evidence()` 从已校验产物读取，不塞入小 checkpoint。修正前缀可完整重放；滑动输入缺少所需修正前缀时以 `OPPORTUNITY_REPLAY_PREFIX_REQUIRED` 停止。
+- F4：三值发现逻辑中，明确 false 可得 NO_SETUP/false；只有其余必需条件成立而证据缺失时才是 null/PARTIAL。RSI 等 DIAGNOSTIC 缺失不阻止确认；已有状态遇到未知输入保留最后合法事件，不伪造 NO_SETUP。
+
+限定测试命令：
+
+```powershell
+$env:PYTHONPATH='src'
+python -m pytest tests/trend/test_entry_opportunity_v2.py tests/trend/test_opportunity_engine.py tests/trend/test_pullback.py tests/trend/test_support_zones.py tests/trend/test_support.py tests/trend/test_market_structure.py -q
+```
+
+实际结果：`91 passed in 7.48s`。覆盖三个F1反例、正常healthy、明确阶段阻断、CURRENT_EOD日历请求、必需/可选缺失、真实增量恢复、完整回放等价和缺前缀拒绝。
+
+新的隔离真实产物为 `H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_aaa5279_20260904`，manifest绑定上述干净提交。来源manifest及16个实际读取文件前后hash一致；typed回读、产物hash、四种共同视图、明细引用、NVDA独立调用及保存状态复核全部通过。总状态为PARTIAL：UBER因 `INSUFFICIENT_FEATURE_WARMUP` 未生成；NVDA、MSFT、MDLZ和AAL还保留各自历史早期必需趋势证据未知，未伪造为已知。
+
+| 股票 | 能力 | 2026-09-04状态 | 请求时适用 | 触及/确认 | 固定入场窗口 |
+|---|---|---|---|---|---|
+| NVDA | PARTIAL | EXPIRED | false | 08-24 / 08-25 | 08-26—08-28 |
+| PLTR | COMPLETED | NO_SETUP | false | 未发生 / 未发生 | 不适用 |
+| MSFT | PARTIAL | NO_SETUP | false | 未发生 / 未发生 | 不适用 |
+| HOOD | COMPLETED | ENTRY_READY | false | 08-31 / 09-02 | 09-03—09-08 |
+| MDLZ | PARTIAL | ENTRY_READY | true | 当前事件见结构化报告 | 当前事件见结构化报告 |
+| AAL | PARTIAL | NO_SETUP | false | 未发生 / 未发生 | 不适用 |
+| AAOI | COMPLETED | NO_SETUP | false | 未发生 / 未发生 | 不适用 |
+| UBER | 未生成 | 未知 | 未知 | 未评估 | 未评估 |
+
+NVDA在08-24发现时结构为bullish、真实健康度healthy、阶段HEALTHY_PULLBACK；08-25确认时三项仍合格且新支撑为HELD。旧trend gate为PASS，旧pullback gate为WAIT；这证明新区域证据没有被旧weak support替代。该窗口已于08-28结束，所以09-04为EXPIRED/false。PLTR在本次真实重算中没有合法v2触及或确认；09-04原pullback分类为healthy_pullback，但真实趋势健康为mixed、旧trend gate为WATCH、旧pullback gate为WAIT，因此结果为NO_SETUP/false，不能沿用旧报告的ENTRY_READY。
