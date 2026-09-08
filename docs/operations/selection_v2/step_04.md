@@ -4,7 +4,7 @@
 
 - 基线：`3b4d674ec418106e5ba24cd7a52204a6199084a8`，包含已验收第3步及计划v1.7。
 - 分支：`codex/selection-v2-step-04`。
-- 最终计算源码提交：`b167a4bff501b06f72879e94671c643951376851`（含前置实现提交 `e0452ab9d8dbc08ef469162a7d5c233e1d0bad6c`、证据/身份补强 `ca259923b4f4ddce7ef2d7c55100adc9340b3f36`及失效证据角色修复 `8865306745a138126bc75ecd1c023a60d5a069a5`）。
+- 最终计算源码提交：`b0de1bdc90648fc5bafeb9c7810fa03547c57856`（含前置实现提交 `e0452ab9d8dbc08ef469162a7d5c233e1d0bad6c`、证据/身份补强 `ca259923b4f4ddce7ef2d7c55100adc9340b3f36`、失效证据角色修复 `8865306745a138126bc75ecd1c023a60d5a069a5`及缺口日历/来源/事件完整性修复）。
 - 公共接口：`pcs.trend.opportunity_engine.evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity`。
 - schema `1.0`；算法 `entry-opportunity-v2`；policy `healthy-pullback-opportunity-v1.7`。
 
@@ -75,8 +75,8 @@ python H:/workspace/PCSOS-selection-v2-step-04/examples/entry_opportunity.py --s
 有界批量与验收：
 
 ```powershell
-python -m pcs.cli entry-opportunity --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --run-id step_04_acceptance_b167a4b_20260904 --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b167a4b_20260904
-python H:/workspace/PCSOS-selection-v2-step-04/scripts/accept_entry_opportunities.py H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b167a4b_20260904
+python -m pcs.cli entry-opportunity --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --run-id step_04_acceptance_b0de1bd_20260904 --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b0de1bd_20260904
+python H:/workspace/PCSOS-selection-v2-step-04/scripts/accept_entry_opportunities.py H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b0de1bd_20260904
 ```
 
 输出包括统一 `entry_opportunities.json`、AI视图、中文报告、CSV摘要、逐日timeline、完整conditions、transitions、checkpoint、输入/结果schema、字段字典、正常/缺失示例、读取审计及artifact manifest。绑定支撑事实内嵌创建及后续观测的完整typed来源，不只保存ID；超距与窗口内重新合格有独立事件。CSV的null写为空值并引用JSON明细，不转成false。`find_opportunity_episode()`、`find_opportunity_day()`和`find_opportunity_condition()`可独立查询；`load_opportunity_state()`先核验保存状态文件hash。
@@ -95,21 +95,21 @@ git diff --check 3b4d674ec418106e5ba24cd7a52204a6199084a8 HEAD
 
 ## 真实8票验收
 
-最终产物：`H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b167a4b_20260904`。产物manifest绑定干净源码 `b167a4bff501b06f72879e94671c643951376851`。
+最终产物：`H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_b0de1bd_20260904`。产物manifest绑定干净源码 `b0de1bdc90648fc5bafeb9c7810fa03547c57856`。
 
 | 股票 | 结果 | 9月4日状态 | 当前可评估 | 当前事件触及/确认 | 原窗口 | 事件/转换数 |
 |---|---|---|---|---|---|---:|
-| NVDA | COMPLETED | ENTRY_READY | true | 09-01 / 09-02 | 09-03—09-08 | 4 / 12 |
-| PLTR | COMPLETED | ENTRY_READY | true | 09-02 / 09-03 | 09-04—09-09 | 2 / 4 |
+| NVDA | COMPLETED | ENTRY_READY | true | 09-01 / 09-02 | 09-03—09-08 | 4 / 22 |
+| PLTR | COMPLETED | ENTRY_READY | true | 09-02 / 09-03 | 09-04—09-09 | 2 / 5 |
 | MSFT | COMPLETED | EXPIRED | false | 07-23 / 未确认 | 不适用 | 2 / 6 |
-| HOOD | COMPLETED | ENTRY_READY | false（当前超距） | 08-31 / 09-02 | 09-03—09-08 | 3 / 7 |
-| MDLZ | COMPLETED | ENTRY_READY | true | 09-01 / 09-02 | 09-03—09-08 | 5 / 14 |
+| HOOD | COMPLETED | ENTRY_READY | false（当前超距） | 08-31 / 09-02 | 09-03—09-08 | 3 / 9 |
+| MDLZ | COMPLETED | ENTRY_READY | true | 09-01 / 09-02 | 09-03—09-08 | 5 / 19 |
 | AAL | COMPLETED | INVALIDATED | false | 07-08 / 未确认 | 不适用 | 1 / 3 |
-| AAOI | COMPLETED | INVALIDATED | false | 08-13 / 08-14 | 08-17—08-19 | 1 / 3 |
+| AAOI | COMPLETED | INVALIDATED | false | 08-13 / 08-14 | 08-17—08-19 | 1 / 5 |
 | UBER | 未生成 | 未知 | 未知 | 未评估 | 未评估 | — |
 
 UBER在读取阶段返回 `INSUFFICIENT_FEATURE_WARMUP`，沿用真实数据缺口，未补数据。其余7票各有60日逐日结果并评估至2026-09-04。真实样本结果是观察输出，不代表原Pool动作改变、策略盈利有效、期权可用或允许交易。
 
-验收脚本实际核对：8票唯一齐全（7结果+1明确失败）；`EntryOpportunity` typed回读；artifact全部已登记hash；JSON/AI/中文/CSV共同字段和逐日/条件/转换明细内容一致；NVDA独立API与批量的episodes、timeline、transitions和result_id一致；保存NVDA checkpoint恢复后相同；读取前后canonical manifest与14个文件hash一致。manifest identity为 `5af72f892609519c0293b922f8515b3abdeb14683b904e7922a30501683c6400`，manifest SHA256为 `e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d`。NVDA result_id为 `sha256:479d5c52d36fbb73da7802cd4f1a3e7ff83f7eaa25a878eeb0703d0312c6c0ee`。
+验收脚本实际核对：8票唯一齐全（7结果+1明确失败）；`EntryOpportunity` typed回读；artifact全部已登记hash；JSON/AI/中文/CSV共同字段和逐日/条件/转换明细内容一致；NVDA独立API与批量的episodes、timeline、transitions和result_id一致；保存NVDA checkpoint恢复后相同；读取前后canonical manifest与14个文件hash一致。manifest identity为 `5af72f892609519c0293b922f8515b3abdeb14683b904e7922a30501683c6400`，manifest SHA256为 `e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d`。NVDA result_id为 `sha256:53692b11ab93d6642284a2aa5132962eae0d1b8c37c6b7db404f1b9888997bf1`。
 
 真实总验收状态为PARTIAL，仅因UBER暖机不足；组件和其余合法样本继续完成。本步未做收益研究、正式策略采用、期权或实盘验证。下一步若获独立任务授权，可在同一状态机接浅回调；本分支停在第4步边界。
