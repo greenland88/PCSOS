@@ -1062,7 +1062,7 @@ advance(input):
 ### 8.11 当前继续实施的具体顺序
 
 1. **第1–3步已按各自范围验收**：按2.1保留其公开接口、事实、版本和实际样本边界。F1–F4已关闭，不再重复修复或生成旧报告；main保持未合并。
-2. **第4步已完成实现与有界验收**：从 `3b4d674ec418106e5ba24cd7a52204a6199084a8`建立 `codex/selection-v2-step-04`，实现 `evaluate_entry_opportunity(OpportunityInput) -> EntryOpportunity`、健康回调通道、统一状态恢复及观察输出。干净源码 `b0de1bdc90648fc5bafeb9c7810fa03547c57856` 对原8票、2026-09-04验收为7票完成，UBER `INSUFFICIENT_FEATURE_WARMUP`；详见 `docs/operations/selection_v2/step_04.md`。本步未切换正式扫描或交易动作。后续形态须以独立任务接入同一状态机。
+2. **第4步已完成实现与有界验收**：从 `3b4d674ec418106e5ba24cd7a52204a6199084a8`建立 `codex/selection-v2-step-04`，实现 `evaluate_entry_opportunity(OpportunityInput) -> EntryOpportunity`、健康回调通道、统一状态恢复及观察输出。干净源码 `8fe14d0e33f31b57824bc94feb82bf661a9610e0` 对原8票、2026-09-04验收为7票完成，UBER `INSUFFICIENT_FEATURE_WARMUP`；详见 `docs/operations/selection_v2/step_04.md`。本步未切换正式扫描或交易动作。后续形态须以独立任务接入同一状态机。
 3. **第一条状态链验收后再增加通道**：用8.8验证日期、固定锚点、失效、缺数和恢复；下一种形态另作完整交付，不同时复制四套状态逻辑。期权或AI服务不作为这些股票组件的全局前提。
 4. **有一条通道就交付第8步、10A或11A中输入已就绪的组件**，让股票观察尽早可用。第8步输出可直接交给AI讨论的证据包，意见与程序结果分开；四种形态、期权接口及模型服务不是统一前提。
 5. **9A在有合法历史样本时即可独立实现和验收**，随后按上下文就绪情况做9B、9C。9C装配开仓依据与讨论记录，区分数据完整、AI意见和用户确认；当前实时数据缺失单列，不回到供应商诊断循环。
