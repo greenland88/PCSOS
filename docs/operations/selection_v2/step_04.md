@@ -49,7 +49,7 @@ canonical适配器通过 `ProfileDataReader` 固定ManifestSnapshot和active ver
 
 首次确认日期冻结为c；c日仅说明确认，入场观察窗口是c+1至c+3。窗口内逐日复核固定支撑、结构和当前距离。超距时保留ENTRY_READY历史及原窗口、当前eligible=false；原窗口内回到范围可重新变为true，窗口不顺延。判断优先级为固定支撑/结构失效、对应阶段过期、确认或当前条件。b+3可确认，b+4才过期。同日有失效和有利确认事实时双方条件都保存，但结果为INVALIDATED。
 
-区域上下沿、formation ATR和失效线在setup冻结，后续均线或ATR不移动它们。终态事件不会因重扫或反弹回到活跃态；只有新的独立support test可开始新机会。`economic_episode_id`只绑定symbol、family和实际touch session，不因run、policy、算法或zone ID版本变化制造新市场事件；`opportunity_id`另绑定实际policy、指标、来源、zone/test及固定参数；`result_id`再绑定有效输入范围和业务过程。run_id、request_id、received_at、恢复方式及调用诊断不进入语义ID。
+区域上下沿、formation ATR和失效线在setup冻结，后续均线或ATR不移动它们。终态事件不会因重扫或反弹回到活跃态；只有新的独立support test可开始新机会。`economic_episode_id`只绑定symbol和实际touch session，不因family、run、policy、算法或zone ID版本变化制造新市场事件；`opportunity_id`另绑定family、实际policy、指标、来源、zone/test及固定参数；`result_id`再绑定有效输入范围和业务过程。run_id、request_id、received_at、恢复方式及调用诊断不进入语义ID。
 
 保存checkpoint只含必要episode状态、revision、已提交result引用、输入/支撑/policy/指标/价格身份和evaluated_through；完整逐日条件与转换单独落盘。恢复前校验旧前缀与支撑hash；相同前缀标记兼容重放，修正或补齐历史则从合法输入重放并保留旧产物。输出目录必须为空，原子写入且manifest记录每个文件hash。
 

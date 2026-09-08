@@ -74,7 +74,7 @@ def _episode_for_detection(symbol, detection, policy_hash, source_identity,
     # Market-event identity deliberately excludes zone/policy/algorithm IDs.
     # A revised support object for the same ticker/family/touch remains the
     # same economic episode; opportunity_id below distinguishes its evidence.
-    economic = "sha256:"+_hash([symbol, detection.family, touch])
+    economic = "sha256:"+_hash([symbol, touch])
     opportunity = "sha256:"+_hash([economic, policy_hash, source_identity,
         indicator_identity, support.zone_id, support.test_id,
         support.zone_lower, support.zone_upper,
