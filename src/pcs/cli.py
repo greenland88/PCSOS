@@ -406,6 +406,14 @@ def main():
     from pcs.pool.support_zones import run_support_zone_command
     support_zones.set_defaults(func=run_support_zone_command)
 
+    opportunity = sub.add_parser("entry-opportunity", help="read-only v2 healthy-pullback opportunity timeline")
+    opportunity.add_argument("--symbols", required=True, help="comma-separated symbols, at most eight")
+    opportunity.add_argument("--as-of", required=True, help="frozen completed exchange session YYYY-MM-DD")
+    opportunity.add_argument("--run-id", required=True)
+    opportunity.add_argument("--output-directory", required=True)
+    from pcs.pool.opportunities import run_opportunity_command
+    opportunity.set_defaults(func=run_opportunity_command)
+
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")
     admin_sub = admin.add_subparsers(required=True)
 

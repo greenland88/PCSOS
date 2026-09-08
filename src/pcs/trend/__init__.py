@@ -12,6 +12,8 @@ from pcs.trend.interpretation import TrendInterpretationResult, interpret_trend
 from pcs.trend.scoring import TrendScoreResult, score_trend
 from pcs.trend.support_zones import evaluate_support_zones
 from pcs.trend.selection_models import SupportZoneInput, SupportZoneResult
+from pcs.trend.opportunity_engine import evaluate_entry_opportunity
+from pcs.trend.selection_models import EntryOpportunity, OpportunityInput
 
 __all__ = [
     "BASE_INDICATOR_COLUMNS",
@@ -42,4 +44,7 @@ __all__ = [
     "SupportZoneInput",
     "SupportZoneResult",
     "evaluate_support_zones",
+    "OpportunityInput",
+    "EntryOpportunity",
+    "evaluate_entry_opportunity",
 ]

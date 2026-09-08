@@ -41,6 +41,16 @@ class MarketContext(BaseModel):
     interpretation: Any = None
     score_result: Any = None
 
+
+def evaluate_market_context_opportunity(input):
+    """Explicit v2 single-ticker observation boundary.
+
+    This does not alter ``build_market_context`` or its production timing
+    fields; callers must opt in with a prepared OpportunityInput.
+    """
+    from pcs.trend.opportunity_engine import evaluate_entry_opportunity
+    return evaluate_entry_opportunity(input)
+
 def build_market_context(symbol: str, as_of: date | str, *, data_access: PCSDataAccess,
                          event_risk: int = 0, rules: dict | None = None,
                          daily_frame: pd.DataFrame | None = None,

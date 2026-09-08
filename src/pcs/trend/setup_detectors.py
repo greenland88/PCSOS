@@ -1,0 +1,208 @@
+"""Prepared-fact detectors for the v2 healthy-pullback opportunity family.
+
+The functions in this module are deterministic and side-effect free.  They
+consume indicator values and support-test facts supplied by adapters; they do
+not read data or calculate an alternative ATR.
+"""
+from __future__ import annotations
+
+import math
+
+from pcs.trend.selection_models import (
+    OpportunityCondition, OpportunityDetection, OpportunityFeatureBar,
+    OpportunityPolicy, OpportunitySupportFact,
+)
+
+
+def _finite(value) -> bool:
+    return value is not None and math.isfinite(float(value))
+
+
+def _condition(condition_id, session, role, left=None, operator=None, right=None,
+               unit=None, predicate=None, refs=(), reasons=()):
+    status = "UNKNOWN" if predicate is None else "EVALUATED"
+    return OpportunityCondition(condition_id=condition_id, session=session, role=role,
+        left_value=left, operator=operator, right_value=right, unit=unit,
+        predicate_value=predicate, status=status, source_refs=list(refs),
+        reason_codes=list(reasons))
+
+
+def _legacy_classification(bar, pullback_pct, distance20, distance50, policy):
+    """Mirror current pullback branch order when an adapter has no saved fact."""
+    if bar.legacy_pullback_state:
+        return bar.legacy_pullback_state, list(bar.legacy_pullback_reasons)
+    if pullback_pct is None or distance20 is None or distance50 is None:
+        return None, ["PULLBACK_FACTS_INCOMPLETE"]
+    if bar.structure_state == "bearish":
+        return "breakdown", ["market_structure_bearish"]
+    # The old implementation tests shallow before healthy.  Thus an exact 5%
+    # pullback that is above both averages remains shallow, not healthy.
+    if (pullback_pct <= policy.shallow_pullback_max_pct and
+            distance20 >= 0 and distance50 >= 0):
+        return "shallow_pullback", ["pullback_shallow", "price_above_sma20", "price_above_sma50"]
+    near20 = abs(distance20) <= policy.sma20_near_atr
+    near50 = abs(distance50) <= policy.sma50_near_atr
+    if (policy.healthy_pullback_min_pct <= pullback_pct <= policy.healthy_pullback_max_pct
+            and (near20 or near50) and bar.structure_state != "bearish"):
+        return "healthy_pullback", ["pullback_within_normal_range", "near_sma20" if near20 else "near_sma50"]
+    return "unstable_pullback", ["PULLBACK_NOT_HEALTHY"]
+
+
+def detect_healthy_pullback(*, bar: OpportunityFeatureBar,
+                            history: list[OpportunityFeatureBar],
+                            support_facts: list[OpportunitySupportFact],
+                            policy: OpportunityPolicy) -> OpportunityDetection:
+    """Detect a first legal touch and retain every evaluated discovery fact."""
+    session = bar.session.isoformat()
+    conditions: list[OpportunityCondition] = []
+    prior = [b for b in history if b.session <= bar.session]
+    lookback = prior[-policy.recent_high_sessions:]
+    highs = [(b.session.isoformat(), b.high) for b in lookback if _finite(b.high)]
+    recent_high_session, recent_high = max(highs, key=lambda x: x[1]) if len(highs) == policy.recent_high_sessions else (None, None)
+    pullback_pct = ((recent_high-float(bar.close))/recent_high
+                    if _finite(recent_high) and recent_high > 0 and _finite(bar.close) else None)
+    valid_atr = _finite(bar.atr14) and float(bar.atr14) > 0
+    distance20 = ((float(bar.close)-float(bar.sma20))/float(bar.atr14)
+                  if valid_atr and _finite(bar.close) and _finite(bar.sma20) else None)
+    distance50 = ((float(bar.close)-float(bar.sma50))/float(bar.atr14)
+                  if valid_atr and _finite(bar.close) and _finite(bar.sma50) else None)
+    classification, legacy_reasons = _legacy_classification(bar, pullback_pct, distance20, distance50, policy)
+
+    conditions.append(_condition("PULLBACK_CLASSIFIED_HEALTHY", session, "DISCOVERY",
+        classification, "==", "healthy_pullback", predicate=(classification == "healthy_pullback") if classification else None,
+        refs=[f"bar:{session}", f"legacy_pullback:{session}"], reasons=legacy_reasons))
+    structure_ok = None if bar.structure_state is None else bar.structure_state != "bearish"
+    conditions.append(_condition("STRUCTURE_NOT_BEARISH", session, "DISCOVERY",
+        bar.structure_state, "!=", "bearish", predicate=structure_ok,
+        refs=[f"structure:{session}"], reasons=["STRUCTURE_UNKNOWN"] if structure_ok is None else []))
+
+    legal = [f for f in support_facts if f.session == session and f.touch_session == session
+             and f.zone_available_at < session and f.broken_at is None]
+    legal.sort(key=lambda f: (
+        abs(float(bar.close)-((f.zone_lower+f.zone_upper)/2)) if _finite(bar.close) else math.inf,
+        f.zone_available_at, f.zone_id, f.test_id))
+    selected = legal[0] if legal else None
+    support_known = selected is not None
+    conditions.append(_condition("LEGAL_SUPPORT_TOUCH", session, "DISCOVERY",
+        selected.test_id if selected else None, "IS_NOT", None, predicate=support_known,
+        refs=[selected.support_result_id, selected.zone_id, selected.test_id] if selected else [],
+        reasons=[] if selected else ["NO_SUPPORT_ZONE_KNOWN_BEFORE_TOUCH"]))
+
+    known = all(c.predicate_value is not None for c in conditions)
+    detected = all(c.predicate_value for c in conditions) if known else None
+    reasons = [] if detected else list(dict.fromkeys(
+        r for c in conditions for r in c.reason_codes)) or ["HEALTHY_PULLBACK_DISCOVERY_NOT_SATISFIED"]
+    return OpportunityDetection(session=session, detected=detected, family=policy.family,
+        recent_high=recent_high, recent_high_session=recent_high_session,
+        pullback_pct=pullback_pct, distance_sma20_atr=distance20,
+        distance_sma50_atr=distance50, legacy_pullback_state=classification,
+        legacy_pullback_reasons=legacy_reasons, selected_support=selected,
+        alternative_supports=legal[1:], conditions=conditions, reason_codes=reasons)
+
+
+def volume_ratio(bar: OpportunityFeatureBar, history: list[OpportunityFeatureBar],
+                 prior_sessions: int = 20):
+    earlier = [b for b in history if b.session < bar.session]
+    sample = earlier[-prior_sessions:]
+    if len(sample) != prior_sessions or not _finite(bar.volume):
+        return None, len([b for b in sample if _finite(b.volume)]), None
+    values = [float(b.volume) for b in sample if _finite(b.volume)]
+    if len(values) != prior_sessions:
+        return None, len(values), None
+    denominator = sum(values) / prior_sessions
+    if not math.isfinite(denominator) or denominator <= 0:
+        return None, len(values), denominator
+    return float(bar.volume) / denominator, len(values), denominator
+
+
+def confirmation_conditions(*, bar: OpportunityFeatureBar,
+                            previous_bar: OpportunityFeatureBar | None,
+                            history: list[OpportunityFeatureBar],
+                            zone_upper: float, anchor_atr: float, zone_id: str,
+                            test_id: str, support_fact: OpportunitySupportFact | None,
+                            policy: OpportunityPolicy) -> list[OpportunityCondition]:
+    session = bar.session.isoformat()
+    refs = [f"bar:{session}", zone_id, test_id]
+    valid_atr = _finite(bar.atr14) and float(bar.atr14) > 0
+    frozen_atr_ok = _finite(anchor_atr) and anchor_atr > 0
+    reclaim_line = zone_upper + policy.reclaim_buffer_atr*anchor_atr if frozen_atr_ok else None
+    reclaim = (float(bar.close) > reclaim_line if _finite(bar.close) and _finite(reclaim_line) else None)
+    prior_close = previous_bar.close if previous_bar else None
+    nondeclining = (float(bar.close) >= float(prior_close)
+                    if _finite(bar.close) and _finite(prior_close) else None)
+    price_range = (float(bar.high)-float(bar.low)
+                   if _finite(bar.high) and _finite(bar.low) else None)
+    close_location = ((float(bar.close)-float(bar.low))/price_range
+                      if _finite(bar.close) and price_range is not None and price_range > 0 else None)
+    location_ok = close_location >= policy.minimum_close_location if _finite(close_location) else None
+    rvol, volume_samples, volume_denominator = volume_ratio(bar, history)
+    rvol_ok = rvol >= policy.minimum_rvol20 if _finite(rvol) else None
+    held = (support_fact is not None and support_fact.test_status == "HELD" and
+            support_fact.first_held_at is not None and support_fact.first_held_at <= session and
+            support_fact.broken_at is None)
+    support_ok = held if support_fact is not None else None
+    structure_ok = None if bar.structure_state is None else bar.structure_state != "bearish"
+    support_structure = (support_ok and structure_ok if support_ok is not None and structure_ok is not None else None)
+    distance = ((float(bar.close)-zone_upper)/float(bar.atr14)
+                if valid_atr and _finite(bar.close) else None)
+    distance_ok = distance <= policy.maximum_entry_distance_atr if _finite(distance) else None
+    upper_wick = ((float(bar.high)-max(float(bar.open), float(bar.close)))/float(bar.atr14)
+                  if valid_atr and all(_finite(x) for x in (bar.open, bar.high, bar.close)) else None)
+    rejection = (upper_wick >= policy.upper_wick_rejection_atr and
+                 close_location <= policy.upper_rejection_close_location
+                 if _finite(upper_wick) and _finite(close_location) else None)
+    no_rejection = None if rejection is None else not rejection
+    conditions = [
+        _condition("CLOSE_ABOVE_FIXED_RECLAIM", session, "CONFIRMATION", bar.close, ">", reclaim_line,
+                   "price", reclaim, refs, ["ATR_INVALID"] if reclaim is None and not frozen_atr_ok else []),
+        _condition("CLOSE_NOT_BELOW_PRIOR_CLOSE", session, "CONFIRMATION", bar.close, ">=", prior_close,
+                   "price", nondeclining, refs, ["PRIOR_CLOSE_MISSING"] if nondeclining is None else []),
+        _condition("CLOSE_LOCATION", session, "CONFIRMATION", close_location, ">=",
+                   policy.minimum_close_location, "ratio", location_ok, refs,
+                   ["ZERO_OR_INVALID_DAILY_RANGE"] if location_ok is None else []),
+        _condition("RVOL20", session, "CONFIRMATION", rvol, ">=", policy.minimum_rvol20,
+                   "ratio", rvol_ok, refs+[f"volume_denominator:{volume_denominator}"],
+                   [f"RVOL_PRIOR_SAMPLE_COUNT:{volume_samples}"] if rvol_ok is None else []),
+        _condition("SUPPORT_HELD_AND_STRUCTURE_NOT_BLOCKED", session, "CONFIRMATION",
+                   support_structure, "==", True, "boolean", support_structure, refs,
+                   ["SUPPORT_FACT_MISSING"] if support_fact is None else
+                   ["SUPPORT_NOT_HELD"] if not support_ok else
+                   ["STRUCTURE_UNKNOWN"] if structure_ok is None else
+                   ["STRUCTURE_BEARISH"] if not structure_ok else []),
+        _condition("DISTANCE_FROM_FIXED_ZONE", session, "CONFIRMATION", distance, "<=",
+                   policy.maximum_entry_distance_atr, "ATR", distance_ok, refs,
+                   ["CURRENT_ATR_INVALID"] if distance_ok is None else []),
+        _condition("NO_LONG_UPPER_WICK_REJECTION", session, "CONFIRMATION", rejection, "==", False,
+                   "boolean", no_rejection, refs,
+                   ["UPPER_WICK_INPUT_UNKNOWN"] if no_rejection is None else
+                   ["LONG_UPPER_WICK_CONFIRMATION_BLOCKER"] if not no_rejection else []),
+        _condition("RSI_HIGH_DIAGNOSTIC", session, "DIAGNOSTIC", bar.rsi14, ">=", 70.0,
+                   "index", (float(bar.rsi14) >= 70 if _finite(bar.rsi14) else None),
+                   [f"rsi:{session}"], ["RSI_IS_DIAGNOSTIC_ONLY"]),
+    ]
+    return conditions
+
+
+def current_eligibility_conditions(*, bar: OpportunityFeatureBar, zone_upper: float,
+                                   support_fact: OpportunitySupportFact | None,
+                                   policy: OpportunityPolicy):
+    session = bar.session.isoformat()
+    valid_atr = _finite(bar.atr14) and float(bar.atr14) > 0
+    distance = ((float(bar.close)-zone_upper)/float(bar.atr14)
+                if valid_atr and _finite(bar.close) else None)
+    support_alive = None if support_fact is None else support_fact.broken_at is None
+    structure_ok = None if bar.structure_state is None else bar.structure_state != "bearish"
+    return [
+        _condition("SUPPORT_STILL_VALID", session, "CURRENT_ELIGIBILITY",
+                   support_alive, "==", True, "boolean", support_alive,
+                   [support_fact.support_result_id, support_fact.zone_id] if support_fact else [],
+                   ["SUPPORT_FACT_MISSING"] if support_fact is None else
+                   ["SUPPORT_BROKEN"] if not support_alive else []),
+        _condition("STRUCTURE_STILL_VALID", session, "CURRENT_ELIGIBILITY",
+                   bar.structure_state, "!=", "bearish", predicate=structure_ok,
+                   refs=[f"structure:{session}"], reasons=["STRUCTURE_UNKNOWN"] if structure_ok is None else []),
+        _condition("CURRENT_DISTANCE_FROM_FIXED_ZONE", session, "CURRENT_ELIGIBILITY",
+                   distance, "<=", policy.maximum_entry_distance_atr, "ATR",
+                   distance <= policy.maximum_entry_distance_atr if _finite(distance) else None,
+                   [f"bar:{session}"], ["CURRENT_ATR_INVALID"] if distance is None else []),
+    ]

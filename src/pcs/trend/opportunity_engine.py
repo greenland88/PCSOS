@@ -13,6 +13,7 @@ import pandas as pd
 
 from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.indicators import calculate_base_indicators, calculate_directional_indicators
+from pcs.trend.selection_models import EntryOpportunity, OpportunityInput
 
 
 class OpportunityState(str, Enum):
@@ -25,6 +26,21 @@ class OpportunityState(str, Enum):
 
 
 TIMING_ENTRY_READY = "TIMING_ENTRY_READY"
+
+
+def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
+    """Public v2 API; additive and observation-only.
+
+    The legacy ``replay_opportunities`` function below deliberately remains
+    unchanged so existing production consumers retain their current behavior.
+    """
+    from pcs.trend.opportunity_state import evaluate_opportunity_state
+    return evaluate_opportunity_state(input)
+
+
+def replay_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
+    """Explicit v2 replay boundary using the same public core."""
+    return evaluate_entry_opportunity(input)
 
 
 @dataclass(frozen=True)
