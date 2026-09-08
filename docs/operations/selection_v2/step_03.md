@@ -87,4 +87,23 @@ git diff --check
 
 ## 真实验收
 
-待实现提交后使用干净源码执行，将固定日期、读取身份、逐票区域/测试/缺口、视图/状态/来源hash对账和最终提交补记在此。
+干净代码提交 `2b192acab15a7d4a3bb988cab4b332ac9e678d67` 在固定行情日 `2026-09-04` 完成有界验收。输出目录为：
+
+`H:/workspace/PCSOS/selection_v2_outputs/step_03_acceptance_2b192ac_20260904`
+
+7票各读取260根已验证日线用于200日指标暖机，实际逻辑读取范围为 `2025-08-25` 至 `2026-09-04`；区域分析窗口为60个XNYS交易日（`2026-06-11` 至 `2026-09-04`）。价格口径为 `canonical_adjusted`，manifest identity为 `5af72f892609519c0293b922f8515b3abdeb14683b904e7922a30501683c6400`。
+
+| 股票 | 结果 | 当前/归档区域 | HELD/进行中/超期测试 | 当前状态摘要 |
+|---|---|---:|---:|---|
+| NVDA | COMPLETED | 12/45 | 15/0/7 | 4 reference、7 single、1 repeated |
+| PLTR | COMPLETED | 12/54 | 10/1/6 | 8 reference、1 in-progress、1 single、2 repeated |
+| MSFT | COMPLETED | 14/68 | 8/0/4 | 10 reference、2 single、2 repeated |
+| HOOD | COMPLETED | 7/59 | 6/0/6 | 4 reference、2 single、1 repeated |
+| MDLZ | COMPLETED | 9/28 | 14/1/9 | 2 reference、1 in-progress、2 single、4 repeated |
+| AAL | COMPLETED | 2/86 | 4/0/8 | 2 reference；现价下无可选最近/关键区 |
+| AAOI | COMPLETED | 4/78 | 5/0/10 | 3 reference、1 repeated |
+| UBER | 未生成 | — | — | `INSUFFICIENT_FEATURE_WARMUP`；仅影响本票 |
+
+验收脚本实际通过：8票身份唯一且齐全（7结果+1明确失败）、本步typed模型 `SupportZoneResult` 往返读取、保存文件hash、AI/中文视图同源、区域/测试/历史扁平明细数量、独立NVDA结果与批量结果（含 `result_id`）一致。独立NVDA结果ID为 `sha256:de34f727ea8cb079342540aa023433b77d8688a00486fa2d4d632d6fec86e881`。读取前后14个canonical文件hash及manifest hash `e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d` 均未变化。
+
+专项命令结果为 `37 passed in 1.76s`。这是代码/fixture和7票canonical只读验收，不是全池扫描、期权请求、交易规则验收或研究晋级。旧的 `step_03_acceptance_df5569c_20260904` 和 `step_03_acceptance_1061103_20260904` 目录保留，最终验收以 `step_03_acceptance_2b192ac_20260904` 为准。
