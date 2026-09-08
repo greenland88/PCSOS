@@ -135,6 +135,9 @@ def test_overdistance_can_requalify_inside_frozen_window():
     assert back.state == OpportunityStateName.ENTRY_READY and back.eligible is True
     assert over.entry_start == back.entry_start and over.entry_end == back.entry_end
     assert over.confirmation_date == back.confirmation_date
+    events = [t.event_type for t in result.transitions]
+    assert "ENTRY_OVERDISTANCE" in events
+    assert "ENTRY_REQUALIFIED_WITHIN_FIXED_WINDOW" in events
 
 
 def test_fixed_zone_does_not_move_with_indicator_or_atr_changes():
@@ -299,3 +302,17 @@ def test_gap_keeps_market_state_unknown_but_reports_calendar_deadline_elapsed():
     assert result.confirmation_deadline_elapsed_at_requested_session is True
     assert result.entry_window_elapsed_at_requested_session is False
     assert "DAILY_BAR_MISSING" in result.coverage.reason_codes
+
+
+def test_bound_support_fact_can_carry_full_queryable_source():
+    from pcs.trend.selection_models import SupportSourceAnchor
+    inp = _input(through=25)
+    source = SupportSourceAnchor(source_id="SMA20:2026-02-06",
+        source_type="SMA20", price=100.0, observed_at="2026-02-06",
+        available_at="2026-02-06")
+    facts = [f.model_copy(update={"sources": [source], "source_ids": [source.source_id]})
+             for f in inp.support_facts]
+    result = evaluate_entry_opportunity(inp.model_copy(update={"support_facts": facts}))
+    selected = next(d.selected_support for d in result.detections if d.detected)
+    assert selected.sources == [source]
+    assert selected.source_ids == [source.source_id]

@@ -505,6 +505,7 @@ class OpportunitySupportFact(StrictModel):
     broken_at: str | None = None
     zone_state: str
     source_ids: list[str] = Field(default_factory=list)
+    sources: list[SupportSourceAnchor] = Field(default_factory=list)
     reason_codes: list[str] = Field(default_factory=list)
 
 

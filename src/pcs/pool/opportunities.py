@@ -171,6 +171,7 @@ class OpportunityDataReader:
                             test_status=test.status, first_held_at=test.first_held_at,
                             broken_at=zone.broken_at, zone_state=zone.state,
                             source_ids=list(zone.observed_source_ids),
+                            sources=list(zone.observed_sources or zone.creation_sources),
                             reason_codes=list(dict.fromkeys(zone.reason_codes+test.reason_codes))))
         feature = OpportunityFeatureView(symbol=context.symbol, bars=feature_bars,
             expected_sessions=expected, analysis_start=analysis[0],

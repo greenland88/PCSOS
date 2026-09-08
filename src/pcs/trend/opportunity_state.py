@@ -338,8 +338,25 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                     eligible = _current_status(current)
                     if eligible is False:
                         day_reasons.append("CURRENT_ENTRY_CONDITIONS_NOT_SATISFIED")
+                        failed = [c.condition_id for c in current if c.predicate_value is False]
+                        event = ("ENTRY_OVERDISTANCE" if "CURRENT_DISTANCE_FROM_FIXED_ZONE" in failed
+                                 else "CURRENT_ENTRY_INELIGIBLE")
+                        _transition(transitions, session, active,
+                            OpportunityStateName.ENTRY_READY,
+                            OpportunityStateName.ENTRY_READY, event, failed,
+                            [active.zone_id, active.test_id])
                     elif eligible is None:
                         day_reasons.append("CURRENT_ENTRY_CONDITIONS_UNKNOWN")
+                    else:
+                        prior_day = timeline[-1] if timeline else None
+                        event = ("ENTRY_REQUALIFIED_WITHIN_FIXED_WINDOW"
+                            if prior_day and prior_day.opportunity_id == active.opportunity_id
+                            and prior_day.eligible is False else "ENTRY_WINDOW_ELIGIBLE")
+                        _transition(transitions, session, active,
+                            OpportunityStateName.ENTRY_READY,
+                            OpportunityStateName.ENTRY_READY, event,
+                            ["CURRENT_ENTRY_CONDITIONS_SATISFIED"],
+                            [active.zone_id, active.test_id])
                 else:
                     eligible = False
                     day_reasons.append("OUTSIDE_ENTRY_WINDOW")
