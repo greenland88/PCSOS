@@ -302,6 +302,8 @@ def test_gap_keeps_market_state_unknown_but_reports_calendar_deadline_elapsed():
     assert result.confirmation_deadline_elapsed_at_requested_session is True
     assert result.entry_window_elapsed_at_requested_session is False
     assert "DAILY_BAR_MISSING" in result.coverage.reason_codes
+    assert result.next_state.state_revision == 6  # analysis day 0..touch day only
+    assert result.next_state.evaluated_through == _sessions()[25]
 
 
 def test_bound_support_fact_can_carry_full_queryable_source():

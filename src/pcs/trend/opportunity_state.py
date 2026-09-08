@@ -387,7 +387,8 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                   if evaluated_through and f.session <= evaluated_through]
     support_identity = "sha256:"+_hash({"results": used_support_results, "facts": used_facts})
     prefix_hash = "sha256:"+_hash(prefix_bars)
-    state_revision = len([d for d in timeline if d.capability_status != CapabilityStatus.MISSING])
+    state_revision = (expected.index(evaluated_through)+1
+                      if evaluated_through in expected else 0)
     checkpoint = OpportunityStateCheckpoint(symbol=ctx.symbol, episodes=episodes,
         evaluated_through=evaluated_through,
         state_revision=state_revision, input_prefix_sha256=prefix_hash,
