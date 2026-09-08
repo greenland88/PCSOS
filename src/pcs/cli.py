@@ -389,6 +389,15 @@ def main():
     evidence.add_argument("--request-id", help="auditable invocation id for selection explanations")
     evidence.set_defaults(func=pool_evidence)
 
+    profile = sub.add_parser("underlying-profile", help="read-only descriptive profiles from verified canonical daily data")
+    profile.add_argument("--symbols", required=True, help="comma-separated symbols, at most eight")
+    profile.add_argument("--as-of", required=True, help="frozen completed exchange session YYYY-MM-DD")
+    profile.add_argument("--benchmark", default="SPY")
+    profile.add_argument("--run-id", required=True)
+    profile.add_argument("--output-directory", required=True)
+    from pcs.pool.underlying_profiles import run_profile_command
+    profile.set_defaults(func=run_profile_command)
+
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")
     admin_sub = admin.add_subparsers(required=True)
 

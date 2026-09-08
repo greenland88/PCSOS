@@ -49,3 +49,16 @@ def test_daily_resolver_blocks_required_window_checksum_mismatch(tmp_path):
     pd.DataFrame(rows).to_csv(access.manifest_path, index=False)
     with pytest.raises(Exception, match="READ_BACK_CHECKSUM_MISMATCH"):
         resolve_active_verified_daily_handle("AAA", "2025-12-16", 200, data_access=access)
+
+
+def test_partial_profile_read_is_opt_in_and_still_verified(tmp_path):
+    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    frame = _daily_frame("2025-01-01", 60)
+    rows = [_write_active(access, frame, 2025, access.semantic_content_hash(frame))]
+    pd.DataFrame(rows).to_csv(access.manifest_path, index=False)
+    day = str(frame.date.max().date())
+    with pytest.raises(ValueError, match="INSUFFICIENT_FEATURE_WARMUP"):
+        resolve_active_verified_daily_handle("AAA", day, 326, data_access=access)
+    handle = resolve_active_verified_daily_handle("AAA", day, 326, data_access=access, allow_partial_history=True)
+    assert handle.row_count == 60 and handle.verification_status == "VERIFIED"
+    assert len(access.read_verified_dataset(handle, end_date=day)) == 60

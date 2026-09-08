@@ -315,8 +315,14 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
             stages["READ-BACK VERIFY"]="FAILED"; last=exc
     return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.SOURCE_UNAVAILABLE.value,"DATA_BLOCKED","SOURCE_UNAVAILABLE",None,stages,None,max_attempts,{"detail":str(last)})
 
-def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None) -> VerifiedDatasetHandle:
-    """Resolve one complete active daily generation without refresh or promotion."""
+def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None, allow_partial_history: bool = False) -> VerifiedDatasetHandle:
+    """Resolve active daily generations without refresh or promotion.
+
+    ``allow_partial_history`` only relaxes the requested row-count requirement
+    for descriptive consumers with per-metric coverage. Identity, checksum,
+    overlap, schema and requested end-session validation remain mandatory.
+    Existing strategy callers retain the strict default.
+    """
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
     if (manifest_snapshot is not None and
             Path(str(manifest_snapshot.path)).resolve() != Path(access.manifest_path).resolve()):
@@ -393,7 +399,7 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
         reaches_as_of = reaches_as_of or part_dates.max() >= day
         if reaches_as_of and len(selected_dates) >= int(required_warmup_sessions):
             break
-    if not reaches_as_of or len(selected_dates) < int(required_warmup_sessions):
+    if not reaches_as_of or (not allow_partial_history and len(selected_dates) < int(required_warmup_sessions)):
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
     selected.sort(key=lambda item: (pd.Timestamp(item[0].min_date), str(item[0].active_generation)))
     candidates = pd.DataFrame([row for row, _ in selected])
@@ -408,7 +414,7 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
     pit_rows = int(frame.loc[frame["date"] <= day, "date"].nunique())
-    if len(frame) != int(candidates.row_count.sum()) or frame.date.max() < day or pit_rows < int(required_warmup_sessions):
+    if len(frame) != int(candidates.row_count.sum()) or frame.date.max() < day or (not allow_partial_history and pit_rows < int(required_warmup_sessions)):
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
     duplicate_key = ["date"] if "symbol" not in frame.columns else ["symbol", "date"]
     if frame[duplicate_key].duplicated().any(): raise ValueError("DUPLICATE_CANONICAL_PRICE_KEY")
