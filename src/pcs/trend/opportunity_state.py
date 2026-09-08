@@ -395,7 +395,8 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                 prior_twenty = expected_all[max(0, current_i-20):current_i]
                 recorded = {b.session.isoformat() for b in bars}
                 if len(prior_twenty) != 20 or any(s not in recorded for s in prior_twenty):
-                    confirmation = [c.model_copy(update={"predicate_value": None,
+                    confirmation = [c.model_copy(update={"predicate_value": None, "status": "UNKNOWN",
+                        "left_value": None,
                         "reason_codes": ["RVOL_CALENDAR_PREFIX_INCOMPLETE"]})
                         if c.condition_id == "RVOL20" else c for c in confirmation]
             day_conditions.extend(confirmation)
