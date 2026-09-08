@@ -41,7 +41,8 @@ class ProfileDataReader:
         if key in self.cache:
             return self.cache[key]
         handle = resolve_active_verified_daily_handle(symbol, day, policy.required_sessions,
-            data_access=self.access, manifest_snapshot=self.snapshot, allow_partial_history=True)
+            data_access=self.access, manifest_snapshot=self.snapshot, allow_partial_history=True,
+            required_start_session=sessions[0])
         paths = [Path(p).resolve() for p in handle.canonical_paths]
         for path in paths:
             digest = sha256(path.read_bytes()).hexdigest()

@@ -62,3 +62,17 @@ def test_partial_profile_read_is_opt_in_and_still_verified(tmp_path):
     handle = resolve_active_verified_daily_handle("AAA", day, 326, data_access=access, allow_partial_history=True)
     assert handle.row_count == 60 and handle.verification_status == "VERIFIED"
     assert len(access.read_verified_dataset(handle, end_date=day)) == 60
+
+
+def test_calendar_bounded_profile_does_not_fill_recent_gap_with_ancient_rows(tmp_path):
+    access = PCSDataAccess(manifest_path=tmp_path / "manifest.csv", parquet_root=tmp_path / "parquet")
+    old = _daily_frame("2010-01-01", 250)
+    recent = _daily_frame("2025-07-01", 120)
+    rows = [_write_active(access, old, 2010, "bad-old", content_hash="wrong-old-hash"),
+            _write_active(access, recent, 2025, access.semantic_content_hash(recent))]
+    pd.DataFrame(rows).to_csv(access.manifest_path, index=False)
+    day = str(recent.date.max().date())
+    handle = resolve_active_verified_daily_handle("AAA", day, 326, data_access=access,
+        allow_partial_history=True, required_start_session="2025-05-20")
+    assert handle.partition_count == 1 and handle.row_count == 120
+    assert handle.partitions == ("year=2025",)

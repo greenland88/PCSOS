@@ -315,13 +315,15 @@ def ensure_strategy_ready(ticker: str, strategy_type: str, as_of: str, mode: str
             stages["READ-BACK VERIFY"]="FAILED"; last=exc
     return ReadinessResult(s,strategy_type,str(day.date()),DataStatus.SOURCE_UNAVAILABLE.value,"DATA_BLOCKED","SOURCE_UNAVAILABLE",None,stages,None,max_attempts,{"detail":str(last)})
 
-def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None, allow_partial_history: bool = False) -> VerifiedDatasetHandle:
+def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmup_sessions: int = 200, *, data_access=None, manifest_snapshot=None, allow_partial_history: bool = False, required_start_session: str | None = None) -> VerifiedDatasetHandle:
     """Resolve active daily generations without refresh or promotion.
 
     ``allow_partial_history`` only relaxes the requested row-count requirement
     for descriptive consumers with per-metric coverage. Identity, checksum,
     overlap, schema and requested end-session validation remain mandatory.
     Existing strategy callers retain the strict default.
+    ``required_start_session`` bounds partition selection by calendar, so a
+    missing recent prefix is not replaced with unrelated ancient rows.
     """
     access = data_access or PCSDataAccess.canonical(); s = str(symbol).strip().upper(); day = pd.Timestamp(as_of).normalize()
     if (manifest_snapshot is not None and
@@ -357,6 +359,11 @@ def resolve_active_verified_daily_handle(symbol: str, as_of: str, required_warmu
     candidates = rows[pd.to_datetime(rows.min_date, errors="coerce").le(day)].sort_values(
         ["min_date", "max_date", "active_generation"], ascending=[False, False, False]
     )
+    if required_start_session is not None:
+        start = pd.Timestamp(required_start_session).normalize()
+        if start > day:
+            raise ValueError("INVALID_DAILY_READ_WINDOW")
+        candidates = candidates[pd.to_datetime(candidates.max_date, errors="coerce").ge(start)]
     if len(candidates) == 0 or not pd.to_datetime(candidates.max_date, errors="coerce").ge(day).any():
         raise ValueError("INSUFFICIENT_FEATURE_WARMUP")
     # Do not silently bridge a historical partition that exists in the
