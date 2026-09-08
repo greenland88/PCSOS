@@ -75,6 +75,10 @@ def detect_healthy_pullback(*, bar: OpportunityFeatureBar,
     conditions.append(_condition("STRUCTURE_NOT_BEARISH", session, "DISCOVERY",
         bar.structure_state, "!=", "bearish", predicate=structure_ok,
         refs=[f"structure:{session}"], reasons=["STRUCTURE_UNKNOWN"] if structure_ok is None else []))
+    trend_ok = None if bar.trend_health is None else bar.trend_health != "BLOCKED"
+    conditions.append(_condition("TREND_HEALTH_NOT_BLOCKED", session, "DISCOVERY",
+        bar.trend_health, "!=", "BLOCKED", predicate=trend_ok,
+        refs=[f"trend_health:{session}"], reasons=["TREND_HEALTH_UNKNOWN"] if trend_ok is None else []))
 
     legal = [f for f in support_facts if f.session == session and f.touch_session == session
              and f.zone_available_at < session and f.broken_at is None]
@@ -90,7 +94,7 @@ def detect_healthy_pullback(*, bar: OpportunityFeatureBar,
 
     known = all(c.predicate_value is not None for c in conditions)
     detected = all(c.predicate_value for c in conditions) if known else None
-    reasons = [] if detected else list(dict.fromkeys(
+    reasons = ["SUPPORT_SELECTION_DISTANCE_AVAILABLE_AT_ZONE_TEST_ID_V1"] if detected else list(dict.fromkeys(
         r for c in conditions for r in c.reason_codes)) or ["HEALTHY_PULLBACK_DISCOVERY_NOT_SATISFIED"]
     return OpportunityDetection(session=session, detected=detected, family=policy.family,
         recent_high=recent_high, recent_high_session=recent_high_session,
@@ -137,6 +141,9 @@ def confirmation_conditions(*, bar: OpportunityFeatureBar,
     location_ok = close_location >= policy.minimum_close_location if _finite(close_location) else None
     rvol, volume_samples, volume_denominator = volume_ratio(bar, history)
     rvol_ok = rvol >= policy.minimum_rvol20 if _finite(rvol) else None
+    rvol_reasons = ([] if rvol_ok is not None else
+        ["RVOL_DENOMINATOR_NONPOSITIVE"] if volume_denominator is not None and volume_denominator <= 0 else
+        [f"RVOL_PRIOR_SAMPLE_COUNT:{volume_samples}"])
     held = (support_fact is not None and support_fact.test_status == "HELD" and
             support_fact.first_held_at is not None and support_fact.first_held_at <= session and
             support_fact.broken_at is None)
@@ -162,7 +169,7 @@ def confirmation_conditions(*, bar: OpportunityFeatureBar,
                    ["ZERO_OR_INVALID_DAILY_RANGE"] if location_ok is None else []),
         _condition("RVOL20", session, "CONFIRMATION", rvol, ">=", policy.minimum_rvol20,
                    "ratio", rvol_ok, refs+[f"volume_denominator:{volume_denominator}"],
-                   [f"RVOL_PRIOR_SAMPLE_COUNT:{volume_samples}"] if rvol_ok is None else []),
+                   rvol_reasons),
         _condition("SUPPORT_HELD_AND_STRUCTURE_NOT_BLOCKED", session, "CONFIRMATION",
                    support_structure, "==", True, "boolean", support_structure, refs,
                    ["SUPPORT_FACT_MISSING"] if support_fact is None else

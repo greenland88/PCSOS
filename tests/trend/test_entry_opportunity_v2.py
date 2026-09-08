@@ -233,3 +233,53 @@ def test_artifacts_round_trip_models_hashes_and_unknown_csv(tmp_path):
         (root/"artifact_manifest.json").read_text(encoding="utf-8"))["sha256"]
     csv_text = (root/"entry_opportunities.csv").read_text(encoding="utf-8")
     assert ",," in csv_text  # unknown is empty, not false
+
+
+def test_invalid_atr_and_zero_volume_denominator_are_unknown():
+    inp = _input(through=27)
+    bad_atr_bars = [b.model_copy(update={"atr14": 0.0})
+                    if b.session.isoformat() == _sessions()[27] else b
+                    for b in inp.feature_view.bars]
+    bad_atr = evaluate_entry_opportunity(inp.model_copy(update={
+        "feature_view": inp.feature_view.model_copy(update={"bars": bad_atr_bars})}))
+    distance = next(c for c in bad_atr.timeline[-1].conditions
+                    if c.condition_id == "DISTANCE_FROM_FIXED_ZONE")
+    assert distance.predicate_value is None
+    assert bad_atr.timeline[-1].confirmation_date is None
+
+    zero_volume_bars = [b.model_copy(update={"volume": 0.0})
+                        if 7 <= i < 27 else b
+                        for i, b in enumerate(inp.feature_view.bars)]
+    zero_volume = evaluate_entry_opportunity(inp.model_copy(update={
+        "feature_view": inp.feature_view.model_copy(update={"bars": zero_volume_bars})}))
+    rvol = next(c for c in zero_volume.timeline[-1].conditions if c.condition_id == "RVOL20")
+    assert rvol.predicate_value is None
+    assert rvol.reason_codes == ["RVOL_DENOMINATOR_NONPOSITIVE"]
+
+
+def test_shorter_saved_prefix_then_continue_matches_cold_batch():
+    partial = evaluate_entry_opportunity(_input(through=26))
+    cold = evaluate_entry_opportunity(_input(through=30))
+    resumed = evaluate_entry_opportunity(_input(through=30, prior=partial.next_state))
+    assert resumed.result_id == cold.result_id
+    assert resumed.episodes == cold.episodes
+    assert resumed.timeline == cold.timeline
+    assert resumed.transitions == cold.transitions
+    assert resumed.call_diagnostics == ["PRIOR_STATE_COMPATIBLE_REPLAY_VERIFIED"]
+
+
+def test_policy_or_zone_version_does_not_create_new_economic_event():
+    base_input = _input(through=28)
+    base = evaluate_entry_opportunity(base_input)
+    policy_changed = evaluate_entry_opportunity(base_input.model_copy(update={
+        "effective_policy": base_input.effective_policy.model_copy(update={
+            "maximum_entry_distance_atr": 2.0, "parameter_source": "REQUEST"})}))
+    facts = [f.model_copy(update={"zone_id": "zone-v2", "support_result_id": f"v2:{f.support_result_id}"})
+             for f in base_input.support_facts]
+    ids = {s: f"v2:{rid}" for s, rid in base_input.support_result_ids.items()}
+    zone_changed = evaluate_entry_opportunity(base_input.model_copy(update={
+        "support_facts": facts, "support_result_ids": ids}))
+    assert base.episodes[0].economic_episode_id == policy_changed.episodes[0].economic_episode_id
+    assert base.episodes[0].economic_episode_id == zone_changed.episodes[0].economic_episode_id
+    assert base.episodes[0].opportunity_id != policy_changed.episodes[0].opportunity_id
+    assert base.episodes[0].opportunity_id != zone_changed.episodes[0].opportunity_id

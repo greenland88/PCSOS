@@ -71,10 +71,13 @@ def _episode_for_detection(symbol, detection, policy_hash, source_identity,
     touch = detection.session
     touch_i = expected.index(touch)
     deadline = expected[min(touch_i+3, len(expected)-1)]
-    economic = "sha256:"+_hash([symbol, detection.family, support.zone_id,
-        support.test_id, touch])
+    # Market-event identity deliberately excludes zone/policy/algorithm IDs.
+    # A revised support object for the same ticker/family/touch remains the
+    # same economic episode; opportunity_id below distinguishes its evidence.
+    economic = "sha256:"+_hash([symbol, detection.family, touch])
     opportunity = "sha256:"+_hash([economic, policy_hash, source_identity,
-        indicator_identity, support.zone_lower, support.zone_upper,
+        indicator_identity, support.zone_id, support.test_id,
+        support.zone_lower, support.zone_upper,
         support.anchor_atr, support.invalidation_line, calculation_version])
     return OpportunityEpisode(economic_episode_id=economic,
         opportunity_id=opportunity, setup_date=touch, touch_date=touch,
@@ -407,13 +410,25 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     legacy = deepcopy(input.legacy_opinion)
     differences = [{"field": "decision_authority", "legacy": "UNCHANGED",
         "v2": "OBSERVATION_ONLY", "reason_code": "V2_DOES_NOT_CHANGE_PRODUCTION_ACTION"}]
+    differences.append({"field": "pullback_and_opportunity_state",
+        "legacy": legacy.get("pullback_state"),
+        "legacy_execution_status": legacy.get("execution_status", "NOT_RECORDED"),
+        "v2": last_day.state.value if last_day and last_day.state else None,
+        "reason_code": "LEGACY_PULLBACK_CLASSIFICATION_IS_NOT_V2_LIFECYCLE_STATE"})
+    upstream_ids = list(dict.fromkeys(f.support_result_id for f in input.support_facts
+        if evaluated_through and f.session <= evaluated_through))
     return EntryOpportunity(symbol=ctx.symbol, as_of=ctx.effective_daily_session,
         status=status, state=last_day.state if last_day else None,
         last_known_state=last_day.state if last_day else None,
+        evaluated_through=evaluated_through,
+        last_known_session=evaluated_through,
+        entry_permitted_from=current_episode.entry_start if current_episode else None,
+        entry_permitted_until=current_episode.entry_end if current_episode else None,
         eligible_at_requested_time=(None if missing_sessions or not last_day else last_day.eligible),
         economic_episode_id=current_episode.economic_episode_id if current_episode else None,
         opportunity_id=current_episode.opportunity_id if current_episode else None,
         result_id=result_id, matched_families=[policy.family] if episodes else [],
+        upstream_result_ids=upstream_ids,
         run_id=ctx.run_id, request_id=ctx.request_id, received_at=view.received_at,
         effective_policy=policy, policy_sha256=policy_hash, call_context=ctx,
         episodes=episodes, timeline=timeline, transitions=transitions,

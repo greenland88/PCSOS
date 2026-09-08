@@ -643,11 +643,16 @@ class EntryOpportunity(StrictModel):
     status: CapabilityStatus
     state: OpportunityStateName | None
     last_known_state: OpportunityStateName | None
+    evaluated_through: str | None
+    last_known_session: str | None
+    entry_permitted_from: str | None
+    entry_permitted_until: str | None
     eligible_at_requested_time: bool | None
     economic_episode_id: str | None
     opportunity_id: str | None
     result_id: str
     matched_families: list[str]
+    upstream_result_ids: list[str]
     calculation_version: Literal["entry-opportunity-v2"] = "entry-opportunity-v2"
     run_id: str
     request_id: str

@@ -216,6 +216,10 @@ def opportunity_to_ai_view(result: EntryOpportunity):
         "eligible_at_requested_time": result.eligible_at_requested_time,
         "economic_episode_id": result.economic_episode_id,
         "opportunity_id": result.opportunity_id,
+        "evaluated_through": result.evaluated_through,
+        "entry_permitted_from": result.entry_permitted_from,
+        "entry_permitted_until": result.entry_permitted_until,
+        "upstream_result_ids": result.upstream_result_ids,
         "dates": ({"setup": result.timeline[-1].setup_date,
                    "touch": result.timeline[-1].touch_date,
                    "confirmation": result.timeline[-1].confirmation_date,
@@ -301,6 +305,12 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None):
         "opportunity_states.json": [r.next_state.model_dump(mode="json") for r in results],
         "entry_opportunity.schema.json": EntryOpportunity.model_json_schema(),
         "opportunity_input.schema.json": OpportunityInput.model_json_schema(),
+        "examples.json": {
+            "normal": opportunity_to_ai_view(results[0]) if results else None,
+            "missing_input": {"state": None, "last_known_state": None,
+                "eligible_at_requested_time": None, "capability_status": "PARTIAL",
+                "reason_codes": ["DAILY_BAR_MISSING"],
+                "meaning": "能力未知，不等于NO_SETUP或false"}},
         "field_dictionary.json": {
             "state": "NO_SETUP/WATCH/CONFIRMING/ENTRY_READY/EXPIRED/INVALIDATED business state",
             "status": "Capability status; gaps do not create a market state",
