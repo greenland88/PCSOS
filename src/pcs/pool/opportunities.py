@@ -73,17 +73,10 @@ class OpportunityDataReader:
         config = TrendIndicatorConfig(pivot_left_bars=3, pivot_right_bars=3)
         indicator_frame = frame.copy()
         missing_volume_rows = int(indicator_frame.volume.isna().sum())
-        if missing_volume_rows:
-            # Existing price-only indicator/structure functions validate the
-            # full OHLCV schema although none of their formulas consumes
-            # volume.  A nonzero schema placeholder is used only in that local
-            # calculation frame; actual volume remains null in the feature
-            # view and therefore RVOL remains UNKNOWN.
-            indicator_frame["volume"] = indicator_frame.volume.fillna(1.0)
-        indicators = calculate_base_indicators(indicator_frame, config)
+        indicators = calculate_base_indicators(indicator_frame, config, allow_missing_volume=True)
         indicators["ema200"] = frame.close.astype(float).ewm(span=200, adjust=False,
                                                                min_periods=1).mean()
-        full_structure = analyze_market_structure(indicator_frame, config, as_of_date=day)
+        full_structure = analyze_market_structure(indicator_frame, config, as_of_date=day, allow_missing_volume=True)
         swings = full_structure.confirmed_swings
 
         cal = xc.get_calendar(calendar)
@@ -102,9 +95,9 @@ class OpportunityDataReader:
             session = str(pd.Timestamp(row.date).date())
             ind = indicators.iloc[i]
             structure = analyze_market_structure(indicator_frame, config, as_of_date=session,
-                                                 precomputed_swings=swings)
+                                                 precomputed_swings=swings, allow_missing_volume=True)
             pullback = analyze_pullback(indicator_frame, indicators, None, structure, config,
-                                        as_of_date=session)
+                                        as_of_date=session, allow_missing_volume=True)
             health = phase = None
             trend_status = pullback_status = "NOT_EVALUATED"
             trend_result = pullback_result = None
@@ -112,7 +105,7 @@ class OpportunityDataReader:
             if session in analysis:
                 snapshot = build_trend_snapshot(indicator_frame, benchmark_frame, config,
                     as_of_date=session, symbol=context.symbol, benchmark="SPY" if benchmark else None,
-                    precomputed_indicators=indicators, precomputed_swings=swings)
+                    precomputed_indicators=indicators, precomputed_swings=swings, allow_missing_volume=True)
                 interpretation = interpret_trend(snapshot, config)
                 # Trend health consumes relative strength.  If that optional
                 # source is absent, only this dependent fact remains unknown.
@@ -227,7 +220,8 @@ class OpportunityDataReader:
                             sources=list(zone.observed_sources or zone.creation_sources),
                             reason_codes=list(dict.fromkeys(zone.reason_codes+test.reason_codes))))
         feature = OpportunityFeatureView(symbol=context.symbol, bars=feature_bars,
-            expected_sessions=expected, analysis_start=analysis[0],
+            expected_sessions=[str(s.date()) for s in cal.sessions[
+                end_loc-policy.required_sessions+1:end_loc+1]] + future, analysis_start=analysis[0],
             indicator_seed_start=str(pd.Timestamp(frame.date.iloc[0]).date()),
             indicator_identity=indicator_identity, source=daily.source,
             auxiliary_sources=[benchmark.source] if benchmark else [],
@@ -257,7 +251,7 @@ class OpportunityDataReader:
             "indicator_identity": indicator_identity, "confirmed_swings": len(confirmed),
             "support_daily_results": len(support_results),
             "volume_missing_rows": missing_volume_rows,
-            "volume_placeholder_scope": "VALIDATION_ONLY_NOT_EXPORTED_OR_USED_BY_PRICE_INDICATORS" if missing_volume_rows else None,
+            "volume_handling": "ORIGINAL_NULL_RETAINED; PRICE_ONLY_VALIDATION_OPT_IN",
             "source": daily.source.model_dump(mode="json")})
         return OpportunityInput(call_context=context, feature_view=feature,
             support_facts=support_facts, support_result_ids=support_result_ids,
@@ -275,6 +269,10 @@ def evaluate_pool_opportunity_observation(input: OpportunityInput) -> EntryOppor
 
 def opportunity_to_ai_view(result: EntryOpportunity):
     return {"result_id": result.result_id, "symbol": result.symbol,
+        "family": result.family, "active_families": result.active_families,
+        "family_results": [opportunity_to_ai_view(r) for r in result.family_results],
+        "economic_events": result.economic_events,
+        "shallow_pullback_timeline": [e.model_dump(mode="json") for e in result.shallow_pullback_timeline],
         "as_of": result.as_of, "state": result.state.value if result.state else None,
         "capability_status": result.status.value,
         "eligible_at_requested_time": result.eligible_at_requested_time,
@@ -310,6 +308,7 @@ def opportunity_to_ai_view(result: EntryOpportunity):
 
 
 def opportunities_to_markdown(results):
+    results = [child for r in results for child in (r.family_results or [r])]
     out = ["# 第4步：机会状态机与健康回调", "",
         "ENTRY_READY仅表示程序按v1.7政策识别到可观察机会；不是下单授权，也不表示已完成期权评估。", "",
         "| 股票 | 行情日 | 能力 | 状态 | 当前可评估 | 触及 | 首次确认 | 确认截止 | 入场窗口 | 缺口 |",
@@ -327,7 +326,7 @@ def opportunities_to_markdown(results):
             f"覆盖未知：{len(result.coverage_missing_evidence)}项；"
             f"{', '.join(result.coverage.reason_codes) or '无阻断缺口'} |")
     for result in results:
-        out += ["", f"## {result.symbol} 逐日过程", "",
+        out += ["", f"## {result.symbol} / {result.family} 逐日过程", "",
             "| 日期 | 状态 | 能力 | 可评估 | 事件/原因 |", "|---|---|---|---|---|"]
         for day in result.timeline:
             out.append(f"| {day.session} | {day.state.value if day.state else '未知'} | "
@@ -340,12 +339,25 @@ def opportunities_to_markdown(results):
             for gap in result.coverage_missing_evidence:
                 out.append(f"| {gap.session} | {gap.condition_id} | {gap.role} | "
                     f"{', '.join(gap.reason_codes)} | {', '.join(gap.affected_outputs)} |")
+        if result.shallow_pullback_timeline:
+            out += ["", "| 日期 | 原触及 | 冻结峰值/日期 | 前日ATR/日期 | 累计最低价 | 触及/累计深度ATR | 首次超限 | 资格/缺口 |",
+                    "|---|---|---|---|---|---|---|---|"]
+            for evidence in result.shallow_pullback_timeline:
+                s = evidence.next_state
+                out.append(f"| {evidence.session} | {s.touch_session if s else '未发生'} | "
+                    f"{str(s.peak_price)+' / '+s.peak_session if s else '未知'} | "
+                    f"{str(s.depth_anchor_atr)+' / '+s.depth_anchor_session if s else '未知'} | "
+                    f"{s.episode_low if s else '未知'} | "
+                    f"{str(s.depth_at_touch)+' / '+str(s.current_depth_atr) if s else '未知'} | "
+                    f"{s.first_depth_exceeded if s and s.first_depth_exceeded else '未记录超限'} | "
+                    f"{evidence.detected} / {', '.join(evidence.reason_codes)} |")
     return "\n".join(out)
 
 
 def _csv_view(results):
+    results = [child for r in results for child in (r.family_results or [r])]
     stream = io.StringIO(newline="")
-    columns = ["symbol", "session", "state", "capability_status", "eligible",
+    columns = ["symbol", "family", "session", "state", "capability_status", "eligible",
         "economic_episode_id", "opportunity_id", "setup_date", "touch_date",
         "confirmation_deadline", "confirmation_date", "entry_start", "entry_end",
         "support_zone_id", "support_test_id", "reason_codes", "conditions_ref",
@@ -354,7 +366,7 @@ def _csv_view(results):
     writer.writeheader()
     for result in results:
         for day in result.timeline:
-            writer.writerow({"symbol": result.symbol, "session": day.session,
+            writer.writerow({"symbol": result.symbol, "family": result.family, "session": day.session,
                 "state": day.state.value if day.state else "", "capability_status": day.capability_status.value,
                 "eligible": "" if day.eligible is None else str(day.eligible).lower(),
                 "economic_episode_id": day.economic_episode_id or "",
@@ -371,21 +383,25 @@ def _csv_view(results):
     return stream.getvalue()
 
 
-def write_opportunity_artifacts(output_directory, results, *, audit=None):
+def write_opportunity_artifacts(output_directory, results, *, audit=None, inputs=None):
     root = Path(output_directory)
     if root.exists() and any(root.iterdir()):
         raise ValueError("OPPORTUNITY_OUTPUT_DIRECTORY_NOT_EMPTY")
     root.mkdir(parents=True, exist_ok=True)
+    children = [child for r in results for child in (r.family_results or [r])]
     documents = {
         "entry_opportunities.json": [r.model_dump(mode="json") for r in results],
         "entry_opportunities.ai.json": [opportunity_to_ai_view(r) for r in results],
+        "family_opportunities.json": [r.model_dump(mode="json") for r in children],
+        "shallow_pullback_timeline.json": [e.model_dump(mode="json") for r in children
+                                          for e in r.shallow_pullback_timeline],
         "opportunity_timeline.json": [{"symbol": r.symbol, "result_id": r.result_id,
-            **d.model_dump(mode="json")} for r in results for d in r.timeline],
+            "family": r.family, **d.model_dump(mode="json")} for r in children for d in r.timeline],
         "opportunity_conditions.json": [{"symbol": r.symbol, "result_id": r.result_id,
-            "day": d.session, **c.model_dump(mode="json")} for r in results for d in r.timeline for c in d.conditions],
+            "family": r.family, "day": d.session, **c.model_dump(mode="json")} for r in children for d in r.timeline for c in d.conditions],
         "opportunity_transitions.json": [{"symbol": r.symbol, "result_id": r.result_id,
-            **t.model_dump(mode="json")} for r in results for t in r.transitions],
-        "opportunity_states.json": [r.next_state.model_dump(mode="json") for r in results],
+            "family": r.family, **t.model_dump(mode="json")} for r in children for t in r.transitions],
+        "opportunity_states.json": [r.next_state.model_dump(mode="json") for r in children],
         "entry_opportunity.schema.json": EntryOpportunity.model_json_schema(),
         "opportunity_input.schema.json": OpportunityInput.model_json_schema(),
         "examples.json": {
@@ -411,6 +427,11 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None):
             "details": "CSV rows reference complete conditions by result_id and day"},
         "read_audit.json": audit or {},
     }
+    from pcs.trend.selection_models import ShallowPullbackInput, SetupEvidence
+    documents["shallow_pullback_input.schema.json"] = ShallowPullbackInput.model_json_schema()
+    documents["setup_evidence.schema.json"] = SetupEvidence.model_json_schema()
+    if inputs is not None:
+        documents["prepared_opportunity_inputs.json"] = [i.model_dump(mode="json") for i in inputs]
     hashes = {name: _write_atomic(root/name, json.dumps(doc, ensure_ascii=False,
               indent=2, allow_nan=False)) for name, doc in documents.items()}
     hashes["entry_opportunities.csv"] = _write_atomic(root/"entry_opportunities.csv", _csv_view(results))
@@ -453,7 +474,31 @@ def load_opportunity_resume_evidence(output_directory, symbol):
         return None
     return {"prior_state": result.next_state, "prior_timeline": result.timeline,
             "prior_transitions": result.transitions,
-            "prior_detections": result.detections}
+            "prior_detections": result.detections,
+            "prior_setup_evidence": result.shallow_pullback_timeline,
+            "prior_family_results": result.family_results or [result]}
+
+
+def read_opportunity_bundle(output_directory):
+    """Verify one immutable bundle once for a batch; no canonical/provider reads."""
+    root = Path(output_directory)
+    manifest = json.loads((root/"artifact_manifest.json").read_text(encoding="utf-8"))
+    contents = {}
+    for name, digest in manifest["sha256"].items():
+        path = (root/name).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise ValueError("OPPORTUNITY_ARTIFACT_PATH_INVALID")
+        raw = path.read_bytes()
+        if sha256(raw).hexdigest() != digest:
+            raise ValueError(f"OPPORTUNITY_ARTIFACT_HASH_MISMATCH:{name}")
+        if name in {"entry_opportunities.json", "prepared_opportunity_inputs.json"}:
+            contents[name] = json.loads(raw)
+    return manifest, contents
+
+
+def find_shallow_evidence(result, session, test_id=None):
+    return [e for r in (result.family_results or [result]) for e in r.shallow_pullback_timeline
+            if e.session == session and (test_id is None or e.next_state and e.next_state.test_id == test_id)]
 
 
 def find_opportunity_episode(result: EntryOpportunity, economic_episode_id: str):
@@ -472,23 +517,74 @@ def find_opportunity_condition(result: EntryOpportunity, session: str,
 
 
 def run_opportunity_command(args):
+    from pcs.validation import ValidationRun
+    code_root = Path(__file__).resolve().parents[3]
+    guard = ValidationRun(code_root, tuple((code_root/"src/pcs/trend").glob("*.py")) +
+        (Path(__file__).resolve(), code_root/"src/pcs/trend/selection_models.py"))
     symbols = list(dict.fromkeys(s.strip().upper() for s in args.symbols.split(",") if s.strip()))
     if not 1 <= len(symbols) <= 8:
         raise ValueError("OPPORTUNITY_SYMBOL_LIMIT_1_TO_8")
-    reader, results, failures = OpportunityDataReader(), [], []
+    input_directory = getattr(args, "input_directory", None)
+    resume_directory = getattr(args, "resume_directory", None)
+    render_only = getattr(args, "render_only", False)
+    families = list(dict.fromkeys(getattr(args, "families", "HEALTHY_PULLBACK").split(",")))
+    if not set(families) <= {"HEALTHY_PULLBACK", "SHALLOW_PULLBACK"}:
+        raise ValueError("OPPORTUNITY_FAMILY_INVALID")
+    saved_inputs, prior_results = {}, {}
+    if input_directory:
+        saved_manifest, contents = read_opportunity_bundle(input_directory)
+        if render_only:
+            saved = [EntryOpportunity.model_validate(x) for x in contents["entry_opportunities.json"]
+                     if x["symbol"] in symbols]
+            write_opportunity_artifacts(args.output_directory, saved,
+                audit={"render_only": True, "origin_manifest": saved_manifest})
+            guard.add_output(args.output_directory)
+            if guard.finish(Path(args.output_directory)/"validation_run.json").value != "VALID":
+                raise ValueError("STALE — RERUN REQUIRED")
+            print(json.dumps({"output_directory": args.output_directory, "render_only": True}))
+            return
+        saved_inputs = {x["call_context"]["symbol"]: OpportunityInput.model_validate(x)
+            for x in contents.get("prepared_opportunity_inputs.json", [])}
+        if not saved_inputs:
+            raise ValueError("OPPORTUNITY_PREPARED_INPUTS_NOT_SAVED")
+    elif render_only:
+        raise ValueError("OPPORTUNITY_RENDER_REQUIRES_INPUT_DIRECTORY")
+    if resume_directory:
+        _, prior_contents = read_opportunity_bundle(resume_directory)
+        prior_results = {x["symbol"]: EntryOpportunity.model_validate(x)
+                         for x in prior_contents["entry_opportunities.json"]}
+    reader = None if input_directory else OpportunityDataReader()
+    results, failures, prepared = [], [], []
     for symbol in symbols:
         context = CallContext(symbol=symbol, requested_as_of=args.as_of,
             effective_daily_session=args.as_of, mode="HISTORICAL",
             run_id=args.run_id, request_id=f"{args.run_id}:{symbol}",
             scope="ENTRY_OPPORTUNITY_V2_OBSERVATION")
         try:
-            results.append(evaluate_entry_opportunity(reader.load(context)))
+            if input_directory:
+                if symbol not in saved_inputs:
+                    raise ValueError("OPPORTUNITY_SAVED_SYMBOL_MISSING")
+                loaded = saved_inputs[symbol]
+                if args.as_of > loaded.call_context.effective_daily_session:
+                    raise ValueError("OPPORTUNITY_SAVED_INPUT_END_EXCEEDED")
+                loaded = loaded.model_copy(update={"call_context": context})
+            else:
+                loaded = reader.load(context)
+            prior = prior_results.get(symbol)
+            loaded = loaded.model_copy(update={"enabled_families": families,
+                "prior_family_results": (prior.family_results or [prior]) if prior else []})
+            prepared.append(loaded)
+            results.append(evaluate_entry_opportunity(loaded))
         except (ValueError, RuntimeError) as exc:
             failures.append({"symbol": symbol, "stage": "OPPORTUNITY_READ_OR_EVALUATE",
                              "reason": str(exc)})
-    verification = reader.verify_unchanged()
+    verification = reader.verify_unchanged() if reader else {"status": "SAVED_ARTIFACT_HASHES_VERIFIED"}
     root = write_opportunity_artifacts(args.output_directory, results,
-        audit={"reads": reader.audit, "source_unchanged": verification,
-               "failures": failures})
+        audit={"reads": reader.audit if reader else [], "source_unchanged": verification,
+               "failures": failures, "input_directory": input_directory,
+               "resume_directory": resume_directory}, inputs=prepared)
+    guard.add_output(root)
+    if guard.finish(root/"validation_run.json").value != "VALID":
+        raise ValueError("STALE — RERUN REQUIRED")
     print(json.dumps({"output_directory": str(root.resolve()), "results": len(results),
                       "failures": failures}, ensure_ascii=False, indent=2))

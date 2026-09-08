@@ -419,7 +419,7 @@ class OpportunityPolicy(StrictModel):
     policy_id: str = "healthy-pullback-opportunity-v1.7"
     schema_version: Literal["1.0"] = "1.0"
     calculation_version: Literal["entry-opportunity-v2"] = "entry-opportunity-v2"
-    family: Literal["HEALTHY_PULLBACK"] = "HEALTHY_PULLBACK"
+    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK"] = "HEALTHY_PULLBACK"
     analysis_sessions: int = Field(default=60, ge=20, le=252)
     indicator_warmup_sessions: int = Field(default=200, ge=50, le=1000)
     recent_high_sessions: Literal[20] = 20
@@ -561,6 +561,94 @@ class OpportunityTransition(StrictModel):
     evidence_refs: list[str] = Field(default_factory=list)
 
 
+class ShallowPullbackPolicy(StrictModel):
+    policy_id: str = "shallow-pullback-observation-v1"
+    calculation_version: Literal["shallow-pullback-v1"] = "shallow-pullback-v1"
+    peak_sessions: Literal[20] = 20
+    peak_tie_rule: Literal["LATEST_SESSION"] = "LATEST_SESSION"
+    minimum_depth_atr: float = Field(default=0.25, ge=0)
+    maximum_depth_atr: float = Field(default=1.50, gt=0)
+    parameter_source: str = "STEP_05_TASK_OBSERVATION_POLICY"
+
+    @model_validator(mode="before")
+    @classmethod
+    def record_override(cls, values):
+        if isinstance(values, dict) and "parameter_source" not in values and any(
+                k in values and values[k] != default for k, default in (
+                    ("minimum_depth_atr", .25), ("maximum_depth_atr", 1.50))):
+            values = {**values, "parameter_source": "EXPLICIT_REQUEST_OBSERVATION_OVERRIDE"}
+        return values
+
+    @model_validator(mode="after")
+    def valid_interval(self):
+        if self.minimum_depth_atr > self.maximum_depth_atr:
+            raise ValueError("SHALLOW_DEPTH_INTERVAL_INVALID")
+        return self
+
+
+class ShallowPullbackState(StrictModel):
+    symbol: str
+    zone_id: str
+    test_id: str
+    touch_session: str
+    peak_price: float
+    peak_session: str
+    peak_known_at: str
+    peak_window_start: str
+    peak_window_end: str
+    peak_samples: int
+    depth_anchor_atr: float
+    depth_anchor_session: str
+    touch_low: float
+    depth_at_touch: float
+    episode_low: float
+    episode_low_session: str
+    current_depth_atr: float
+    first_depth_exceeded: str | None = None
+    evaluated_through: str
+    input_prefix_sha256: str
+    source_identity: str
+    policy_identity: str
+    price_basis: str
+    corporate_action_version: str
+
+
+
+class ShallowPullbackInput(StrictModel):
+    call_context: CallContext
+    feature_view: OpportunityFeatureView
+    support_facts: list[OpportunitySupportFact]
+    effective_policy: ShallowPullbackPolicy = Field(default_factory=ShallowPullbackPolicy)
+    shared_policy: OpportunityPolicy = Field(default_factory=OpportunityPolicy)
+    prior_state: ShallowPullbackState | None = None
+    calendar: str = "XNYS"
+
+
+class SetupEvidence(OpportunityDetection):
+    call_context: CallContext
+    module: str = "shallow_pullback"
+    version: str = "1.0"
+    calculation_version: str = "shallow-pullback-v1"
+    symbol: str
+    as_of: str
+    status: CapabilityStatus
+    run_id: str
+    request_id: str
+    result_id: str
+    data_timestamp: str | None = None
+    effective_policy: ShallowPullbackPolicy
+    next_state: ShallowPullbackState | None = None
+    touch_depth_pct: float | None = None
+    cumulative_depth_pct: float | None = None
+    pullback_to_current_close_pct: float | None = None
+    missing_sessions: list[str] = Field(default_factory=list)
+    same_bar_new_high_and_touch: bool = False
+    intraday_order: str = "NOT_INFERRED_FROM_DAILY_OHLC"
+    trend_evidence: dict = Field(default_factory=dict)
+    measurements: dict = Field(default_factory=dict)
+    provenance: list[SourceReference] = Field(default_factory=list)
+
+
 class OpportunityDay(StrictModel):
     session: str
     state: OpportunityStateName | None
@@ -583,7 +671,7 @@ class OpportunityDay(StrictModel):
 class OpportunityEpisode(StrictModel):
     economic_episode_id: str
     opportunity_id: str
-    family: Literal["HEALTHY_PULLBACK"] = "HEALTHY_PULLBACK"
+    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK"] = "HEALTHY_PULLBACK"
     setup_date: str
     touch_date: str
     confirmation_deadline: str
@@ -603,6 +691,8 @@ class OpportunityEpisode(StrictModel):
     recent_high_session: str
     parent_episode_id: str | None = None
     reason_codes: list[str] = Field(default_factory=list)
+    shallow_state: ShallowPullbackState | None = None
+    invalidation_scope: Literal["SETUP_QUALIFICATION", "STRUCTURE_OR_SUPPORT"] | None = None
 
 
 class OpportunityStateCheckpoint(StrictModel):
@@ -633,6 +723,10 @@ class OpportunityInput(StrictModel):
     prior_detections: list[OpportunityDetection] = Field(default_factory=list)
     calendar: str = "XNYS"
     legacy_opinion: dict = Field(default_factory=dict)
+    enabled_families: list[Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK"]] = Field(default_factory=lambda: ["HEALTHY_PULLBACK"])
+    shallow_policy: ShallowPullbackPolicy = Field(default_factory=ShallowPullbackPolicy)
+    prior_setup_evidence: list[SetupEvidence] = Field(default_factory=list)
+    prior_family_results: list["EntryOpportunity"] = Field(default_factory=list)
 
 
 class OpportunityCoverage(StrictModel):
@@ -662,7 +756,7 @@ class OpportunityEvidenceGap(StrictModel):
 
 class EntryOpportunity(StrictModel):
     module: str = "entry_opportunity"
-    version: Literal["1.0", "1.1"] = "1.1"
+    version: Literal["1.0", "1.1", "1.2"] = "1.2"
     symbol: str
     as_of: str
     status: CapabilityStatus
@@ -682,7 +776,7 @@ class EntryOpportunity(StrictModel):
     result_id: str
     matched_families: list[str]
     upstream_result_ids: list[str]
-    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1"] = "entry-opportunity-v2.1"
+    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2"] = "entry-opportunity-v2.2"
     run_id: str
     request_id: str
     received_at: str | None
@@ -707,3 +801,11 @@ class EntryOpportunity(StrictModel):
     call_diagnostics: list[str] = Field(default_factory=list)
     provenance: list[SourceReference]
     explanation: str
+    family: str = "HEALTHY_PULLBACK"
+    family_results: list["EntryOpportunity"] = Field(default_factory=list)
+    active_families: list[str] = Field(default_factory=list)
+    shallow_pullback_timeline: list[SetupEvidence] = Field(default_factory=list)
+    economic_events: list[dict] = Field(default_factory=list)
+
+
+OpportunityInput.model_rebuild()

@@ -13,14 +13,15 @@ from pcs.analysis_contracts import CapabilityStatus
 from pcs.trend.selection_models import (
     EntryOpportunity, OpportunityCoverage, OpportunityDay, OpportunityEpisode,
     OpportunityInput, OpportunityStateCheckpoint, OpportunityStateName,
-    OpportunityTransition, OpportunityEvidenceGap,
+    OpportunityTransition, OpportunityEvidenceGap, OpportunityDetection, ShallowPullbackInput,
 )
 from pcs.trend.setup_detectors import (
     confirmation_conditions, current_eligibility_conditions,
     detect_healthy_pullback,
+    detect_shallow_pullback,
 )
 
-_IMPLEMENTATION_ID = "entry-opportunity-v2-step4-review-f1-f4"
+_IMPLEMENTATION_ID = "entry-opportunity-v2.2-step5-shallow-v1"
 
 
 def _hash(value) -> str:
@@ -36,8 +37,14 @@ def _source_identity(view) -> str:
         view.price_basis, view.corporate_action_version])
 
 
-def _policy_identity(policy) -> str:
-    return "sha256:" + _hash(policy.model_dump(mode="json"))
+def _policy_identity(policy, shallow_policy=None) -> str:
+    payload = policy.model_dump(mode="json")
+    if policy.family == "SHALLOW_PULLBACK":
+        for key in ("healthy_pullback_min_pct", "healthy_pullback_max_pct", "shallow_pullback_max_pct",
+                    "sma20_near_atr", "sma50_near_atr", "recent_high_sessions"):
+            payload.pop(key, None)
+        payload["shallow_policy"] = shallow_policy.model_dump(mode="json")
+    return "sha256:" + _hash(payload)
 
 
 def _resolve_requested_session(ctx, calendar):
@@ -144,7 +151,7 @@ def _episode_for_detection(symbol, detection, policy_hash, source_identity,
         support.zone_lower, support.zone_upper,
         support.anchor_atr, support.invalidation_line, calculation_version])
     return OpportunityEpisode(economic_episode_id=economic,
-        opportunity_id=opportunity, setup_date=touch, touch_date=touch,
+        opportunity_id=opportunity, family=detection.family, setup_date=touch, touch_date=touch,
         confirmation_deadline=deadline, state=OpportunityStateName.WATCH,
         zone_id=support.zone_id, test_id=support.test_id,
         zone_lower=support.zone_lower, zone_upper=support.zone_upper,
@@ -152,7 +159,8 @@ def _episode_for_detection(symbol, detection, policy_hash, source_identity,
         zone_available_at=support.zone_available_at,
         recent_high=detection.recent_high,
         recent_high_session=detection.recent_high_session,
-        reason_codes=["HEALTHY_PULLBACK_DISCOVERED", "FIXED_SUPPORT_BOUND_AT_TOUCH"])
+        shallow_state=getattr(detection, "next_state", None),
+        reason_codes=[f"{detection.family}_DISCOVERED", "FIXED_SUPPORT_BOUND_AT_TOUCH"])
 
 
 def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
@@ -184,7 +192,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     for fact in input.support_facts:
         facts_by_day.setdefault(fact.session, []).append(fact)
     source_identity = _source_identity(view)
-    policy_hash = _policy_identity(policy)
+    policy_hash = _policy_identity(policy, input.shallow_policy)
     support_identity_all = "sha256:"+_hash({"results": input.support_result_ids,
         "facts": [f.model_dump(mode="json") for f in input.support_facts]})
 
@@ -242,6 +250,8 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         if boundary and t.session <= boundary]) if compatible else [])
     detections = (deepcopy([d for d in input.prior_detections
         if boundary and d.session <= boundary]) if compatible else [])
+    setup_evidence = (deepcopy([e for e in input.prior_setup_evidence
+        if boundary and e.session <= boundary]) if compatible else [])
     if compatible and [d.session for d in timeline] != [s for s in expected if s <= boundary]:
         raise ValueError("OPPORTUNITY_PRIOR_TIMELINE_INCOMPLETE")
     active = episodes[-1] if episodes else None
@@ -279,9 +289,29 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                                     if s not in missing_sessions)
             break
 
-        detection = detect_healthy_pullback(bar=bar, history=bars,
-            support_facts=facts_by_day.get(session, []), policy=policy)
-        detections.append(detection)
+        depth_evidence = None
+        if policy.family == "SHALLOW_PULLBACK":
+            shallow_input = ShallowPullbackInput(call_context=ctx.model_copy(update={
+                "effective_daily_session": session}), feature_view=view,
+                support_facts=facts_by_day.get(session, []), effective_policy=input.shallow_policy,
+                shared_policy=policy, calendar=input.calendar)
+            detection = detect_shallow_pullback(shallow_input)
+            setup_evidence.append(detection)
+            if active and active.shallow_state and active.state not in {
+                    OpportunityStateName.INVALIDATED, OpportunityStateName.EXPIRED}:
+                depth_evidence = detect_shallow_pullback(shallow_input.model_copy(update={
+                    "prior_state": active.shallow_state}))
+                setup_evidence.append(depth_evidence)
+                active = active.model_copy(update={"shallow_state": depth_evidence.next_state})
+                episodes[-1] = active
+            else:
+                depth_evidence = detection
+            detections.append(OpportunityDetection.model_validate(
+                detection.model_dump(include=set(OpportunityDetection.model_fields))))
+        else:
+            detection = detect_healthy_pullback(bar=bar, history=bars,
+                support_facts=facts_by_day.get(session, []), policy=policy)
+            detections.append(detection)
         day_conditions = list(detection.conditions)
         day_reasons = []
         eligible = False
@@ -361,12 +391,27 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
                 history=bars, zone_upper=active.zone_upper, anchor_atr=active.anchor_atr,
                 zone_id=active.zone_id, test_id=active.test_id,
                 support_fact=current_fact, policy=policy)
+            if policy.family == "SHALLOW_PULLBACK":
+                prior_twenty = expected_all[max(0, current_i-20):current_i]
+                recorded = {b.session.isoformat() for b in bars}
+                if len(prior_twenty) != 20 or any(s not in recorded for s in prior_twenty):
+                    confirmation = [c.model_copy(update={"predicate_value": None,
+                        "reason_codes": ["RVOL_CALENDAR_PREFIX_INCOMPLETE"]})
+                        if c.condition_id == "RVOL20" else c for c in confirmation]
             day_conditions.extend(confirmation)
+            if depth_evidence:
+                depth_conditions = [c.model_copy(update={"role": "CONFIRMATION"})
+                    for c in depth_evidence.conditions if c.condition_id in {
+                        "SHALLOW_CUMULATIVE_DEPTH", "CUMULATIVE_LOW_COVERAGE"}]
+                confirmation.extend(depth_conditions)
+                day_conditions.extend(depth_conditions)
 
         close_break = float(bar.close) < active.invalidation_line
         support_break = current_fact is not None and current_fact.broken_at is not None and current_fact.broken_at <= session
         structure_break = bar.structure_state == "bearish"
-        invalidated = close_break or support_break or structure_break
+        depth_break = bool(active.shallow_state and active.shallow_state.first_depth_exceeded and
+            (active.entry_end is None or session <= active.entry_end))
+        invalidated = close_break or support_break or structure_break or depth_break
         day_conditions.extend([
             _invalidation_condition(session, "CLOSE_BELOW_FIXED_INVALIDATION", bar.close,
                 "<", active.invalidation_line, close_break, [f"bar:{session}", active.zone_id]),
@@ -375,15 +420,22 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
             _invalidation_condition(session, "STRUCTURE_BEARISH_INVALIDATION", bar.structure_state,
                 "==", "bearish", structure_break, [f"structure:{session}"]),
         ])
+        if active.shallow_state:
+            day_conditions.append(_invalidation_condition(session, "SETUP_DEPTH_EXCEEDED",
+                active.shallow_state.current_depth_atr, ">", input.shallow_policy.maximum_depth_atr,
+                depth_break, [depth_evidence.result_id]))
 
         if invalidated:
             active = active.model_copy(update={"state": OpportunityStateName.INVALIDATED,
+                "invalidation_scope": "STRUCTURE_OR_SUPPORT" if close_break or support_break or structure_break
+                    else "SETUP_QUALIFICATION",
                 "terminal_date": session,
                 "reason_codes": list(dict.fromkeys(active.reason_codes+[
                     "INVALIDATION_PRIORITY_OVER_CONFIRMATION"] +
                     (["CLOSE_BELOW_FIXED_INVALIDATION_LINE"] if close_break else [])+
                     (["SUPPORT_ZONE_BROKEN"] if support_break else [])+
-                    (["STRUCTURE_BEARISH"] if structure_break else [])))})
+                    (["STRUCTURE_BEARISH"] if structure_break else [])+
+                    (["SETUP_DEPTH_EXCEEDED"] if depth_break else [])))})
             episodes[-1] = active
             day_reasons.extend(active.reason_codes)
             _transition(transitions, session, active, old_state, active.state,
@@ -442,6 +494,10 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
             else:
                 current = current_eligibility_conditions(bar=bar,
                     zone_upper=active.zone_upper, support_fact=current_fact, policy=policy)
+                if depth_evidence:
+                    current.extend(c.model_copy(update={"role": "CURRENT_ELIGIBILITY"})
+                        for c in depth_evidence.conditions if c.condition_id in {
+                            "SHALLOW_CUMULATIVE_DEPTH", "CUMULATIVE_LOW_COVERAGE"})
                 day_conditions.extend(current)
                 active = active.model_copy(update={"state": OpportunityStateName.ENTRY_READY})
                 episodes[-1] = active
@@ -544,7 +600,7 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     semantic = {"symbol": ctx.symbol, "as_of": ctx.effective_daily_session,
         "requested_session": requested_session, "request_semantics": request_semantics,
         "implementation": _IMPLEMENTATION_ID,
-        "calculation_version": "entry-opportunity-v2.1",
+        "calculation_version": "entry-opportunity-v2.2",
         "policy": policy_hash, "source": source_identity, "support": support_identity,
         "indicator": view.indicator_identity, "price_basis": view.price_basis,
         "corporate_action_version": view.corporate_action_version,
@@ -597,6 +653,8 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     else:
         requested_eligible = last_day.eligible
     return EntryOpportunity(symbol=ctx.symbol, as_of=ctx.effective_daily_session,
+        family=policy.family, shallow_pullback_timeline=setup_evidence,
+        active_families=[policy.family] if requested_eligible is True else [],
         status=status, state=last_day.state if last_day else None,
         last_known_state=last_day.state if last_day else None,
         evaluated_through=evaluated_through,

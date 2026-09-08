@@ -31,10 +31,11 @@ def analyze_support(
     market_structure,
     config: TrendIndicatorConfig | None = None,
     as_of_date: object | None = None,
+    allow_missing_volume: bool = False,
 ) -> SupportResult:
     config = config or TrendIndicatorConfig()
     config.validate()
-    _validate_ohlcv(ohlcv_df)
+    _validate_ohlcv(ohlcv_df, allow_missing_volume=allow_missing_volume)
     _validate_indicators(indicator_df, len(ohlcv_df))
     source = ohlcv_df.copy(deep=True)
     indicators = indicator_df.copy(deep=True)
@@ -97,13 +98,15 @@ def analyze_support(
     )
 
 
-def _validate_ohlcv(df: pd.DataFrame) -> None:
+def _validate_ohlcv(df: pd.DataFrame, *, allow_missing_volume=False) -> None:
     if not isinstance(df, pd.DataFrame):
         raise TrendIndicatorValidationError("OHLCV input must be a pandas DataFrame")
     missing = [column for column in REQUIRED_OHLCV_COLUMNS if column not in df.columns]
     if missing:
         raise TrendIndicatorValidationError(f"missing required OHLCV columns: {', '.join(missing)}")
     for column in REQUIRED_OHLCV_COLUMNS:
+        if column == "volume" and allow_missing_volume:
+            continue  # Price-only calculation; preserve the original missing values.
         if not pd.api.types.is_numeric_dtype(df[column]) or df[column].isna().any():
             raise TrendIndicatorValidationError(f"invalid OHLCV column: {column}")
     dates = _date_values(df)

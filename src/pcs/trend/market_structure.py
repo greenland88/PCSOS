@@ -41,10 +41,11 @@ def analyze_market_structure(
     config: TrendIndicatorConfig | None = None,
     as_of_date: object | None = None,
     precomputed_swings: tuple[ConfirmedSwing, ...] | None = None,
+    allow_missing_volume: bool = False,
 ) -> MarketStructureResult:
     config = config or TrendIndicatorConfig()
     config.validate()
-    _validate_input(ohlcv_df)
+    _validate_input(ohlcv_df, allow_missing_volume=allow_missing_volume)
     source = ohlcv_df.copy(deep=True)
     dates = _date_values(source)
     if as_of_date is not None:
@@ -87,16 +88,18 @@ def analyze_market_structure(
     )
 
 
-def _validate_input(df: pd.DataFrame) -> None:
+def _validate_input(df: pd.DataFrame, *, allow_missing_volume=False) -> None:
     if not isinstance(df, pd.DataFrame):
         raise TrendIndicatorValidationError("input must be a pandas DataFrame")
     missing = [column for column in REQUIRED_OHLCV_COLUMNS if column not in df.columns]
     if missing:
         raise TrendIndicatorValidationError(f"missing required OHLCV columns: {', '.join(missing)}")
     for column in REQUIRED_OHLCV_COLUMNS:
+        if column == "volume" and allow_missing_volume:
+            continue
         if not pd.api.types.is_numeric_dtype(df[column]):
             raise TrendIndicatorValidationError(f"OHLCV column must be numeric: {column}")
-    if df[list(REQUIRED_OHLCV_COLUMNS)].isna().any().any():
+    if df[[c for c in REQUIRED_OHLCV_COLUMNS if c != "volume" or not allow_missing_volume]].isna().any().any():
         raise TrendIndicatorValidationError("OHLCV data contains missing values")
     dates = _date_values(df)
     if dates.isna().any() or not dates.is_monotonic_increasing:

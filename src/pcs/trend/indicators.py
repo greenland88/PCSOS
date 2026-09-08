@@ -6,10 +6,10 @@ from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.models import REQUIRED_OHLCV_COLUMNS, TrendIndicatorValidationError
 
 
-def calculate_base_indicators(df: pd.DataFrame, config: TrendIndicatorConfig | None = None) -> pd.DataFrame:
+def calculate_base_indicators(df: pd.DataFrame, config: TrendIndicatorConfig | None = None, *, allow_missing_volume=False) -> pd.DataFrame:
     config = config or TrendIndicatorConfig()
     config.validate()
-    _validate_ohlcv_input(df, config)
+    _validate_ohlcv_input(df, config, allow_missing_volume=allow_missing_volume)
 
     talib = _load_talib()
     source = df.copy(deep=True)
@@ -53,7 +53,7 @@ def _load_talib():
     return talib
 
 
-def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig) -> None:
+def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig, *, allow_missing_volume=False) -> None:
     if not isinstance(df, pd.DataFrame):
         raise TrendIndicatorValidationError("input must be a pandas DataFrame")
 
@@ -70,7 +70,7 @@ def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig) -> Non
     if not pd.Index(date_values).is_monotonic_increasing:
         raise TrendIndicatorValidationError("OHLCV data must be sorted by date in increasing order")
 
-    ohlc = df[list(REQUIRED_OHLCV_COLUMNS)]
+    ohlc = df[[c for c in REQUIRED_OHLCV_COLUMNS if c != "volume" or not allow_missing_volume]]
     if ohlc.isna().any().any():
         raise TrendIndicatorValidationError("OHLCV data contains missing values")
 

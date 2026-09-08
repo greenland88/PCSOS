@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import math
 
+from pcs.trend.shallow_pullback import detect_shallow_pullback
+
 from pcs.trend.selection_models import (
     OpportunityCondition, OpportunityDetection, OpportunityFeatureBar,
     OpportunityPolicy, OpportunitySupportFact,

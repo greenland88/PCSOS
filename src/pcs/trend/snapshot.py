@@ -47,6 +47,7 @@ def build_trend_snapshot(
     precomputed_swings: tuple[ConfirmedSwing, ...] | None = None,
     precomputed_relative_strength: dict | None = None,
     evidence_window: int = 60,
+    allow_missing_volume: bool = False,
 ) -> TrendSnapshotResult:
     config = config or TrendIndicatorConfig()
     config.validate()
@@ -56,17 +57,18 @@ def build_trend_snapshot(
     cutoff = _resolve_cutoff(source, as_of_date)
     indicators = (precomputed_indicators.copy(deep=True)
                    if precomputed_indicators is not None
-                   else calculate_base_indicators(source, config))
+                   else calculate_base_indicators(source, config, allow_missing_volume=allow_missing_volume))
     if len(indicators) != len(source) or not indicators.index.equals(source.index):
         raise TrendIndicatorValidationError("precomputed indicators must align with OHLCV input")
     asof_source, asof_indicators = _slice_as_of(source, indicators, cutoff)
 
     ma_input = pd.concat([asof_source[["close"]], asof_indicators], axis=1)
     ma_structure = analyze_ma_structure(ma_input, config)
-    market_structure = analyze_market_structure(source, config, cutoff, precomputed_swings=precomputed_swings)
-    cleanliness = analyze_trend_cleanliness(source, indicators, config, cutoff)
-    pullback = analyze_pullback(source, indicators, ma_structure, market_structure, config, cutoff)
-    support = analyze_support(source, indicators, market_structure, config, cutoff)
+    market_structure = analyze_market_structure(source, config, cutoff, precomputed_swings=precomputed_swings,
+                                                allow_missing_volume=allow_missing_volume)
+    cleanliness = analyze_trend_cleanliness(source, indicators, config, cutoff, allow_missing_volume=allow_missing_volume)
+    pullback = analyze_pullback(source, indicators, ma_structure, market_structure, config, cutoff, allow_missing_volume=allow_missing_volume)
+    support = analyze_support(source, indicators, market_structure, config, cutoff, allow_missing_volume=allow_missing_volume)
 
     if precomputed_relative_strength is not None:
         relative_strength = precomputed_relative_strength

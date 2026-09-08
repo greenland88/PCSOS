@@ -35,7 +35,55 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
     unchanged so existing production consumers retain their current behavior.
     """
     from pcs.trend.opportunity_state import evaluate_opportunity_state
-    return evaluate_opportunity_state(input)
+    families = [f for f in ("HEALTHY_PULLBACK", "SHALLOW_PULLBACK") if f in input.enabled_families]
+    if not families:
+        raise ValueError("OPPORTUNITY_FAMILY_REQUIRED")
+    results = []
+    for family in families:
+        policy = input.effective_policy
+        if family == "SHALLOW_PULLBACK":
+            policy = policy.model_copy(update={"family": family,
+                "policy_id": "shallow-pullback-opportunity-v1"})
+        else:
+            policy = policy.model_copy(update={"family": family})
+        updates = {"effective_policy": policy, "enabled_families": [family],
+                   "prior_family_results": []}
+        previous = next((r for r in input.prior_family_results if r.family == family), None)
+        if previous:
+            updates.update(prior_state=previous.next_state, prior_timeline=previous.timeline,
+                prior_transitions=previous.transitions, prior_detections=previous.detections,
+                prior_setup_evidence=previous.shallow_pullback_timeline)
+        elif input.prior_family_results:
+            updates.update(prior_state=None, prior_timeline=[], prior_transitions=[],
+                           prior_detections=[], prior_setup_evidence=[])
+        elif input.prior_state and input.prior_state.episodes and any(
+                e.family != family for e in input.prior_state.episodes):
+            if len(families) == 1:
+                raise ValueError("OPPORTUNITY_PRIOR_FAMILY_MISMATCH")
+            updates.update(prior_state=None, prior_timeline=[], prior_transitions=[],
+                           prior_detections=[], prior_setup_evidence=[])
+        results.append(evaluate_opportunity_state(input.model_copy(update=updates)))
+    if len(results) == 1:
+        return results[0]
+    from pcs.trend.opportunity_state import _hash
+    primary = min(results, key=lambda r: (r.eligible_at_requested_time is not True,
+        families.index(r.family)))
+    events = {}
+    for result in results:
+        for episode in result.episodes:
+            key = (result.symbol, episode.zone_id, episode.test_id)
+            events.setdefault(key, {"symbol": result.symbol, "zone_id": episode.zone_id,
+                "test_id": episode.test_id, "economic_episode_id": episode.economic_episode_id,
+                "historical_families": [], "currently_eligible_families": []})
+            event = events[key]
+            event["historical_families"].append(result.family)
+            if result.eligible_at_requested_time is True and result.opportunity_id == episode.opportunity_id:
+                event["currently_eligible_families"].append(result.family)
+    return primary.model_copy(update={"family_results": results,
+        "result_id": "sha256:"+_hash(["family-observation-aggregate-v1", [r.result_id for r in results]]),
+        "matched_families": [r.family for r in results if r.episodes],
+        "active_families": [r.family for r in results if r.eligible_at_requested_time is True],
+        "economic_events": list(events.values())})
 
 
 def replay_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
