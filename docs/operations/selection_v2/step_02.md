@@ -10,12 +10,13 @@
 公开接口：`pcs.trend.underlying_profile.measure_underlying_profile(input: ProfileInput) -> UnderlyingProfile`。
 业务模型在 `pcs.trend.selection_models`，复用 `pcs.analysis_contracts` 的 CallContext、SourceReference、EvidenceValue 和独立来源／执行／能力状态。
 schema `1.0`，计算版本 `underlying-profile-v1`，测量政策 `underlying-profile-descriptive-v1`。
-实现提交及真实验收结果在本文件后续“实际验收”条目登记。
+实现提交：`d31c978c8ab28b116db31a88eb6ad587a9585587`；有界分区修正：`12b5170abd015a96f6ce97d32c037344f7feae37`。
+真实验收使用后者的干净源码。交接文档提交为这两项之后的独立提交，未再改变实现。
 
 ## 输入、窗口和复用
 
 可信适配器 `pcs.pool.underlying_profiles.ProfileDataReader` 通过 PCSDataAccess、现有 active verified daily resolver 和 ManifestSnapshot 读取。共享基准按 symbol/session/window 缓存一次。
-resolver 新增显式 `allow_partial_history`，仅用于分项覆盖描述，默认 false 保持旧调用行为。它不放宽身份、哈希、重复、重叠、结束日或 canonical 输入校验，也不会触发补数。
+resolver 新增显式 `allow_partial_history`，仅用于分项覆盖描述，默认 false 保持旧调用行为。可选 `required_start_session` 按日期约束分区，防止近期缺日被窗口外旧行数代替；默认None保持旧行为。它不放宽身份、哈希、重复、重叠、结束日或 canonical 输入校验，也不会触发补数。
 不完整的外部文件不能伪装为 canonical；既有 canonical 完整性门槛拒绝的源仍拒绝。规范输入层的缺量/缺基准行为用明确 TEST 输入验证。
 
 默认需要 326 个交易日：252观察日 + 60日前高点前缀 + 14日ATR额外起算前缀。
@@ -61,12 +62,12 @@ python H:/workspace/PCSOS-selection-v2-step-02/examples/underlying_profile.py --
 现有CLI的独立接线：
 
 ```powershell
-python -m pcs.cli underlying-profile --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --benchmark SPY --run-id step_02_acceptance_20260904 --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_02_acceptance_20260904
-python H:/workspace/PCSOS-selection-v2-step-02/scripts/accept_underlying_profiles.py H:/workspace/PCSOS/selection_v2_outputs/step_02_acceptance_20260904
+python -m pcs.cli underlying-profile --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --benchmark SPY --run-id step_02_acceptance_20260904_bounded --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_02_acceptance_20260904_bounded
+python H:/workspace/PCSOS-selection-v2-step-02/scripts/accept_underlying_profiles.py H:/workspace/PCSOS/selection_v2_outputs/step_02_acceptance_20260904_bounded
 ```
 
 目录必须为空，禁止覆盖旧输出。包含JSON、AI JSON、中文逐指标及逐episode表、输入/输出schema、字段字典、读取审计及产物hash。
-独立验收脚本从公开API再解释NVDA，与批量的result_id、全部指标和episode比较；复核其他视图和文件hash。
+独立验收脚本从公开API再度量NVDA，与批量的result_id、全部指标和episode比较；复核其他视图和文件hash。上述为实际已执行命令；重现时另给空目录名，不能覆盖现有验收目录。
 只读取保存结果可重新生成中文/AI视图、比较已算指标；更改测量窗口、ATR起点、基准或数据身份需重算并生成新result_id。仅更换run/request ID或视图不改变结果身份。
 
 ## 必要验证
@@ -81,4 +82,55 @@ git diff --check
 
 ## 实际验收
 
-待本步干净实现提交后执行并补记真实来源身份、范围、结果及缺口。
+组件实现完成；26项针对性检查全部通过（`26 passed in 3.75s`）。`git diff --check`通过。
+真实验收于2026-09-08 UTC（本地9月7日晚）执行，固定行情日2026-09-04。
+最终目录：`H:/workspace/PCSOS/selection_v2_outputs/step_02_acceptance_20260904_bounded`。
+其中 `artifact_manifest.json` 记录源码 `12b5170abd015a96f6ce97d32c037344f7feae37`、`tracked_source_dirty=false`。
+人工入口 `acceptance_report.md`，逐指标/逐回撤报告 `underlying_profiles.zh-CN.md`，机器结果 `underlying_profiles.json`；`acceptance.json`为实际对账回执。
+
+| 股票 | 实际日线数 | 可用指标/58 | 本次缺失 |
+|---|---:|---:|---|
+| NVDA | 298 | 54 | 252日回撤深度50/90/95分位数、当前回撤历史分位位置；28根前缀缺失 |
+| PLTR | 326 | 58 | 无数值缺项；保留1个左截断事件 |
+| MSFT | 326 | 56 | 已恢复条件中位天数、KM中位天数没有合格证据 |
+| HOOD | 326 | 56 | 已恢复条件中位天数、KM中位天数没有合格证据 |
+| UBER | 未生成 | — | 来源仅登记至2026-09-01，未达到9月4日；reader返回INSUFFICIENT_FEATURE_WARMUP |
+| MDLZ | 326 | 56 | 已恢复条件中位天数、KM中位天数没有合格证据 |
+| AAL | 326 | 58 | 无数值缺项；保留1个左截断事件 |
+| AAOI | 326 | 58 | 无数值缺项；保留1个左截断事件 |
+
+全体请求读取2025-05-20至2026-09-04的326个交易日；观察窗口2025-09-05至2026-09-04，共252日。
+NVDA实际2025-07-01起，共298日，前缀46/74。其他6票及基准SPY均326日，SPY只读取一次。
+7票均可计算成交额、20/60实现波动、20/60相对SPY变化、ATR/价格、20/60/252上下跳空、当前滚动回撤；报告逐指标保留单位和明细。
+7票均保留未恢复事件及年龄。NVDA完整恢复样本为10、116、7个交易日，条件中位数10来自这些实际样本，不是旧代码默认10。
+
+初次验收目录 `step_02_acceptance_20260904` 原样保留：该次6票生成、NVDA读取窗口外分区时checksum阻断、UBER末日不足。
+基于实际入口问题加入日历起点边界后，只验证声明区间内所需分区；NVDA2025/2026分区正式验证通过，窗口外历史没有被纳入新档案，也未修复或修改。
+本轮没有补任何日线、请求供应商、读取期权、扫描股票或改变已有判断。
+
+### 来源身份和验证回执
+
+- canonical manifest：`H:/workspace/PCSOS/data/manifests/storage_manifest.csv`。
+- 原始文件SHA256：`e1045bf72a80265f6d90a597655d032bdf2c7dcc9eab970c5536b29ab5b9537d`。
+- ManifestSnapshot identity：`5af72f892609519c0293b922f8515b3abdeb14683b904e7922a30501683c6400`。
+- 7票+SPY的16个canonical分区，前后文件哈希一致。逐分区路径、generation、checksum、fingerprint、物理日期/行数及逻辑读取范围保存在 `read_audit.json` 和各票 provenance。
+- NVDA generation：`cb4b8b1c182eebf49160d81e|d661221372d6952a086858bd`。
+- NVDA verified handle checksum：`086453df01f4a089e078e96039617aac6cef670b0759fa8d4a32957165358fa2`。
+- NVDA合法输入hash：`f5d6a7e46baf7b0b487570034543f9f1add4d8151186498a827484ac2f45f9a6`。
+- NVDA独立与批量共同result_id：`sha256:56e928a4c3498934b1c544e71339712409ab017fc8b7695154cdd5357261b4bc`。
+- 最终导出manifest SHA256：`9445f4fa085a941d70f9b632703e111a4c1f1a1ba68baddd464a9acea1da18d3`。
+
+实际通过：8票处理身份唯一齐全（7结果+1明确失败）；全部7个结果通过UnderlyingProfile读取；JSON、AI、中文视图共同事实一致；全部导出文件hash一致；NVDA独立Python API的result_id、指标、episode与批量一致；来源manifest及16文件未变化。
+真实验收总状态PARTIAL专指UBER缺少目标日期和部分指标缺证据，不代表组件未实现。
+
+正常及缺失TEST样例另存在最终目录 `fixtures/normal` 和 `fixtures/missing`，分别包含JSON、schema、中文、AI及文件hash；不当成canonical业务验收。公开example脚本的 `--fixture` 实际执行返回COMPLETED，样例条件恢复3日。
+
+第1步验收manifest仍为 `cd4439c087dba0f9343b5d64b481074e73b5c21117df6eb8e6a8cd6b532e578b`；原run manifest仍为 `2d927f244e57c3aa576ede819cfc9e83e50e50437713efbb4188a42e97f9cae9`。
+`adaptive_profiles.py`、`analysis_contracts.py` 和 `pool/ai_evidence.py` 与45c17d5无差异。主分支仍为a463e46。
+
+### 剩余输入与停止边界
+
+UBER须先通过既有canonical流程取得并验证9月2日至4日日线，才可单独补其档案；本轮不执行导入。
+NVDA声明的326日读取范围缺2025-05-20至06-30共28根。仅补齐252日回撤分布至少需要2025-06-10至06-30的14根，使窗口首日前高点前缀从46达到60；若要完整复用声明的ATR起算条件，还需前面14根。取得合法数据后重新度量；现有其他54项和合法episode可直接使用。
+MSFT、HOOD、MDLZ的恢复统计缺失是本观察范围内缺合格恢复证据，不是API故障；不增加虚构样本或默认值。
+正式交易未采用本组件。本步到组件、确定输入检查和上述真实样本验收为止，不进入第3步。
