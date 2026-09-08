@@ -10,6 +10,8 @@ from pcs.trend.support import SupportResult, analyze_support
 from pcs.trend.snapshot import TrendSnapshotResult, build_trend_snapshot
 from pcs.trend.interpretation import TrendInterpretationResult, interpret_trend
 from pcs.trend.scoring import TrendScoreResult, score_trend
+from pcs.trend.support_zones import evaluate_support_zones
+from pcs.trend.selection_models import SupportZoneInput, SupportZoneResult
 
 __all__ = [
     "BASE_INDICATOR_COLUMNS",
@@ -37,4 +39,7 @@ __all__ = [
     "interpret_trend",
     "TrendScoreResult",
     "score_trend",
+    "SupportZoneInput",
+    "SupportZoneResult",
+    "evaluate_support_zones",
 ]

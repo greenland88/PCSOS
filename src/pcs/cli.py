@@ -398,6 +398,14 @@ def main():
     from pcs.pool.underlying_profiles import run_profile_command
     profile.set_defaults(func=run_profile_command)
 
+    support_zones = sub.add_parser("support-zones", help="read-only fixed support-zone evidence from canonical daily data")
+    support_zones.add_argument("--symbols", required=True, help="comma-separated symbols, at most eight")
+    support_zones.add_argument("--as-of", required=True, help="frozen completed exchange session YYYY-MM-DD")
+    support_zones.add_argument("--run-id", required=True)
+    support_zones.add_argument("--output-directory", required=True)
+    from pcs.pool.support_zones import run_support_zone_command
+    support_zones.set_defaults(func=run_support_zone_command)
+
     admin = sub.add_parser("admin", help="administrator diagnostics and recovery tools")
     admin_sub = admin.add_subparsers(required=True)
 

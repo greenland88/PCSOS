@@ -178,3 +178,219 @@ class UnderlyingProfile(StrictModel):
     coverage: ProfileCoverage
     provenance: list[SourceReference]
     explanation: str
+
+
+class SupportZonePolicy(StrictModel):
+    policy_id: str = "support-zones-research-v1"
+    schema_version: Literal["1.0"] = "1.0"
+    calculation_version: Literal["support-zones-v1"] = "support-zones-v1"
+    analysis_sessions: int = Field(default=60, ge=7, le=252)
+    indicator_warmup_sessions: int = Field(default=200, ge=50, le=1000)
+    pivot_left_bars: Literal[3] = 3
+    pivot_right_bars: Literal[3] = 3
+    atr_period: Literal[14] = 14
+    zone_width_atr: float = Field(default=0.35, gt=0)
+    break_buffer_atr: float = Field(default=0.35, gt=0)
+    held_rebound_atr: float = Field(default=0.5, gt=0)
+    retest_departure_atr: float = Field(default=0.5, gt=0)
+    confirmation_sessions: Literal[3] = 3
+    parameter_source: Literal["DEFAULT", "REQUEST"] = "DEFAULT"
+
+    @model_validator(mode="before")
+    @classmethod
+    def mark_support_overrides(cls, values):
+        if isinstance(values, dict):
+            values = dict(values)
+            if any(k in values and values[k] != f.default for k, f in cls.model_fields.items()
+                   if k != "parameter_source"):
+                values["parameter_source"] = "REQUEST"
+        return values
+
+    @property
+    def required_sessions(self) -> int:
+        return self.analysis_sessions + self.indicator_warmup_sessions
+
+
+class SupportFeatureBar(StrictModel):
+    session: date
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    sma20: float | None
+    sma50: float | None
+    atr14: float | None
+
+
+class ConfirmedSwingEvidence(StrictModel):
+    source_id: str
+    pivot_date: str
+    confirmed_at: str
+    swing_type: Literal["low", "high"]
+    price: float
+
+
+class SupportFeatureView(StrictModel):
+    symbol: str
+    bars: list[SupportFeatureBar]
+    confirmed_swings: list[ConfirmedSwingEvidence]
+    expected_sessions: list[str]
+    analysis_start: str
+    indicator_seed_start: str
+    indicator_identity: str
+    source: SourceReference
+    price_basis: str
+    corporate_action_version: str
+    input_kind: Literal["VERIFIED_CANONICAL", "TEST"]
+    source_timestamp: str | None = None
+    received_at: str | None = None
+
+
+class SupportSourceAnchor(StrictModel):
+    source_id: str
+    source_type: Literal["SMA20", "SMA50", "CONFIRMED_SWING_LOW"]
+    price: float
+    observed_at: str
+    available_at: str
+    pivot_date: str | None = None
+    retrospective: bool = False
+
+
+class SupportTestEvent(StrictModel):
+    test_id: str
+    touch_session: str
+    touch_low: float
+    touch_high: float
+    cumulative_low: float
+    confirmation_deadline: str
+    status: Literal["IN_PROGRESS", "HELD", "UNCONFIRMED_TEST"]
+    first_held_at: str | None = None
+    ended_at: str | None = None
+    departure_session: str | None = None
+    rebound_atr: float | None = None
+    penetration_atr: float
+    reason_codes: list[str]
+
+
+class SupportIntradayBreach(StrictModel):
+    session: str
+    low: float
+    invalidation_line: float
+    penetration_atr: float
+
+
+class SupportZone(StrictModel):
+    zone_id: str
+    symbol: str
+    zone_type: Literal["MA_REFERENCE", "SWING_LOW", "CONFLUENCE"]
+    lower: float
+    upper: float
+    anchor_price: float
+    anchor_atr: float
+    invalidation_line: float
+    formed_at: str
+    available_at: str
+    creation_sources: list[SupportSourceAnchor]
+    observed_source_ids: list[str]
+    price_basis: str
+    corporate_action_version: str
+    policy_id: str
+    calculation_version: str
+    state: Literal["REFERENCE_ONLY", "TEST_IN_PROGRESS", "SINGLE_HELD_TEST", "REPEATED_HELD_TESTS", "BROKEN"]
+    evidence_grade: Literal["REFERENCE", "IN_PROGRESS", "SINGLE_HELD", "REPEATED_HELD", "BROKEN"]
+    tests: list[SupportTestEvent]
+    intraday_breaches: list[SupportIntradayBreach]
+    broken_at: str | None = None
+    broken_close: float | None = None
+    bound: bool = False
+    reason_codes: list[str]
+
+
+class SupportHistoryRecord(StrictModel):
+    history_id: str
+    session: str
+    zone_id: str
+    event_type: Literal["ZONE_FORMED", "SOURCE_RESONANCE", "RETROSPECTIVE_INTERSECTION", "DAILY_STATE", "TEST_STARTED", "TEST_UPDATED", "TEST_HELD", "TEST_UNCONFIRMED", "DEPARTED", "INTRADAY_PENETRATION", "BROKEN", "DATA_MISSING", "PRIOR_STATE_INVALIDATED"]
+    known_at: str
+    retrospective: bool
+    close: float | None = None
+    low: float | None = None
+    high: float | None = None
+    zone_lower: float
+    zone_upper: float
+    invalidation_line: float
+    anchor_atr: float
+    zone_state: str
+    test_id: str | None = None
+    reason_codes: list[str]
+
+
+class SupportZoneState(StrictModel):
+    symbol: str
+    zones: list[SupportZone]
+    support_history: list[SupportHistoryRecord]
+    evaluated_through: str | None
+    state_revision: int
+    input_prefix_sha256: str
+    source_identity: str
+    price_basis: str
+    corporate_action_version: str
+    policy_sha256: str
+    indicator_identity: str
+
+
+class SupportZoneInput(StrictModel):
+    call_context: CallContext
+    feature_view: SupportFeatureView
+    effective_policy: SupportZonePolicy = Field(default_factory=SupportZonePolicy)
+    prior_state: SupportZoneState | None = None
+    bound_zone_id: str | None = None
+
+
+class SupportZoneCoverage(StrictModel):
+    expected_sessions: list[str]
+    actual_sessions: list[str]
+    missing_sessions: list[str]
+    analysis_start: str
+    evaluated_through: str | None
+    indicator_seed_start: str
+    indicator_identity: str
+    legal_input_sha256: str
+    source_identity: str
+    fields: dict[str, CapabilityStatus]
+    reason_codes: list[str]
+
+
+class SupportZoneSelection(StrictModel):
+    role: Literal["RECENT_OBSERVED_SUPPORT", "CANDIDATE_KEY_SUPPORT", "BOUND_SUPPORT"]
+    zone_id: str | None
+    status: Literal["SELECTED", "UNBOUND", "UNAVAILABLE"]
+    reason_codes: list[str]
+
+
+class SupportZoneResult(StrictModel):
+    module: str = "support_zones"
+    version: Literal["1.0"] = "1.0"
+    symbol: str
+    as_of: str
+    status: CapabilityStatus
+    data_timestamp: str | None
+    received_at: str | None
+    calculation_version: str = "support-zones-v1"
+    run_id: str
+    request_id: str
+    result_id: str
+    reason_codes: list[str]
+    call_context: CallContext
+    effective_policy: SupportZonePolicy
+    policy_sha256: str
+    current_zones: list[SupportZone]
+    archived_zones: list[SupportZone]
+    support_history: list[SupportHistoryRecord]
+    state_changes: list[SupportHistoryRecord]
+    selections: list[SupportZoneSelection]
+    unselected_zones: list[dict]
+    coverage: SupportZoneCoverage
+    next_state: SupportZoneState
+    provenance: list[SourceReference]
+    explanation: str
