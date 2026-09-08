@@ -35,15 +35,30 @@ Status values are `COMPLETE`, `IN_PROGRESS`, `BLOCKED`, `PLANNED`, and
 | Selection explanation v1.4 | COMPLETE — STEP 1 ONLY | `pcs.pool.ai_evidence.explain_selection` explains saved per-ticker evidence, score provenance, execution state, and entrypoint implementation differences without changing decisions or scanning. CLI export is `pool-evidence --explain-selection`; real validation is limited to the recorded Step 1 sample. |
 | Underlying risk profile | COMPLETE — STEP 2; REAL COVERAGE PARTIAL | `pcs.trend.underlying_profile.measure_underlying_profile(ProfileInput)` measures descriptive daily volatility, liquidity, relative strength, directional gaps and frozen-peak recovery episodes. Daily canonical input required; benchmark optional per metric; no options dependency or strategy adoption. Schema 1.0 / calculation underlying-profile-v1. Read-only CLI: `underlying-profile`. 26 focused checks passed; 7/8 requested real profiles generated at 2026-09-04 (UBER end-session missing); per-metric gaps retained. Scope, examples and evidence: `docs/operations/selection_v2/step_02.md`. |
 | Verifiable support zones | IMPLEMENTED — REAL COVERAGE 7/8; F1–F4 FIXES AWAIT REVIEW | `pcs.trend.support_zones.evaluate_support_zones(SupportZoneInput)` builds fixed SMA/confirmed-swing zones, causal tests and replayable evidence. Result schema 1.1 / support-zones-v2 binds effective policy to zone IDs, persists intraday breaches and full later sources, and separates replay diagnostics from business identity. 42 focused checks passed. Clean e2d5531 canonical acceptance at 2026-09-04: 7 profiles; UBER INSUFFICIENT_FEATURE_WARMUP. 880 source contents/references validated; default zone bounds and test decisions unchanged; 20 missing persisted breaches recovered. Old SupportResult/trading behavior unchanged; no production adoption. CLI: `support-zones`; evidence: `docs/operations/selection_v2/step_03.md`. |
-| Entry opportunity state / healthy pullback | IMPLEMENTED — STEP 4 F1–F4 FIXED; REAL COVERAGE 7/8, REVIEW PENDING | `pcs.trend.opportunity_engine.evaluate_entry_opportunity(OpportunityInput)` provides the shared causal lifecycle and now consumes authoritative `interpret_trend` health, exact bullish structure and explicit short-term phase blockers while retaining support-zones-v2. CURRENT_EOD applicability is exchange-calendar resolved; saved state supports real incremental continuation with detailed history loaded separately. Required unknowns remain null/PARTIAL and optional diagnostics do not block. Schema 1.0 / entry-opportunity-v2 / healthy-pullback-opportunity-v1.7. 91 focused checks; clean `aaa5279` canonical acceptance at 2026-09-04 produced 60-day timelines for 7 symbols; UBER retained INSUFFICIENT_FEATURE_WARMUP. Old pool admission, options and final action remain unchanged. CLI: `entry-opportunity`; evidence: `docs/operations/selection_v2/step_04.md`. |
+| Entry opportunity state / healthy pullback | STEP 4 R1–R3 ACCEPTED BY USER; REAL COVERAGE 7/8 | Accepted HEAD `a1d23590a840ee7c4152332a6d76eb09b1feae2b`. Shared causal lifecycle consumes authoritative health/structure/phase and support-zones-v2; calendar-based request applicability, real incremental continuation and dated missing-evidence summaries are preserved. Step 4 schema 1.1 / entry-opportunity-v2.1, 99 focused checks; historical clean `aaa5279` real coverage 7/8 with UBER warmup and dated health gaps. CLI: `entry-opportunity`; evidence: `docs/operations/selection_v2/step_04.md`. Production pool admission and options remain unchanged. |
 
-Step 4 follow-up (2026-09-08): R1–R3 implemented, **REVIEW PENDING**. Source
+Step 4 follow-up (2026-09-08): R1–R3 **ACCEPTED BY USER** at
+`a1d23590a840ee7c4152332a6d76eb09b1feae2b`; this supersedes historical
+REVIEW PENDING handoff text. Source
 `7373f1e` repairs committed-prefix gap recovery, continuous advancement across
 later display starts, same-session restore and dated missing-evidence summaries.
 Result schema 1.1 / calculation entry-opportunity-v2.1; 99 focused checks passed.
 Previous `aaa5279` real outputs were only hash-checked and typed-loaded (13 files,
 7 saved results); canonical/real-business calculations were not rerun this round.
 See the current handoff section of `docs/operations/selection_v2/step_04.md`.
+
+Step 5 (2026-09-08): **IMPLEMENTED; REAL COVERAGE 7/8; AWAITING REVIEW**.
+`detect_shallow_pullback(ShallowPullbackInput) -> SetupEvidence` freezes the
+pre-touch 20-session peak and previous-session ATR, retains cumulative depth,
+and feeds the same entry-opportunity state machine. Schema 1.2 /
+entry-opportunity-v2.2 / shallow-pullback-v1. Independent family switches,
+saved inputs, true continuation and JSON/Chinese/AI/CSV output are available.
+149 focused checks passed; one pre-existing TA-Lib placement constraint is
+separately recorded, not reported as passed. Final clean source `f37f756`
+reused verified canonical inputs for 7 symbols through 2026-09-04: no qualified
+shallow events; UBER retains insufficient warmup, and early health/phase coverage
+gaps remain explicit. No options, pool scan, production adoption or main merge.
+Evidence and exact commands: `docs/operations/selection_v2/step_05.md`.
 
 The `options_v2` TSLA cutover remains blocked by the duplicate-key gate and the
 old canonical route's ambiguous quote keys. No strategy rule is changed by this
