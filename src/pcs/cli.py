@@ -411,7 +411,7 @@ def main():
     opportunity.add_argument("--as-of", required=True, help="frozen completed exchange session YYYY-MM-DD")
     opportunity.add_argument("--run-id", required=True)
     opportunity.add_argument("--output-directory", required=True)
-    opportunity.add_argument("--families", default="HEALTHY_PULLBACK", help="HEALTHY_PULLBACK,SHALLOW_PULLBACK; independent observation families")
+    opportunity.add_argument("--families", default="HEALTHY_PULLBACK", help="HEALTHY_PULLBACK,SHALLOW_PULLBACK,BREAKOUT_RETEST; independent observation families")
     opportunity.add_argument("--input-directory", help="hash-verified saved prepared inputs; no new data reads")
     opportunity.add_argument("--resume-directory", help="hash-verified prior family results")
     opportunity.add_argument("--render-only", action="store_true", help="regenerate views from input-directory without calculation")

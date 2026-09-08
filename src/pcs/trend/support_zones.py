@@ -97,7 +97,9 @@ def _new_zone(symbol, anchors, atr, policy, view):
                 [a.model_dump(mode="json") for a in anchors], policy.calculation_version,
                 view.price_basis, view.corporate_action_version, _policy_identity(policy)]
     kinds = {a.source_type for a in anchors}
-    zone_type = "CONFLUENCE" if len(kinds) > 1 else "SWING_LOW" if kinds == {"CONFIRMED_SWING_LOW"} else "MA_REFERENCE"
+    zone_type = ("CONFLUENCE" if len(kinds) > 1 else
+                 "SWING_LOW" if kinds == {"CONFIRMED_SWING_LOW"} else
+                 "BREAKOUT_RESISTANCE" if kinds == {"BREAKOUT_RESISTANCE"} else "MA_REFERENCE")
     return SupportZone(zone_id="sha256:" + _hash(semantic), symbol=symbol, zone_type=zone_type,
         lower=center-half, upper=center+half, anchor_price=center, anchor_atr=atr,
         invalidation_line=center-half-policy.break_buffer_atr*atr,
@@ -212,6 +214,20 @@ def _update_zone(zone, bar, expected, policy, history, changes):
     state = _zone_state(zone)
     return zone.model_copy(update={"state": state, "evidence_grade": _evidence_grade(state),
                                    "intraday_breaches": breaches})
+
+
+def create_fixed_support_zone(symbol, anchor, atr, policy, feature_view):
+    """Public single-anchor fixed-zone constructor used by compatible patterns."""
+    if not _finite_positive(atr):
+        raise ValueError("SUPPORT_ZONE_FORMATION_ATR_INVALID")
+    return _new_zone(symbol, [anchor], float(atr), policy, feature_view)
+
+
+def update_fixed_support_zone(zone, bar, expected_sessions, policy, history):
+    """Advance one existing fixed zone with the canonical support-test rules."""
+    changes = []
+    updated = _update_zone(zone, bar, expected_sessions, policy, history, changes)
+    return updated, changes
 
 
 def _anchors_for_session(view, bar):

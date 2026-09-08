@@ -249,7 +249,7 @@ class SupportFeatureView(StrictModel):
 
 class SupportSourceAnchor(StrictModel):
     source_id: str
-    source_type: Literal["SMA20", "SMA50", "CONFIRMED_SWING_LOW"]
+    source_type: Literal["SMA20", "SMA50", "CONFIRMED_SWING_LOW", "BREAKOUT_RESISTANCE"]
     price: float
     observed_at: str
     available_at: str
@@ -283,7 +283,7 @@ class SupportIntradayBreach(StrictModel):
 class SupportZone(StrictModel):
     zone_id: str
     symbol: str
-    zone_type: Literal["MA_REFERENCE", "SWING_LOW", "CONFLUENCE"]
+    zone_type: Literal["MA_REFERENCE", "SWING_LOW", "CONFLUENCE", "BREAKOUT_RESISTANCE"]
     lower: float
     upper: float
     anchor_price: float
@@ -419,7 +419,7 @@ class OpportunityPolicy(StrictModel):
     policy_id: str = "healthy-pullback-opportunity-v1.7"
     schema_version: Literal["1.0"] = "1.0"
     calculation_version: Literal["entry-opportunity-v2"] = "entry-opportunity-v2"
-    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK"] = "HEALTHY_PULLBACK"
+    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"] = "HEALTHY_PULLBACK"
     analysis_sessions: int = Field(default=60, ge=20, le=252)
     indicator_warmup_sessions: int = Field(default=200, ge=50, le=1000)
     recent_high_sessions: Literal[20] = 20
@@ -671,7 +671,7 @@ class OpportunityDay(StrictModel):
 class OpportunityEpisode(StrictModel):
     economic_episode_id: str
     opportunity_id: str
-    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK"] = "HEALTHY_PULLBACK"
+    family: Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"] = "HEALTHY_PULLBACK"
     setup_date: str
     touch_date: str
     confirmation_deadline: str
@@ -723,8 +723,9 @@ class OpportunityInput(StrictModel):
     prior_detections: list[OpportunityDetection] = Field(default_factory=list)
     calendar: str = "XNYS"
     legacy_opinion: dict = Field(default_factory=dict)
-    enabled_families: list[Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK"]] = Field(default_factory=lambda: ["HEALTHY_PULLBACK"])
+    enabled_families: list[Literal["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"]] = Field(default_factory=lambda: ["HEALTHY_PULLBACK"])
     shallow_policy: ShallowPullbackPolicy = Field(default_factory=ShallowPullbackPolicy)
+    breakout_policy: "BreakoutRetestPolicy" = Field(default_factory=lambda: BreakoutRetestPolicy())
     prior_setup_evidence: list[SetupEvidence] = Field(default_factory=list)
     prior_family_results: list["EntryOpportunity"] = Field(default_factory=list)
 
@@ -776,7 +777,7 @@ class EntryOpportunity(StrictModel):
     result_id: str
     matched_families: list[str]
     upstream_result_ids: list[str]
-    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2"] = "entry-opportunity-v2.2"
+    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1", "entry-opportunity-v2.2", "entry-opportunity-v2.3"] = "entry-opportunity-v2.3"
     run_id: str
     request_id: str
     received_at: str | None
@@ -806,6 +807,124 @@ class EntryOpportunity(StrictModel):
     active_families: list[str] = Field(default_factory=list)
     shallow_pullback_timeline: list[SetupEvidence] = Field(default_factory=list)
     economic_events: list[dict] = Field(default_factory=list)
+    breakout_result: "BreakoutRetestResult | None" = None
+
+
+class BreakoutRetestPolicy(StrictModel):
+    policy_id: str = "breakout-retest-observation-v1"
+    calculation_version: Literal["breakout-retest-v1"] = "breakout-retest-v1"
+    resistance_sessions: Literal[20] = 20
+    resistance_tie_rule: Literal["LATEST_SESSION"] = "LATEST_SESSION"
+    breakout_buffer_atr: float = Field(default=.10, ge=0)
+    minimum_breakout_rvol20: float = Field(default=.90, ge=0)
+    retest_wait_sessions: Literal[15] = 15
+    parameter_source: Literal["PLAN_V1_7", "REQUEST"] = "PLAN_V1_7"
+
+    @model_validator(mode="before")
+    @classmethod
+    def mark_overrides(cls, values):
+        if isinstance(values, dict) and "parameter_source" not in values:
+            values = dict(values)
+            if any(k in values and values[k] != f.default for k, f in cls.model_fields.items()
+                   if k not in {"parameter_source", "calculation_version", "policy_id"}):
+                values["parameter_source"] = "REQUEST"
+        return values
+
+
+class BreakoutEvent(StrictModel):
+    breakout_id: str
+    parent_breakout_id: str | None = None
+    breakout_session: str
+    resistance: float
+    resistance_session: str
+    resistance_known_at: str
+    resistance_window_start: str
+    resistance_window_end: str
+    resistance_samples: int
+    resistance_candidates: list[dict]
+    breakout_atr: float
+    breakout_line: float
+    breakout_close: float
+    breakout_distance_atr: float
+    breakout_rvol20: float
+    breakout_volume: float
+    breakout_volume_denominator: float
+    zone: SupportZone
+    retest_deadline: str
+    retest_session: str | None = None
+    confirmation_deadline: str | None = None
+    confirmation_session: str | None = None
+    entry_start: str | None = None
+    entry_end: str | None = None
+    state: OpportunityStateName = OpportunityStateName.WATCH
+    terminal_session: str | None = None
+    restart_armed_at: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class BreakoutRetestDay(StrictModel):
+    session: str
+    breakout_id: str | None = None
+    state: OpportunityStateName
+    stage: Literal["NO_BREAKOUT", "WAITING_RETEST", "WAITING_CONFIRMATION", "VERIFIED", "EXPIRED", "INVALIDATED"]
+    retest_session: str | None = None
+    confirmation_session: str | None = None
+    eligible: bool | None = False
+    support_test_id: str | None = None
+    conditions: list[OpportunityCondition] = Field(default_factory=list)
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class BreakoutRetestState(StrictModel):
+    symbol: str
+    events: list[BreakoutEvent]
+    timeline: list[BreakoutRetestDay]
+    coverage_missing_evidence: list[OpportunityEvidenceGap] = Field(default_factory=list)
+    evaluated_through: str | None
+    input_prefix_sha256: str
+    source_identity: str
+    policy_identity: str
+    indicator_identity: str
+    price_basis: str
+    corporate_action_version: str
+    state_revision: int
+
+
+class BreakoutRetestInput(StrictModel):
+    call_context: CallContext
+    feature_view: OpportunityFeatureView
+    effective_policy: BreakoutRetestPolicy = Field(default_factory=BreakoutRetestPolicy)
+    opportunity_policy: OpportunityPolicy = Field(default_factory=OpportunityPolicy)
+    support_policy: SupportZonePolicy = Field(default_factory=SupportZonePolicy)
+    prior_state: BreakoutRetestState | None = None
+    calendar: str = "XNYS"
+
+
+class BreakoutRetestResult(StrictModel):
+    module: str = "breakout_retest"
+    version: Literal["1.0"] = "1.0"
+    symbol: str
+    as_of: str
+    status: CapabilityStatus
+    data_timestamp: str | None = None
+    calculation_version: Literal["breakout-retest-v1"] = "breakout-retest-v1"
+    run_id: str
+    request_id: str
+    result_id: str
+    reason_codes: list[str]
+    call_context: CallContext
+    effective_policy: BreakoutRetestPolicy
+    policy_sha256: str
+    events: list[BreakoutEvent]
+    timeline: list[BreakoutRetestDay]
+    current_event_id: str | None = None
+    eligible_at_requested_time: bool | None
+    evaluated_through: str | None
+    missing_sessions: list[str]
+    coverage_missing_evidence: list[OpportunityEvidenceGap]
+    next_state: BreakoutRetestState
+    provenance: list[SourceReference]
+    explanation: str
 
 
 OpportunityInput.model_rebuild()

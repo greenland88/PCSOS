@@ -35,11 +35,16 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
     unchanged so existing production consumers retain their current behavior.
     """
     from pcs.trend.opportunity_state import evaluate_opportunity_state
-    families = [f for f in ("HEALTHY_PULLBACK", "SHALLOW_PULLBACK") if f in input.enabled_families]
+    families = [f for f in ("HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST")
+                if f in input.enabled_families]
     if not families:
         raise ValueError("OPPORTUNITY_FAMILY_REQUIRED")
     results = []
     for family in families:
+        if family == "BREAKOUT_RETEST":
+            from pcs.trend.breakout_retest import evaluate_breakout_opportunity
+            results.append(evaluate_breakout_opportunity(input))
+            continue
         policy = input.effective_policy
         if family == "SHALLOW_PULLBACK":
             policy = policy.model_copy(update={"family": family,
@@ -66,8 +71,9 @@ def evaluate_entry_opportunity(input: OpportunityInput) -> EntryOpportunity:
     if len(results) == 1:
         return results[0]
     from pcs.trend.opportunity_state import _hash
+    display_order = ["HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"]
     primary = min(results, key=lambda r: (r.eligible_at_requested_time is not True,
-        families.index(r.family)))
+        display_order.index(r.family)))
     events = {}
     for result in results:
         for episode in result.episodes:

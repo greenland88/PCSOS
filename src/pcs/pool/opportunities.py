@@ -272,6 +272,8 @@ def opportunity_to_ai_view(result: EntryOpportunity):
         "family": result.family, "active_families": result.active_families,
         "family_results": [opportunity_to_ai_view(r) for r in result.family_results],
         "economic_events": result.economic_events,
+        "breakout_retest": (result.breakout_result.model_dump(mode="json")
+                            if result.breakout_result else None),
         "shallow_pullback_timeline": [e.model_dump(mode="json") for e in result.shallow_pullback_timeline],
         "as_of": result.as_of, "state": result.state.value if result.state else None,
         "capability_status": result.status.value,
@@ -351,6 +353,14 @@ def opportunities_to_markdown(results):
                     f"{str(s.depth_at_touch)+' / '+str(s.current_depth_atr) if s else '未知'} | "
                     f"{s.first_depth_exceeded if s and s.first_depth_exceeded else '未记录超限'} | "
                     f"{evidence.detected} / {', '.join(evidence.reason_codes)} |")
+        if result.breakout_result:
+            out += ["", "| 日期 | 阶段 | 突破ID | 回踩 | 确认 | 当前可评估 | 原因 |",
+                    "|---|---|---|---|---|---|---|"]
+            for day in result.breakout_result.timeline:
+                out.append(f"| {day.session} | {day.stage} | {day.breakout_id or '未发生'} | "
+                    f"{day.retest_session or '未发生'} | {day.confirmation_session or '未发生'} | "
+                    f"{day.eligible if day.eligible is not None else '未知'} | "
+                    f"{', '.join(day.reason_codes) or '—'} |")
     return "\n".join(out)
 
 
@@ -395,6 +405,12 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None, inputs
         "family_opportunities.json": [r.model_dump(mode="json") for r in children],
         "shallow_pullback_timeline.json": [e.model_dump(mode="json") for r in children
                                           for e in r.shallow_pullback_timeline],
+        "breakout_events.json": [{"symbol": r.symbol, **e.model_dump(mode="json")}
+                                  for r in children if r.breakout_result
+                                  for e in r.breakout_result.events],
+        "breakout_retest_timeline.json": [{"symbol": r.symbol, **d.model_dump(mode="json")}
+                                           for r in children if r.breakout_result
+                                           for d in r.breakout_result.timeline],
         "opportunity_timeline.json": [{"symbol": r.symbol, "result_id": r.result_id,
             "family": r.family, **d.model_dump(mode="json")} for r in children for d in r.timeline],
         "opportunity_conditions.json": [{"symbol": r.symbol, "result_id": r.result_id,
@@ -427,9 +443,12 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None, inputs
             "details": "CSV rows reference complete conditions by result_id and day"},
         "read_audit.json": audit or {},
     }
-    from pcs.trend.selection_models import ShallowPullbackInput, SetupEvidence
+    from pcs.trend.selection_models import (BreakoutRetestInput, BreakoutRetestResult,
+        ShallowPullbackInput, SetupEvidence)
     documents["shallow_pullback_input.schema.json"] = ShallowPullbackInput.model_json_schema()
     documents["setup_evidence.schema.json"] = SetupEvidence.model_json_schema()
+    documents["breakout_retest_input.schema.json"] = BreakoutRetestInput.model_json_schema()
+    documents["breakout_retest_result.schema.json"] = BreakoutRetestResult.model_json_schema()
     if inputs is not None:
         documents["prepared_opportunity_inputs.json"] = [i.model_dump(mode="json") for i in inputs]
     hashes = {name: _write_atomic(root/name, json.dumps(doc, ensure_ascii=False,
@@ -501,6 +520,18 @@ def find_shallow_evidence(result, session, test_id=None):
             if e.session == session and (test_id is None or e.next_state and e.next_state.test_id == test_id)]
 
 
+def find_breakout_event(result, breakout_id):
+    return next((event for child in (result.family_results or [result])
+                 if child.breakout_result for event in child.breakout_result.events
+                 if event.breakout_id == breakout_id), None)
+
+
+def find_breakout_day(result, session, test_id=None):
+    return [day for child in (result.family_results or [result])
+            if child.breakout_result for day in child.breakout_result.timeline
+            if day.session == session and (test_id is None or day.support_test_id == test_id)]
+
+
 def find_opportunity_episode(result: EntryOpportunity, economic_episode_id: str):
     return next((e for e in result.episodes
                  if e.economic_episode_id == economic_episode_id), None)
@@ -528,7 +559,7 @@ def run_opportunity_command(args):
     resume_directory = getattr(args, "resume_directory", None)
     render_only = getattr(args, "render_only", False)
     families = list(dict.fromkeys(getattr(args, "families", "HEALTHY_PULLBACK").split(",")))
-    if not set(families) <= {"HEALTHY_PULLBACK", "SHALLOW_PULLBACK"}:
+    if not set(families) <= {"HEALTHY_PULLBACK", "SHALLOW_PULLBACK", "BREAKOUT_RETEST"}:
         raise ValueError("OPPORTUNITY_FAMILY_INVALID")
     saved_inputs, prior_results = {}, {}
     if input_directory:
