@@ -13,7 +13,7 @@ from pcs.analysis_contracts import CapabilityStatus
 from pcs.trend.selection_models import (
     EntryOpportunity, OpportunityCoverage, OpportunityDay, OpportunityEpisode,
     OpportunityInput, OpportunityStateCheckpoint, OpportunityStateName,
-    OpportunityTransition,
+    OpportunityTransition, OpportunityEvidenceGap,
 )
 from pcs.trend.setup_detectors import (
     confirmation_conditions, current_eligibility_conditions,
@@ -97,6 +97,36 @@ def _current_status(conditions):
 
 def _required_unknown(conditions):
     return any(c.role != "DIAGNOSTIC" and c.predicate_value is None for c in conditions)
+
+
+def _day_gap_reasons(day):
+    unknowns = [c for c in day.conditions
+                if c.role != "DIAGNOSTIC" and c.predicate_value is None]
+    if unknowns:
+        return list(dict.fromkeys(r for c in unknowns
+            for r in (c.reason_codes or ["CONDITION_INPUT_UNKNOWN"])))
+    return list(day.reason_codes)
+
+
+def _gap_details(timeline, current_conditions):
+    current_keys = {(c.session, c.condition_id) for c in current_conditions
+                    if c.predicate_value is None}
+    gaps = []
+    for day in timeline:
+        for c in day.conditions:
+            if c.role == "DIAGNOSTIC" or c.predicate_value is not None:
+                continue
+            current = (c.session, c.condition_id) in current_keys
+            gaps.append(OpportunityEvidenceGap(session=c.session,
+                condition_id=c.condition_id, role=c.role,
+                reason_codes=c.reason_codes or ["CONDITION_INPUT_UNKNOWN"],
+                affected_outputs=(["current_assessment", "coverage"] if current else ["coverage"])))
+        if not day.conditions and day.capability_status == CapabilityStatus.PARTIAL:
+            gaps.append(OpportunityEvidenceGap(session=day.session,
+                condition_id=day.reason_codes[0], role="INPUT",
+                reason_codes=day.reason_codes,
+                affected_outputs=["current_assessment", "coverage"]))
+    return gaps
 
 
 def _episode_for_detection(symbol, detection, policy_hash, source_identity,
@@ -191,20 +221,38 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         diagnostics[:] = ["PRIOR_STATE_COMPATIBLE_REPLAY_VERIFIED"]
         compatible = False
 
+    if compatible and not input.prior_timeline and input.prior_state.evaluated_through:
+        raise ValueError("OPPORTUNITY_PRIOR_DETAILS_REQUIRED")
+    display_sessions = list(expected)
+    analysis_start = (input.prior_state.analysis_start if compatible and
+                      input.prior_state.analysis_start else view.analysis_start)
+    if compatible:
+        if (input.prior_state.evaluated_through not in expected_all or
+                input.prior_state.evaluated_through > ctx.effective_daily_session or
+                analysis_start not in expected_all):
+            raise ValueError("OPPORTUNITY_RESUME_SESSION_COVERAGE_INVALID")
+        expected = [s for s in expected_all if analysis_start <= s <= ctx.effective_daily_session]
+
     episodes: list[OpportunityEpisode] = (deepcopy(input.prior_state.episodes)
         if compatible and input.prior_state else [])
-    timeline: list[OpportunityDay] = (deepcopy(input.prior_timeline) if compatible else [])
-    transitions: list[OpportunityTransition] = (deepcopy(input.prior_transitions) if compatible else [])
-    detections = deepcopy(input.prior_detections) if compatible else []
+    boundary = input.prior_state.evaluated_through if compatible else None
+    timeline: list[OpportunityDay] = (deepcopy([d for d in input.prior_timeline
+        if boundary and d.session <= boundary]) if compatible else [])
+    transitions: list[OpportunityTransition] = (deepcopy([t for t in input.prior_transitions
+        if boundary and t.session <= boundary]) if compatible else [])
+    detections = (deepcopy([d for d in input.prior_detections
+        if boundary and d.session <= boundary]) if compatible else [])
+    if compatible and [d.session for d in timeline] != [s for s in expected if s <= boundary]:
+        raise ValueError("OPPORTUNITY_PRIOR_TIMELINE_INCOMPLETE")
     active = episodes[-1] if episodes else None
     evaluated_through = input.prior_state.evaluated_through if compatible and input.prior_state else None
     missing_sessions = []
-    global_reasons = (["REQUIRED_DISCOVERY_EVIDENCE_UNKNOWN"]
-        if compatible and any(d.capability_status == CapabilityStatus.PARTIAL
-                              for d in timeline) else [])
+    global_reasons = []
+    processed_sessions = []
 
     process_sessions = [s for s in expected if not compatible or not evaluated_through or s > evaluated_through]
     for session in process_sessions:
+        processed_sessions.append(session)
         bar = bar_by_day.get(session)
         support_snapshot_known = session in input.support_result_ids
         if bar is None or not _valid_price_bar(bar) or not support_snapshot_known:
@@ -472,9 +520,11 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     current_episode = next((e for e in reversed(episodes)
                             if last_day and e.economic_episode_id == last_day.economic_episode_id), None)
     current_conditions = last_day.conditions if last_day else []
-    relevant = [c for c in current_conditions
-        if c.role not in {"DIAGNOSTIC", "DISCOVERY"} or
-        (current_episode is not None and c.session == current_episode.setup_date)]
+    discovery_unresolved = bool(last_day and last_day.state is None and
+        any(c.role == "DISCOVERY" and c.predicate_value is None for c in current_conditions))
+    relevant = [c for c in current_conditions if c.role != "DIAGNOSTIC" and
+        (c.role != "DISCOVERY" or discovery_unresolved or
+         (current_episode is not None and c.session == current_episode.setup_date))]
     supporting = [c.condition_id for c in relevant
         if ((c.role == "INVALIDATION" and c.predicate_value is False) or
             (c.role != "INVALIDATION" and c.predicate_value is True))]
@@ -482,10 +532,19 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         if ((c.role == "INVALIDATION" and c.predicate_value is True) or
             (c.role != "INVALIDATION" and c.predicate_value is False))]
     missing = [c.condition_id for c in relevant if c.predicate_value is None]
+    coverage_gaps = _gap_details(timeline, relevant)
+    current_gaps = [g for g in coverage_gaps if "current_assessment" in g.affected_outputs]
+    missing = list(dict.fromkeys(missing + [g.condition_id for g in current_gaps]))
+    # Rebuild coverage from the retained committed prefix and freshly evaluated
+    # days. A resolved gap report beyond the checkpoint is never inherited.
+    global_reasons = list(dict.fromkeys(
+        reason for d in timeline if d.capability_status == CapabilityStatus.PARTIAL
+        for reason in _day_gap_reasons(d)))
     status = CapabilityStatus.PARTIAL if missing_sessions or global_reasons else CapabilityStatus.COMPLETED
     semantic = {"symbol": ctx.symbol, "as_of": ctx.effective_daily_session,
         "requested_session": requested_session, "request_semantics": request_semantics,
         "implementation": _IMPLEMENTATION_ID,
+        "calculation_version": "entry-opportunity-v2.1",
         "policy": policy_hash, "source": source_identity, "support": support_identity,
         "indicator": view.indicator_identity, "price_basis": view.price_basis,
         "corporate_action_version": view.corporate_action_version,
@@ -498,7 +557,8 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     checkpoint = checkpoint.model_copy(update={"committed_result_id": result_id})
     coverage = OpportunityCoverage(expected_sessions=expected,
         actual_sessions=actual, missing_sessions=missing_sessions,
-        analysis_start=view.analysis_start, evaluated_through=evaluated_through,
+        analysis_start=analysis_start, evaluated_through=evaluated_through,
+        display_sessions=display_sessions, processed_sessions=processed_sessions,
         indicator_seed_start=view.indicator_seed_start,
         indicator_identity=view.indicator_identity, legal_input_sha256=prefix_hash,
         source_identity=source_identity, support_identity=support_identity,
@@ -556,7 +616,9 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
         episodes=episodes, timeline=timeline, transitions=transitions,
         detections=detections, current_conditions=current_conditions,
         supporting_evidence=supporting, opposing_evidence=opposing,
-        missing_evidence=missing, next_observation_conditions=_next_conditions(last_day),
+        missing_evidence=missing, current_missing_details=current_gaps,
+        coverage_missing_evidence=coverage_gaps,
+        next_observation_conditions=_next_conditions(last_day),
         legacy_opinion=legacy, opinion_differences=differences, coverage=coverage,
         next_state=checkpoint, call_diagnostics=diagnostics,
         provenance=[view.source, *view.auxiliary_sources],

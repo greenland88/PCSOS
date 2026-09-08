@@ -331,6 +331,129 @@ def _replace_bars(inp, **changes):
         "bars": [b.model_copy(update=changes) for b in inp.feature_view.bars]})})
 
 
+def _resume_details(inp, prior):
+    return inp.model_copy(update={"prior_state": prior.next_state,
+        "prior_timeline": prior.timeline, "prior_transitions": prior.transitions,
+        "prior_detections": prior.detections})
+
+
+def test_repaired_gap_resume_discards_uncommitted_gap_row():
+    prior = evaluate_entry_opportunity(_input(through=30, missing=27))
+    resumed = evaluate_entry_opportunity(_resume_details(_input(through=30), prior))
+    cold = evaluate_entry_opportunity(_input(through=30))
+    assert len(resumed.timeline) == len({d.session for d in resumed.timeline})
+    assert resumed.timeline == cold.timeline
+    assert resumed.transitions == cold.transitions
+    assert resumed.status == cold.status
+    assert resumed.coverage.reason_codes == cold.coverage.reason_codes
+    assert resumed.missing_evidence == cold.missing_evidence
+    assert resumed.result_id == cold.result_id
+
+
+def test_later_display_start_cannot_skip_intermediate_confirmation(monkeypatch):
+    import pcs.trend.opportunity_state as engine
+    prior = evaluate_entry_opportunity(_input(through=26))
+    inp = _resume_details(_input(through=30), prior)
+    inp = inp.model_copy(update={"feature_view": inp.feature_view.model_copy(update={
+        "analysis_start": _sessions()[29]})})
+    cold = evaluate_entry_opportunity(_input(through=30))
+    calls = []
+    original = engine.detect_healthy_pullback
+    def record(**kwargs):
+        calls.append(kwargs["bar"].session.isoformat())
+        return original(**kwargs)
+    monkeypatch.setattr(engine, "detect_healthy_pullback", record)
+    resumed = evaluate_entry_opportunity(inp)
+    assert calls == _sessions()[27:31]
+    assert resumed.coverage.processed_sessions == calls
+    assert resumed.coverage.display_sessions == _sessions()[29:31]
+    assert resumed.episodes == cold.episodes
+    assert resumed.timeline == cold.timeline
+    assert resumed.result_id == cold.result_id
+
+
+def test_same_session_checkpoint_without_details_never_loses_state():
+    import pytest
+    prior = evaluate_entry_opportunity(_input(through=28))
+    inp = _input(through=28, prior=prior.next_state)
+    inp = inp.model_copy(update={"feature_view": inp.feature_view.model_copy(update={
+        "analysis_start": _sessions()[28]})})
+    with pytest.raises(ValueError, match="OPPORTUNITY_PRIOR_DETAILS_REQUIRED"):
+        evaluate_entry_opportunity(inp)
+    resumed = evaluate_entry_opportunity(_resume_details(inp, prior))
+    assert resumed.state == prior.state
+    assert resumed.eligible_at_requested_time == prior.eligible_at_requested_time
+    assert resumed.result_id == prior.result_id
+    assert resumed.coverage.processed_sessions == []
+
+
+def test_unknown_discovery_is_named_in_current_missing_summary():
+    inp = _replace_bars(_input(through=25), trend_health=None)
+    result = evaluate_entry_opportunity(inp)
+    assert result.missing_evidence == ["TREND_HEALTH_QUALIFIED"]
+    assert result.status.value == "PARTIAL"
+
+
+def test_skipped_display_range_stops_at_missing_intermediate_day():
+    prior = evaluate_entry_opportunity(_input(through=26))
+    inp = _resume_details(_input(through=30, missing=27), prior)
+    inp = inp.model_copy(update={"feature_view": inp.feature_view.model_copy(update={
+        "analysis_start": _sessions()[29]})})
+    resumed = evaluate_entry_opportunity(inp)
+    assert resumed.status.value == "PARTIAL"
+    assert resumed.evaluated_through == _sessions()[26]
+    assert resumed.eligible_at_requested_time is None
+    assert resumed.next_state.state_revision == prior.next_state.state_revision
+    assert resumed.coverage.processed_sessions == [_sessions()[27]]
+    assert "DAILY_BAR_MISSING" in resumed.missing_evidence
+
+
+def test_real_historical_unknown_survives_gap_repair_without_generic_reason():
+    def unknown_at_touch(inp):
+        return inp.model_copy(update={"feature_view": inp.feature_view.model_copy(update={
+            "bars": [b.model_copy(update={"trend_health": None}) if
+                b.session.isoformat() == _sessions()[25] else b for b in inp.feature_view.bars]})})
+    prior = evaluate_entry_opportunity(unknown_at_touch(_input(through=30, missing=27)))
+    complete = unknown_at_touch(_input(through=30))
+    resumed = evaluate_entry_opportunity(_resume_details(complete, prior))
+    cold = evaluate_entry_opportunity(complete)
+    assert resumed.status.value == "PARTIAL"
+    assert resumed.coverage.reason_codes == ["TREND_HEALTH_UNKNOWN"]
+    assert resumed.coverage_missing_evidence == cold.coverage_missing_evidence
+    assert resumed.result_id == cold.result_id
+    assert not resumed.missing_evidence  # Last day is conclusive NO_SETUP.
+
+
+def test_gap_summaries_are_consistent_in_all_views(tmp_path):
+    import csv
+    import json
+    result = evaluate_entry_opportunity(_replace_bars(_input(through=25), trend_health=None))
+    root = write_opportunity_artifacts(tmp_path/"gaps", [result])
+    ai = json.loads((root/"entry_opportunities.ai.json").read_text(encoding="utf-8"))[0]
+    structured = json.loads((root/"entry_opportunities.json").read_text(encoding="utf-8"))[0]
+    assert ai["current_missing_details"] == structured["current_missing_details"]
+    assert ai["coverage_missing_evidence"] == structured["coverage_missing_evidence"]
+    rows = list(csv.DictReader((root/"entry_opportunities.csv").read_text(encoding="utf-8").splitlines()))
+    assert json.loads(rows[-1]["current_missing_evidence"]) == result.missing_evidence
+    flat = [g for row in rows for g in json.loads(row["coverage_missing_evidence"])]
+    assert flat == structured["coverage_missing_evidence"]
+    markdown = (root/"entry_opportunities.zh-CN.md").read_text(encoding="utf-8")
+    assert "当前缺项：TREND_HEALTH_QUALIFIED" in markdown
+    assert _sessions()[25] in markdown
+
+
+def test_false_discovery_unknown_is_coverage_only_and_rsi_excluded():
+    inp = _replace_bars(_input(through=25), trend_health=None,
+                        structure_state="neutral", rsi14=None)
+    result = evaluate_entry_opportunity(inp)
+    assert result.state == OpportunityStateName.NO_SETUP
+    assert result.eligible_at_requested_time is False
+    assert result.current_missing_details == []
+    assert result.missing_evidence == []
+    assert all(g.affected_outputs == ["coverage"] for g in result.coverage_missing_evidence)
+    assert all(g.role != "DIAGNOSTIC" for g in result.coverage_missing_evidence)
+
+
 def test_discovery_requires_bullish_structure_and_qualified_real_health():
     for changes in ({"structure_state": "neutral", "trend_health": "mixed"},
                     {"structure_state": "deteriorating", "trend_health": "weakening"},
@@ -401,9 +524,10 @@ def test_checkpoint_continuation_processes_only_new_sessions_and_can_match_cold(
 
     sliding = full_input.model_copy(update={"feature_view":
         full_input.feature_view.model_copy(update={"analysis_start": _sessions()[28]})})
-    advanced = evaluate_entry_opportunity(sliding)
+    advanced = evaluate_entry_opportunity(_resume_details(sliding, partial))
     assert advanced.episodes[0].economic_episode_id == partial.episodes[0].economic_episode_id
-    assert [d.session for d in advanced.timeline] == _sessions()[28:31]
+    assert advanced.coverage.processed_sessions == _sessions()[28:31]
+    assert advanced.timeline == cold.timeline
 
 
 def test_corrected_sliding_prefix_requires_full_replay_prefix():

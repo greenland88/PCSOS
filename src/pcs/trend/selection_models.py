@@ -648,11 +648,21 @@ class OpportunityCoverage(StrictModel):
     support_identity: str
     fields: dict[str, CapabilityStatus]
     reason_codes: list[str]
+    display_sessions: list[str] = Field(default_factory=list)
+    processed_sessions: list[str] = Field(default_factory=list)
+
+
+class OpportunityEvidenceGap(StrictModel):
+    session: str
+    condition_id: str
+    role: str
+    reason_codes: list[str]
+    affected_outputs: list[str]
 
 
 class EntryOpportunity(StrictModel):
     module: str = "entry_opportunity"
-    version: Literal["1.0"] = "1.0"
+    version: Literal["1.0", "1.1"] = "1.1"
     symbol: str
     as_of: str
     status: CapabilityStatus
@@ -672,7 +682,7 @@ class EntryOpportunity(StrictModel):
     result_id: str
     matched_families: list[str]
     upstream_result_ids: list[str]
-    calculation_version: Literal["entry-opportunity-v2"] = "entry-opportunity-v2"
+    calculation_version: Literal["entry-opportunity-v2", "entry-opportunity-v2.1"] = "entry-opportunity-v2.1"
     run_id: str
     request_id: str
     received_at: str | None
@@ -687,6 +697,8 @@ class EntryOpportunity(StrictModel):
     supporting_evidence: list[str]
     opposing_evidence: list[str]
     missing_evidence: list[str]
+    current_missing_details: list[OpportunityEvidenceGap] = Field(default_factory=list)
+    coverage_missing_evidence: list[OpportunityEvidenceGap] = Field(default_factory=list)
     next_observation_conditions: list[str]
     legacy_opinion: dict
     opinion_differences: list[dict]

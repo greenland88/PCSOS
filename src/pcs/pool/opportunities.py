@@ -298,6 +298,8 @@ def opportunity_to_ai_view(result: EntryOpportunity):
         "supporting_evidence": result.supporting_evidence,
         "opposing_evidence": result.opposing_evidence,
         "missing_evidence": result.missing_evidence,
+        "current_missing_details": [g.model_dump(mode="json") for g in result.current_missing_details],
+        "coverage_missing_evidence": [g.model_dump(mode="json") for g in result.coverage_missing_evidence],
         "next_observation_conditions": result.next_observation_conditions,
         "legacy_opinion": result.legacy_opinion,
         "opinion_differences": result.opinion_differences,
@@ -321,7 +323,9 @@ def opportunities_to_markdown(results):
             f"{day.confirmation_date if day and day.confirmation_date else '未发生'} | "
             f"{day.confirmation_deadline if day and day.confirmation_deadline else '不适用'} | "
             f"{(day.entry_start+'—'+day.entry_end) if day and day.entry_start and day.entry_end else '不适用'} | "
-            f"{', '.join(result.coverage.reason_codes) or '无'} |")
+            f"当前缺项：{', '.join(result.missing_evidence) or '无'}；"
+            f"覆盖未知：{len(result.coverage_missing_evidence)}项；"
+            f"{', '.join(result.coverage.reason_codes) or '无阻断缺口'} |")
     for result in results:
         out += ["", f"## {result.symbol} 逐日过程", "",
             "| 日期 | 状态 | 能力 | 可评估 | 事件/原因 |", "|---|---|---|---|---|"]
@@ -330,6 +334,12 @@ def opportunities_to_markdown(results):
                 f"{day.capability_status.value} | {day.eligible if day.eligible is not None else '未知'} | "
                 f"{', '.join(day.reason_codes) or '—'} |")
         out += ["", result.explanation, ""]
+        if result.coverage_missing_evidence:
+            out += ["| 缺项日期 | 条件 | 角色 | 原因 | 影响 |",
+                    "|---|---|---|---|---|"]
+            for gap in result.coverage_missing_evidence:
+                out.append(f"| {gap.session} | {gap.condition_id} | {gap.role} | "
+                    f"{', '.join(gap.reason_codes)} | {', '.join(gap.affected_outputs)} |")
     return "\n".join(out)
 
 
@@ -338,7 +348,8 @@ def _csv_view(results):
     columns = ["symbol", "session", "state", "capability_status", "eligible",
         "economic_episode_id", "opportunity_id", "setup_date", "touch_date",
         "confirmation_deadline", "confirmation_date", "entry_start", "entry_end",
-        "support_zone_id", "support_test_id", "reason_codes", "conditions_ref"]
+        "support_zone_id", "support_test_id", "reason_codes", "conditions_ref",
+        "current_missing_evidence", "coverage_missing_evidence"]
     writer = csv.DictWriter(stream, fieldnames=columns)
     writer.writeheader()
     for result in results:
@@ -352,7 +363,11 @@ def _csv_view(results):
                 "confirmation_date": day.confirmation_date or "", "entry_start": day.entry_start or "",
                 "entry_end": day.entry_end or "", "support_zone_id": day.support_zone_id or "",
                 "support_test_id": day.support_test_id or "", "reason_codes": ";".join(day.reason_codes),
-                "conditions_ref": f"{result.result_id}:{day.session}"})
+                "conditions_ref": f"{result.result_id}:{day.session}",
+                "current_missing_evidence": json.dumps(result.missing_evidence, ensure_ascii=False),
+                "coverage_missing_evidence": json.dumps([g.model_dump(mode="json")
+                    for g in result.coverage_missing_evidence if g.session == day.session],
+                    ensure_ascii=False)})
     return stream.getvalue()
 
 
@@ -382,6 +397,10 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None):
         "field_dictionary.json": {
             "state": "NO_SETUP/WATCH/CONFIRMING/ENTRY_READY/EXPIRED/INVALIDATED business state",
             "status": "Capability status; gaps do not create a market state",
+            "current_missing_details": "Dated required unknowns affecting the current conclusion; excludes diagnostics",
+            "coverage_missing_evidence": "Dated non-diagnostic unknowns across the retained timeline; coverage-only items do not override a conclusive false",
+            "coverage.processed_sessions": "Sessions actually attempted in this invocation, including the first unresolved gap",
+            "coverage.display_sessions": "Requested presentation range; never truncates state advancement",
             "eligible_at_requested_time": "null when requested time is not evaluable; ENTRY_READY is not authorization",
             "confirmation": "touch+1..touch+3 inclusive; first date is frozen",
             "entry_window": "confirmation+1..confirmation+3; confirmation day excluded",
