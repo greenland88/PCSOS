@@ -1,5 +1,94 @@
 # 第4步：机会状态机与健康回调
 
+## 当前交接：R1–R3 限定续修，待复核
+
+复核基线 `c4d235e2ef0e33678858d4615f6e9d9a4871d131`；本次源码提交
+`7373f1e3d1354a5e75a3f56b8f650639c7d33b9b`，原功能分支工作树起始干净。
+下方旧真实验收保留为历史证据，第4步整体仍待本轮复核，未合并main。
+
+本轮仅修改 `trend/opportunity_state.py`、必要typed模型、`pool/opportunities.py`
+输出适配及对应测试。未改变检测器、交易阈值、支撑计算、生产判定或第5步。
+
+| 项目 | 修复及实证 |
+|---|---|
+| R1 缺日补齐 | 仅继承 `evaluated_through` 以内的timeline、detections、transitions。边界外旧缺日报告留在旧产物；补齐后每日期唯一，timeline、转换、状态、缺项和result_id与同范围冷计算一致。 |
+| R2 连续推进 | checkpoint原分析起点用于业务覆盖，展示起点单独记录。实测从索引26恢复至30、展示从29起时，实际检测27、28、29、30，保留27的首次确认。缺27则在27停步、revision不增加。 |
+| R2 同日幂等 | 提供已校验完整明细时执行日期为空，状态、适用性及result_id不变；窄范围仅checkpoint返回 `OPPORTUNITY_PRIOR_DETAILS_REQUIRED`。完整前缀仍支持合法重放；历史修正缺前缀保护保留。 |
+| R3 缺项汇总 | 发现未决时 `TREND_HEALTH_QUALIFIED` 列入当前缺项；历史真实未知保留日期/角色/原因。明确false仍为NO_SETUP/false，其他未知只列覆盖说明；诊断RSI不列阻断缺项。四种视图内容一致。 |
+
+输出schema为 `1.1`，算法为 `entry-opportunity-v2.1`；模型仍接受已保存的
+schema `1.0` / `entry-opportunity-v2`。新增字段均有空列表默认值，旧产物缺少字段
+不代表此前完成过该检查。旧文件和ID保持原样，新算法写入result_id计算身份。
+经济episode和机会定义没有改变，沿用原policy及机会身份；历史v2有效checkpoint
+可复用，但本次结果ID与旧算法版本不要求相同。同一新算法下恢复与冷算ID必须一致。
+
+- `coverage.expected_sessions` / `analysis_start`：完整业务分析范围。
+- `coverage.display_sessions`：请求展示范围；完整timeline仍保留供复用。
+- `coverage.processed_sessions`：本次实际尝试的日期，含遇到的首个缺日；不参与业务ID。
+- `missing_evidence`、`current_missing_details`：当前判断缺项。
+- `coverage_missing_evidence`：完整时间线中非诊断未知，包含日期、condition_id、role、reason_codes、affected_outputs。只影响coverage的未知不改变明确false。
+
+能力原因从本次有效时间线重建，历史真实未知不会被统一改写为
+`REQUIRED_DISCOVERY_EVIDENCE_UNKNOWN`。冷计算的业务状态、episode与判定条件保持原行为；
+变化限于汇总解释、覆盖记录及版本身份。恢复路径则修复附件所述错误判断。
+
+### 实际验证
+
+先将附件反例改为正常回归断言，在旧源码上执行以下命令得到4项预期失败，分别证明
+重复日期、跳过确认、同日状态消失、当前缺项为空：
+
+```powershell
+Set-Location H:/workspace/PCSOS-selection-v2-step-04
+python -m pytest tests/trend/test_entry_opportunity_v2.py -q -k 'repaired_gap or later_display or same_session_checkpoint or unknown_discovery'
+```
+
+修复后最终代码执行：
+
+```powershell
+python -m pytest tests/trend/test_entry_opportunity_v2.py tests/trend/test_opportunity_engine.py tests/trend/test_pullback.py tests/trend/test_support_zones.py tests/trend/test_support.py tests/trend/test_market_structure.py -q
+git diff --check
+```
+
+结果 `99 passed in 7.11s`；其中第4步36项（本轮新增8项），其余为原受影响专项。
+还验证了实际检测调用日期、历史未知与已解决缺口的区别、缺项多视图、旧明细loader。
+测试使用显式TEST夹具的既有session序列，不宣称该序列是实际XNYS交易日。
+原有CURRENT_EOD测试随专项运行，本轮没有新增供应商或当前行情验收。
+
+### 旧真实产物复用边界
+
+保留目录 `H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_aaa5279_20260904`。
+本轮只校验其13个manifest登记文件hash、通过现有 `load_opportunity_resume_evidence()`
+加载七票typed明细（各60行，checkpoint截至2026-09-04）。产物manifest SHA256：
+`a0b1bbbb7e4cc0bb34ff36c61ca39bde7a9953d196fa3a4f3186d0c1c32de2df`。
+来源计算提交仍为 `aaa52798c6830c2a0d4058d207927d80ff0e5085`，未改标成本次提交。
+
+复现此项只读校验：
+
+```powershell
+$env:PYTHONPATH='src'
+@'
+import hashlib, json
+from pathlib import Path
+from pcs.pool.opportunities import load_opportunity_resume_evidence
+root = Path('H:/workspace/PCSOS/selection_v2_outputs/step_04_acceptance_aaa5279_20260904')
+raw = (root/'artifact_manifest.json').read_bytes()
+manifest = json.loads(raw)
+for name, digest in manifest['sha256'].items():
+    assert hashlib.sha256((root/name).read_bytes()).hexdigest() == digest
+for symbol in ['NVDA','PLTR','MSFT','HOOD','MDLZ','AAL','AAOI']:
+    evidence = load_opportunity_resume_evidence(root, symbol)
+    assert len(evidence['prior_timeline']) == 60
+    assert evidence['prior_state'].evaluated_through == '2026-09-04'
+assert raw == (root/'artifact_manifest.json').read_bytes()
+print('13 hashes / 7 typed saved results PASS')
+'@ | python -
+```
+
+本轮canonical读取次数和真实股票核心重算次数均为0。之前16个canonical文件前后hash
+一致、七票业务判断、UBER暖机缺口，均只沿用原交接证据；未在新提交重新验收其行情、
+支撑或真实续算。恢复正确性由确定输入回归证明，旧产物检查只证明保存文件完整和typed
+读取兼容性。没有请求期权、扫描全池或收益研究。
+
 ## 边界与版本
 
 - 基线：`3b4d674ec418106e5ba24cd7a52204a6199084a8`，包含已验收第3步及计划v1.7。

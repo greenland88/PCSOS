@@ -37,6 +37,14 @@ Status values are `COMPLETE`, `IN_PROGRESS`, `BLOCKED`, `PLANNED`, and
 | Verifiable support zones | IMPLEMENTED — REAL COVERAGE 7/8; F1–F4 FIXES AWAIT REVIEW | `pcs.trend.support_zones.evaluate_support_zones(SupportZoneInput)` builds fixed SMA/confirmed-swing zones, causal tests and replayable evidence. Result schema 1.1 / support-zones-v2 binds effective policy to zone IDs, persists intraday breaches and full later sources, and separates replay diagnostics from business identity. 42 focused checks passed. Clean e2d5531 canonical acceptance at 2026-09-04: 7 profiles; UBER INSUFFICIENT_FEATURE_WARMUP. 880 source contents/references validated; default zone bounds and test decisions unchanged; 20 missing persisted breaches recovered. Old SupportResult/trading behavior unchanged; no production adoption. CLI: `support-zones`; evidence: `docs/operations/selection_v2/step_03.md`. |
 | Entry opportunity state / healthy pullback | IMPLEMENTED — STEP 4 F1–F4 FIXED; REAL COVERAGE 7/8, REVIEW PENDING | `pcs.trend.opportunity_engine.evaluate_entry_opportunity(OpportunityInput)` provides the shared causal lifecycle and now consumes authoritative `interpret_trend` health, exact bullish structure and explicit short-term phase blockers while retaining support-zones-v2. CURRENT_EOD applicability is exchange-calendar resolved; saved state supports real incremental continuation with detailed history loaded separately. Required unknowns remain null/PARTIAL and optional diagnostics do not block. Schema 1.0 / entry-opportunity-v2 / healthy-pullback-opportunity-v1.7. 91 focused checks; clean `aaa5279` canonical acceptance at 2026-09-04 produced 60-day timelines for 7 symbols; UBER retained INSUFFICIENT_FEATURE_WARMUP. Old pool admission, options and final action remain unchanged. CLI: `entry-opportunity`; evidence: `docs/operations/selection_v2/step_04.md`. |
 
+Step 4 follow-up (2026-09-08): R1–R3 implemented, **REVIEW PENDING**. Source
+`7373f1e` repairs committed-prefix gap recovery, continuous advancement across
+later display starts, same-session restore and dated missing-evidence summaries.
+Result schema 1.1 / calculation entry-opportunity-v2.1; 99 focused checks passed.
+Previous `aaa5279` real outputs were only hash-checked and typed-loaded (13 files,
+7 saved results); canonical/real-business calculations were not rerun this round.
+See the current handoff section of `docs/operations/selection_v2/step_04.md`.
+
 The `options_v2` TSLA cutover remains blocked by the duplicate-key gate and the
 old canonical route's ambiguous quote keys. No strategy rule is changed by this
 roadmap.
