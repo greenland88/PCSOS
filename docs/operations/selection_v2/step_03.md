@@ -121,3 +121,40 @@ git diff --check
 必要专项：`python -m pytest tests/trend/test_support_zones.py tests/trend/test_support.py tests/trend/test_market_structure.py -q`，结果 **42 passed in 4.74s**。保留原37项并增加5项参数化/场景回归，原重放及缺日断言按分离后的诊断契约增强。覆盖实际盘中穿透保存/恢复/去重、后续pivot及均线来源内容/引用/视图、参数身份及完整/缺失重放。未扩大全仓库测试。
 
 真实验收将在本节修复代码提交后，以该干净提交命名的新隔离目录进行原8票、2026-09-04的一次批量读取。验收脚本对比旧产物实际边界、冻结ATR、状态及每条测试（忽略版本升级后的ID），逐条核对来源内容和历史引用、盘中穿透与保存状态，并使用保存状态验证NVDA重复恢复。结果补记在下一节；旧产物完整保留。
+
+## F1–F4修复真实验收及最终交接
+
+源码提交：`e2d5531b8449cb345d8dcaa7954472ff29dedd02`，验收时源码工作树干净。以下命令实际执行；只进行一次8票批量canonical读取，再由验收脚本独立读取NVDA进行API对账。源码提交后的交接提交仅更新本文和能力登记，不改变已验证计算代码。
+
+```powershell
+Set-Location H:/workspace/PCSOS
+$env:PYTHONPATH='H:/workspace/PCSOS-selection-v2-step-03/src'
+python -m pcs.cli support-zones --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,AAOI --as-of 2026-09-04 --run-id step_03_review_e2d5531_20260904 --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_03_review_e2d5531_20260904
+python H:/workspace/PCSOS-selection-v2-step-03/scripts/accept_support_zones.py H:/workspace/PCSOS/selection_v2_outputs/step_03_review_e2d5531_20260904 --baseline-directory H:/workspace/PCSOS/selection_v2_outputs/step_03_acceptance_2b192ac_20260904
+```
+
+验收状态：7票成功，UBER在 `SUPPORT_READ_OR_EVALUATE` 阶段返回 `INSUFFICIENT_FEATURE_WARMUP`，总覆盖PARTIAL；未补数据。合法来源身份、14个canonical文件及读取范围与旧验收一致：指标前缀 `2025-08-25`—`2026-09-04`，260根/票，区域窗口 `2026-06-11`—`2026-09-04`，60个XNYS完成session。manifest identity仍为 `5af72f892609519c0293b922f8515b3abdeb14683b904e7922a30501683c6400`，完整逐票generation/checksum/指标身份见新目录 `read_audit.json`。
+
+| 股票 | 当前/归档区域 | 旧/新默认边界及逐条测试 | 补回保存状态的盘中穿透 |
+|---|---:|---|---:|
+| NVDA | 12/45 | 一致 | 2 |
+| PLTR | 12/54 | 一致 | 5 |
+| MSFT | 14/68 | 一致 | 2 |
+| HOOD | 7/59 | 一致 | 0 |
+| MDLZ | 9/28 | 一致 | 5 |
+| AAL | 2/86 | 一致 | 2 |
+| AAOI | 4/78 | 一致 | 4 |
+| UBER | 未生成 | 数据缺口 | 未评估 |
+
+实际通过的检查：
+
+- 8票唯一且齐全（7结果+1失败）；typed结果回读、JSON/AI/中文同源。
+- 扁平区域、测试、历史和来源的**完整内容**与结构化结果相等；880条来源记录和880条历史引用逐条核对，来源详情可由(symbol, zone_id, source_id)取回。创建来源与后续来源角色分开。
+- 全部盘中穿透历史与 `next_state` 对应区域的session、low及固定失效线一致；20条补回记录没有改变触及/HELD/BROKEN判定。
+- 每只股票旧/新创建来源、上下沿、锚点、ATR、失效线、形成/可知日、状态及逐条测试值完全一致。zone/test/history/result身份按新算法版本变化，未改旧产物ID。
+- NVDA公开API独立结果及hash校验后保存状态恢复均与批量相同；NVDA新result_id为 `sha256:18d72926e3eba8a7e0d4785e3bf1a77feef4856f974883e1ce7d1c0106b504dc`。
+- 新输出manifest的文件hash有效；旧产物manifest和各文件hash未变，canonical manifest与14个来源文件hash未变。验收细节见 `acceptance.json`。
+
+公共接口仍为 `evaluate_support_zones(SupportZoneInput) -> SupportZoneResult`。独立例子：在上述目录/PYTHONPATH下运行 `python H:/workspace/PCSOS-selection-v2-step-03/examples/support_zones.py --symbol NVDA --as-of 2026-09-04`。只读已生成结果可使用 `SupportZoneResult.model_validate()`；来源查询使用 `pcs.pool.support_zones.find_support_source`，保存状态使用 `load_support_zone_state()`验证后传回核心。
+
+完整产物目录：`H:/workspace/PCSOS/selection_v2_outputs/step_03_review_e2d5531_20260904`，含JSON、中文、AI、来源/区域/测试/历史明细、schema、字段字典和验收记录。本轮未请求供应商/期权、未扫描全池、未做收益研究。自动推送功能分支供源码复核，不代表独立复核已通过；停在第3步修复边界，main未合并。
