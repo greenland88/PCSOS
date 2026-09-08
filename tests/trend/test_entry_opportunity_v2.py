@@ -283,3 +283,10 @@ def test_policy_or_zone_version_does_not_create_new_economic_event():
     assert base.episodes[0].economic_episode_id == zone_changed.episodes[0].economic_episode_id
     assert base.episodes[0].opportunity_id != policy_changed.episodes[0].opportunity_id
     assert base.episodes[0].opportunity_id != zone_changed.episodes[0].opportunity_id
+
+
+def test_false_invalidation_is_supporting_not_opposing_evidence():
+    result = evaluate_entry_opportunity(_input(through=28))
+    assert "CLOSE_BELOW_FIXED_INVALIDATION" in result.supporting_evidence
+    assert "SUPPORT_ZONE_BROKEN" in result.supporting_evidence
+    assert "CLOSE_BELOW_FIXED_INVALIDATION" not in result.opposing_evidence

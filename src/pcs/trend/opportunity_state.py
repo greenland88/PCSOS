@@ -382,9 +382,16 @@ def evaluate_opportunity_state(input: OpportunityInput) -> EntryOpportunity:
     current_episode = next((e for e in reversed(episodes)
                             if last_day and e.economic_episode_id == last_day.economic_episode_id), None)
     current_conditions = last_day.conditions if last_day else []
-    supporting = [c.condition_id for c in current_conditions if c.predicate_value is True]
-    opposing = [c.condition_id for c in current_conditions if c.predicate_value is False]
-    missing = [c.condition_id for c in current_conditions if c.predicate_value is None]
+    relevant = [c for c in current_conditions
+        if c.role not in {"DIAGNOSTIC", "DISCOVERY"} or
+        (current_episode is not None and c.session == current_episode.setup_date)]
+    supporting = [c.condition_id for c in relevant
+        if ((c.role == "INVALIDATION" and c.predicate_value is False) or
+            (c.role != "INVALIDATION" and c.predicate_value is True))]
+    opposing = [c.condition_id for c in relevant
+        if ((c.role == "INVALIDATION" and c.predicate_value is True) or
+            (c.role != "INVALIDATION" and c.predicate_value is False))]
+    missing = [c.condition_id for c in relevant if c.predicate_value is None]
     status = CapabilityStatus.PARTIAL if missing_sessions or global_reasons else CapabilityStatus.COMPLETED
     semantic = {"symbol": ctx.symbol, "as_of": ctx.effective_daily_session,
         "policy": policy_hash, "source": source_identity, "support": support_identity,
