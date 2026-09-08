@@ -31,6 +31,35 @@ def _finite(value):
     return value is not None and math.isfinite(float(value))
 
 
+def _policy_identity(input):
+    """Hash only policy values consumed by the breakout/retest lifecycle."""
+    opportunity = input.opportunity_policy
+    support = input.support_policy
+    return _hash({
+        "breakout": input.effective_policy.model_dump(mode="json"),
+        "confirmation_and_entry": {
+            "calculation_version": opportunity.calculation_version,
+            "reclaim_buffer_atr": opportunity.reclaim_buffer_atr,
+            "confirmation_sessions": opportunity.confirmation_sessions,
+            "entry_window_sessions": opportunity.entry_window_sessions,
+            "minimum_close_location": opportunity.minimum_close_location,
+            "minimum_rvol20": opportunity.minimum_rvol20,
+            "maximum_entry_distance_atr": opportunity.maximum_entry_distance_atr,
+            "upper_wick_rejection_atr": opportunity.upper_wick_rejection_atr,
+            "upper_rejection_close_location": opportunity.upper_rejection_close_location,
+            "upper_wick_role": opportunity.upper_wick_role,
+        },
+        "fixed_support": {
+            "calculation_version": support.calculation_version,
+            "zone_width_atr": support.zone_width_atr,
+            "break_buffer_atr": support.break_buffer_atr,
+            "held_rebound_atr": support.held_rebound_atr,
+            "retest_departure_atr": support.retest_departure_atr,
+            "confirmation_sessions": support.confirmation_sessions,
+        },
+    })
+
+
 def _support_bar(bar):
     return SupportFeatureBar(session=bar.session, open=bar.open, high=bar.high,
         low=bar.low, close=bar.close, sma20=bar.sma20, sma50=bar.sma50, atr14=bar.atr14)
@@ -127,8 +156,7 @@ def detect_breakout_retest(input: BreakoutRetestInput) -> BreakoutRetestResult:
         raise ValueError("BREAKOUT_DUPLICATE_SESSION")
     source_identity = _hash([view.source.model_dump(mode="json"), view.indicator_identity,
         view.price_basis, view.corporate_action_version])
-    policy_identity = _hash([policy.model_dump(mode="json"),
-        input.opportunity_policy.model_dump(mode="json"), input.support_policy.model_dump(mode="json")])
+    policy_identity = _policy_identity(input)
     prefix_hash = lambda through: _hash([bars[s].model_dump(mode="json")
         for s in sorted(bars) if s <= through])
     prior = input.prior_state

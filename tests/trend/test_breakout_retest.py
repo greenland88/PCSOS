@@ -186,6 +186,17 @@ def test_received_time_and_future_rows_do_not_change_past_identity():
     assert direct(changed).result_id==r.result_id
 
 
+def test_identity_uses_only_breakout_family_policy_dependencies():
+    inp=sample(29)
+    baseline=direct(inp)
+    unrelated=inp.model_copy(update={"effective_policy":inp.effective_policy.model_copy(update={
+        "healthy_pullback_min_pct":.07,"shallow_pullback_max_pct":.03})})
+    assert direct(unrelated).result_id==baseline.result_id
+    consumed=inp.model_copy(update={"effective_policy":inp.effective_policy.model_copy(update={
+        "reclaim_buffer_atr":.20})})
+    assert direct(consumed).result_id!=baseline.result_id
+
+
 def test_typed_artifacts_views_and_queries_share_one_result(tmp_path):
     import json
     from pcs.pool.opportunities import (find_breakout_day, find_breakout_event,
