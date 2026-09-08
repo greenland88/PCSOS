@@ -338,6 +338,7 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
                     for i, old in enumerate(zones):
                         old_types = {a.source_type for a in old.creation_sources}
                         if (old.active and not old.bound and old.zone_type == "MA_REFERENCE" and
+                                old.state == "REFERENCE_ONLY" and not old.tests and
                                 old_types & moving_types):
                             archived = old.model_copy(update={"active": False, "archived_at": session,
                                 "archive_reason": "MOVING_MA_REFERENCE_REPLACED",

@@ -120,13 +120,14 @@ def support_zones_to_markdown(results):
     for r in results:
         out += [f"## {r.symbol} · {r.as_of} · {r.status.value}", "",
             f"结果ID：`{r.result_id}`；分析 {len(r.coverage.expected_sessions)} 个交易日，实际 {len(r.coverage.actual_sessions)} 根，评估至 {r.coverage.evaluated_through or '未评估'}。",
-            "", "| 区域ID | 类型 | 下沿–上沿 | 建区ATR | 失效线 | 首次可知 | 状态 | HELD/全部测试 | 来源数 |", "|---|---|---:|---:|---:|---|---|---:|---:|"]
+            "", "| 区域ID | 当前性 | 类型 | 下沿–上沿 | 建区ATR | 失效线 | 首次可知 | 状态 | HELD/全部测试 | 来源数 |", "|---|---|---|---:|---:|---:|---|---|---:|---:|"]
         zones = r.current_zones+r.archived_zones
         for z in zones:
             held = sum(t.status == "HELD" for t in z.tests)
-            out.append(f"| `{z.zone_id}` | {z.zone_type} | {z.lower:.6g}–{z.upper:.6g} | {z.anchor_atr:.6g} | {z.invalidation_line:.6g} | {z.available_at} | {z.state} | {held}/{len(z.tests)} | {len(z.creation_sources)} |")
+            currency = "当前" if z.active else f"归档（{z.archive_reason or '原因未记录'}）"
+            out.append(f"| `{z.zone_id}` | {currency} | {z.zone_type} | {z.lower:.6g}–{z.upper:.6g} | {z.anchor_atr:.6g} | {z.invalidation_line:.6g} | {z.available_at} | {z.state} | {held}/{len(z.tests)} | {len(z.creation_sources)} |")
         if not zones:
-            out.append("| 未形成 | — | — | — | — | — | — | — | — |")
+            out.append("| 未形成 | — | — | — | — | — | — | — | — | — |")
         out += ["", "| 区域ID | 触及 | 截止 | 结果 | 首次HELD | 累计低点 | 反弹ATR | 穿透ATR | 离开日期 |", "|---|---|---|---|---|---:|---:|---:|---|"]
         for z in zones:
             for t in z.tests:
