@@ -189,3 +189,17 @@ def test_views_roundtrip_and_policy_recompute_boundary(tmp_path):
     assert all(sha256((root/name).read_bytes()).hexdigest() == digest for name, digest in manifest["sha256"].items())
     with pytest.raises(ValueError, match="NOT_EMPTY"):
         write_underlying_profile_artifacts(root, [r])
+
+
+def test_received_at_is_audit_metadata_not_semantic_identity():
+    inp = make_input([95, 90, 100])
+    first_view = inp.feature_view.model_copy(update={"received_at": "2026-09-05T00:00:01Z"})
+    second_view = inp.feature_view.model_copy(update={"received_at": "2026-09-05T00:05:00Z"})
+    first = measure_underlying_profile(inp.model_copy(update={"feature_view": first_view}))
+    second = measure_underlying_profile(inp.model_copy(update={"feature_view": second_view}))
+
+    assert first.time_context.received_at == "2026-09-05T00:00:01Z"
+    assert second.time_context.received_at == "2026-09-05T00:05:00Z"
+    assert first.measurements == second.measurements
+    assert first.episodes == second.episodes
+    assert first.result_id == second.result_id

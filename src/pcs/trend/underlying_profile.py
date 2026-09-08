@@ -347,6 +347,9 @@ def measure_underlying_profile(input: ProfileInput) -> UnderlyingProfile:
             invalid_fields=invalid), provenance=provenance,
         explanation="描述历史波动、跳空与回撤；不产生交易评分或开仓许可。恢复中位数仅描述有完整起点的样本，缺失值不使用默认值。")
     semantic = result.model_dump(mode="json", exclude={"run_id", "request_id", "result_id", "call_context", "provenance"})
+    # Receipt time records transport/audit timing, not a different market fact.
+    # Keep it in the returned envelope while excluding it from semantic reuse.
+    semantic["time_context"].pop("received_at", None)
     # Content identity excludes invocation and physical paths, includes source content identities.
     semantic["sources"] = [(s.source_kind, s.sha256, s.record_identity) for s in provenance]
     return result.model_copy(update={"result_id": "sha256:" + content_id(semantic)})

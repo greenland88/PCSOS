@@ -123,6 +123,8 @@ NVDA实际2025-07-01起，共298日，前缀46/74。其他6票及基准SPY均326
 实际通过：8票处理身份唯一齐全（7结果+1明确失败）；全部7个结果通过UnderlyingProfile读取；JSON、AI、中文视图共同事实一致；全部导出文件hash一致；NVDA独立Python API的result_id、指标、episode与批量一致；来源manifest及16文件未变化。
 真实验收总状态PARTIAL专指UBER缺少目标日期和部分指标缺证据，不代表组件未实现。
 
+后续结果复用修复：`received_at` 仍保存在 `time_context` 作为接收审计时间，但不参与语义 `result_id`。行情日、合法来源身份、算法与实际参数仍参与身份。专项回归验证只改变接收时间时指标、事件和结果ID不变。
+
 正常及缺失TEST样例另存在最终目录 `fixtures/normal` 和 `fixtures/missing`，分别包含JSON、schema、中文、AI及文件hash；不当成canonical业务验收。公开example脚本的 `--fixture` 实际执行返回COMPLETED，样例条件恢复3日。
 
 第1步验收manifest仍为 `cd4439c087dba0f9343b5d64b481074e73b5c21117df6eb8e6a8cd6b532e578b`；原run manifest仍为 `2d927f244e57c3aa576ede819cfc9e83e50e50437713efbb4188a42e97f9cae9`。
