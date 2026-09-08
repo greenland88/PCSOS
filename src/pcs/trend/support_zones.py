@@ -121,7 +121,7 @@ def _deadline(expected, touch, count):
 
 def _update_zone(zone, bar, expected, policy, history, changes):
     session = bar.session.isoformat()
-    if session <= zone.available_at or zone.broken_at:
+    if session <= zone.available_at or zone.broken_at or not zone.active:
         return zone
     tests = list(zone.tests)
     breaches = list(zone.intraday_breaches)
@@ -145,6 +145,7 @@ def _update_zone(zone, bar, expected, policy, history, changes):
                 "reason_codes": list(dict.fromkeys(old.reason_codes+["ZONE_BROKEN_DURING_TEST"]))})
         broken = zone.model_copy(update={"tests": tests, "intraday_breaches": breaches,
             "broken_at": session, "broken_close": bar.close, "state": "BROKEN", "evidence_grade": "BROKEN",
+            "active": False, "archived_at": session, "archive_reason": "BROKEN",
             "reason_codes": list(dict.fromkeys(zone.reason_codes+["CLOSE_BELOW_FIXED_INVALIDATION_LINE"]))})
         changes.append(_record(history, session=session, zone=broken, event_type="BROKEN",
             low=bar.low, high=bar.high, close=bar.close, reasons=["CLOSE_BELOW_FIXED_INVALIDATION_LINE"]))
@@ -229,7 +230,7 @@ def _anchors_for_session(view, bar):
 
 
 def _select(zones, close, bound_zone_id):
-    live = [z for z in zones if z.state != "BROKEN"]
+    live = [z for z in zones if z.active and z.state != "BROKEN"]
     below = [z for z in live if close is not None and z.anchor_price <= close]
     recent = min(below, key=lambda z: (close-z.anchor_price, -int(z.available_at.replace("-", "")), z.zone_id), default=None)
     key = min(below, key=lambda z: (-sum(t.status == "HELD" for t in z.tests),
@@ -295,6 +296,8 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
             prior.input_prefix_sha256 == _prefix_hash(through_bars) and
             (prior.evaluated_through is None or prior.evaluated_through in expected))
     zones = deepcopy(prior.zones) if compatible else []
+    if input.bound_zone_id:
+        zones = [z.model_copy(update={"bound": z.zone_id == input.bound_zone_id or z.bound}) for z in zones]
     history = deepcopy(prior.support_history) if compatible else []
     start_after = prior.evaluated_through if compatible else None
     state_revision = prior.state_revision if compatible else 0
@@ -321,7 +324,7 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
         zones = [_update_zone(z, bar, expected_all, policy, history, changes) for z in zones]
         anchors = _anchors_for_session(view, bar)
         for group in _candidate_groups(anchors, bar.atr14, policy):
-            match = next((z for z in zones if z.state != "BROKEN" and
+            match = next((z for z in zones if z.active and z.state != "BROKEN" and
                           all(z.lower <= a.price <= z.upper for a in group)), None)
             if match:
                 ids = list(dict.fromkeys(match.observed_source_ids+[a.source_id for a in group]))
@@ -330,7 +333,21 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
                 _record(history, session=session, zone=replacement, event_type="SOURCE_RESONANCE",
                         reasons=["SOURCE_WITHIN_EXISTING_FIXED_ZONE"])
             else:
+                moving_types = {a.source_type for a in group} & {"SMA20", "SMA50"}
+                if moving_types:
+                    for i, old in enumerate(zones):
+                        old_types = {a.source_type for a in old.creation_sources}
+                        if (old.active and not old.bound and old.zone_type == "MA_REFERENCE" and
+                                old_types & moving_types):
+                            archived = old.model_copy(update={"active": False, "archived_at": session,
+                                "archive_reason": "MOVING_MA_REFERENCE_REPLACED",
+                                "reason_codes": list(dict.fromkeys(old.reason_codes+["MOVING_MA_REFERENCE_REPLACED"]))})
+                            zones[i] = archived
+                            changes.append(_record(history, session=session, zone=archived,
+                                event_type="ZONE_ARCHIVED", reasons=["MOVING_MA_REFERENCE_REPLACED"]))
                 zone = _new_zone(ctx.symbol, group, bar.atr14, policy, view)
+                if zone.zone_id == input.bound_zone_id:
+                    zone = zone.model_copy(update={"bound": True})
                 zones.append(zone)
                 changes.append(_record(history, session=session, zone=zone, event_type="ZONE_FORMED",
                     reasons=["BOUNDED_NON_CHAIN_CLUSTER", "ZONE_KNOWN_AFTER_SESSION_CLOSE"]))
@@ -344,14 +361,12 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
                             close=pivot_bar.close if pivot_bar else None,
                             reasons=["PIVOT_BAR_PRECEDES_ZONE_KNOWN_AT", "NOT_A_SUPPORT_TEST"]))
         # This is the compact daily state ledger; transitions remain separately indexed.
-        for zone in zones:
+        for zone in (z for z in zones if z.active):
             _record(history, session=session, zone=zone, event_type="DAILY_STATE",
                 close=bar.close, low=bar.low, high=bar.high,
                 reasons=[f"ZONE_STATE_{zone.state}"])
         evaluated = session
         state_revision += 1
-    if input.bound_zone_id:
-        zones = [z.model_copy(update={"bound": z.zone_id == input.bound_zone_id or z.bound}) for z in zones]
     current_close = actual_by_date[evaluated].close if evaluated in actual_by_date else None
     selections, unselected = _select(zones, current_close, input.bound_zone_id)
     fields = {name: CapabilityStatus.COMPLETED if all(getattr(actual_by_date[s], name) is not None
@@ -372,8 +387,8 @@ def evaluate_support_zones(input: SupportZoneInput) -> SupportZoneResult:
         data_timestamp=view.source_timestamp, received_at=view.received_at,
         run_id=ctx.run_id, request_id=ctx.request_id,
         result_id="pending", reason_codes=reason_codes, call_context=ctx, effective_policy=policy,
-        policy_sha256=policy_sha, current_zones=[z for z in zones if z.state != "BROKEN"],
-        archived_zones=[z for z in zones if z.state == "BROKEN"], support_history=history,
+        policy_sha256=policy_sha, current_zones=[z for z in zones if z.active and z.state != "BROKEN"],
+        archived_zones=[z for z in zones if not z.active or z.state == "BROKEN"], support_history=history,
         state_changes=changes, selections=selections, unselected_zones=unselected,
         coverage=SupportZoneCoverage(expected_sessions=expected, actual_sessions=dates,
             missing_sessions=missing, analysis_start=view.analysis_start, evaluated_through=evaluated,

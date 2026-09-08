@@ -303,6 +303,9 @@ class SupportZone(StrictModel):
     broken_at: str | None = None
     broken_close: float | None = None
     bound: bool = False
+    active: bool = True
+    archived_at: str | None = None
+    archive_reason: str | None = None
     reason_codes: list[str]
 
 
@@ -310,7 +313,7 @@ class SupportHistoryRecord(StrictModel):
     history_id: str
     session: str
     zone_id: str
-    event_type: Literal["ZONE_FORMED", "SOURCE_RESONANCE", "RETROSPECTIVE_INTERSECTION", "DAILY_STATE", "TEST_STARTED", "TEST_UPDATED", "TEST_HELD", "TEST_UNCONFIRMED", "DEPARTED", "INTRADAY_PENETRATION", "BROKEN", "DATA_MISSING", "PRIOR_STATE_INVALIDATED"]
+    event_type: Literal["ZONE_FORMED", "ZONE_ARCHIVED", "SOURCE_RESONANCE", "RETROSPECTIVE_INTERSECTION", "DAILY_STATE", "TEST_STARTED", "TEST_UPDATED", "TEST_HELD", "TEST_UNCONFIRMED", "DEPARTED", "INTRADAY_PENETRATION", "BROKEN", "DATA_MISSING", "PRIOR_STATE_INVALIDATED"]
     known_at: str
     retrospective: bool
     close: float | None = None

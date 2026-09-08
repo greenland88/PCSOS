@@ -200,6 +200,19 @@ def test_binding_roles_and_unselected_zones_are_explicit():
     assert any(z.zone_id == key and z.bound for z in bound.current_zones)
 
 
+def test_moving_ma_archives_old_unbound_zone_but_never_bound_zone():
+    rows = [{"sma20": 100, "sma50": None},
+            {"sma20": 110, "sma50": None, "low": 109, "high": 111, "close": 111}]
+    first = evaluate_support_zones(support_input(rows, asof="2025-01-06"))
+    old_id = first.current_zones[0].zone_id
+    moved = evaluate_support_zones(support_input(rows))
+    old = next(z for z in moved.archived_zones if z.zone_id == old_id)
+    assert old.archive_reason == "MOVING_MA_REFERENCE_REPLACED"
+    assert all(z.zone_id != old_id for z in moved.current_zones)
+    bound = evaluate_support_zones(support_input(rows, bound=old_id))
+    assert any(z.zone_id == old_id and z.active and z.bound for z in bound.current_zones)
+
+
 def test_run_request_and_receipt_do_not_change_business_identity():
     a = evaluate_support_zones(support_input([{}, {}]))
     b = evaluate_support_zones(support_input([{}, {}], run="b", request="b", received="2030-01-01T00:00:00Z"))
