@@ -342,7 +342,7 @@ def evaluate_breakout_opportunity(input):
     prior = previous.breakout_result.next_state if previous and previous.breakout_result else None
     result = detect_breakout_retest(BreakoutRetestInput(call_context=input.call_context,
         feature_view=input.feature_view, effective_policy=input.breakout_policy,
-        opportunity_policy=input.effective_policy.model_copy(update={"family": "BREAKOUT_RETEST"}),
+        opportunity_policy=input.effective_policy,
         prior_state=prior, calendar=input.calendar))
     episodes = []
     for event in result.events:
