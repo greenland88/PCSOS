@@ -256,6 +256,13 @@ def pool_scan(args):
 
 def pool_evidence(args):
     """Read or upgrade saved pool artifacts; never invokes the scanner."""
+    if getattr(args,'selection_directory',None):
+        from pcs.selection.cli import run_evidence_command
+        return run_evidence_command(args)
+    if any(getattr(args,name,None) for name in ('discussion_packet','packet_id','evidence_id','review_id','import_review','review_directory')):
+        raise SystemExit('SELECTION_DIRECTORY_REQUIRED_FOR_V2_EVIDENCE')
+    if not args.run_directory:
+        raise SystemExit('LEGACY_EVIDENCE_REQUIRES_RUN_DIRECTORY')
     from pcs.pool.ai_evidence import (
         build_selection_explanations, read_ai_evidence,
         upgrade_current_pool_artifacts, write_selection_explanation_artifacts,
@@ -378,7 +385,14 @@ def main():
     pool.set_defaults(func=pool_scan)
 
     evidence = sub.add_parser("pool-evidence", help="read or upgrade saved pool AI evidence without scanning")
-    evidence.add_argument("--run-directory", required=True, help="one saved pool run directory")
+    evidence.add_argument("--run-directory", help="one saved legacy pool run directory")
+    evidence.add_argument('--selection-directory', help='saved v2 observation bundle; never scans')
+    evidence.add_argument('--discussion-packet', action='store_true')
+    evidence.add_argument('--packet-id')
+    evidence.add_argument('--evidence-id')
+    evidence.add_argument('--review-id')
+    evidence.add_argument('--import-review', help='actual external or explicitly TEST typed JSON opinion')
+    evidence.add_argument('--review-directory', help='separate append-only opinion journal')
     evidence.add_argument("--symbol", help="read one ticker packet; omit for compact full-pool summary")
     evidence.add_argument("--upgrade", action="store_true", help="add evidence views to a hash-valid legacy run")
     evidence.add_argument("--window", type=int, default=60, help="saved evidence window in sessions")
@@ -388,6 +402,17 @@ def main():
     evidence.add_argument("--output-directory", help="isolated destination for selection explanation views")
     evidence.add_argument("--request-id", help="auditable invocation id for selection explanations")
     evidence.set_defaults(func=pool_evidence)
+
+    shortlist = sub.add_parser('stock-shortlist', help='explicit v2 observation from saved results only')
+    shortlist.add_argument('--input-manifest')
+    shortlist.add_argument('--as-of', help='explicit historical session; stale inputs remain mismatched')
+    shortlist.add_argument('--output-directory', required=True)
+    shortlist.add_argument('--summary', action='store_true', help='compact output (also the default)')
+    shortlist.add_argument('--render-only', action='store_true')
+    shortlist.add_argument('--selection-directory')
+    shortlist.add_argument('--previous-directory')
+    from pcs.selection.cli import run_shortlist_command
+    shortlist.set_defaults(func=run_shortlist_command)
 
     profile = sub.add_parser("underlying-profile", help="read-only descriptive profiles from verified canonical daily data")
     profile.add_argument("--symbols", required=True, help="comma-separated symbols, at most eight")

@@ -1,0 +1,135 @@
+{
+  "version": "1.0",
+  "context": {
+    "requested_as_of": "2026-09-04",
+    "requested_session": "2026-09-04",
+    "effective_daily_session": "2026-09-04",
+    "mode": "HISTORICAL",
+    "calendar": "XNYS",
+    "run_id": "stock-observation",
+    "request_id": "stock-observation"
+  },
+  "requested_symbols": [
+    "NVDA",
+    "PLTR",
+    "MSFT",
+    "HOOD",
+    "UBER",
+    "MDLZ",
+    "AAL",
+    "AAOI"
+  ],
+  "enabled_families": [
+    "HEALTHY_PULLBACK",
+    "SHALLOW_PULLBACK",
+    "BREAKOUT_RETEST",
+    "CONSTRUCTIVE_BASE"
+  ],
+  "bundles": [
+    {
+      "bundle_id": "old_three",
+      "path": "H:\\workspace\\PCSOS\\selection_v2_outputs\\step_07_acceptance_20260908",
+      "kind": "OPPORTUNITIES",
+      "families": [
+        "HEALTHY_PULLBACK",
+        "SHALLOW_PULLBACK",
+        "BREAKOUT_RETEST"
+      ],
+      "expected_source_commit": "a1282a8d83dc54b955c8241cf963aa5e01284ea1",
+      "optional": false
+    },
+    {
+      "bundle_id": "base_v2",
+      "path": "H:\\workspace\\PCSOS\\selection_v2_outputs\\step_07_r1_20260909",
+      "kind": "OPPORTUNITIES",
+      "families": [
+        "CONSTRUCTIVE_BASE"
+      ],
+      "expected_source_commit": "896f2249cb8b88dc2abc7724090c1d9e5710c6c6",
+      "optional": false
+    },
+    {
+      "bundle_id": "profile",
+      "path": "H:\\workspace\\PCSOS\\selection_v2_outputs\\step_02_acceptance_20260904_bounded",
+      "kind": "PROFILE",
+      "families": [],
+      "expected_source_commit": "12b5170abd015a96f6ce97d32c037344f7feae37",
+      "optional": true
+    },
+    {
+      "bundle_id": "explanation",
+      "path": "H:\\workspace\\PCSOS\\selection_v2_outputs\\step_01_acceptance_45c17d5_58363ffc66a246c185f429f3d878b3cc",
+      "kind": "EXPLANATION",
+      "families": [],
+      "expected_source_commit": null,
+      "optional": true
+    },
+    {
+      "bundle_id": "support",
+      "path": "H:\\workspace\\PCSOS\\selection_v2_outputs\\step_03_review_e2d5531_20260904",
+      "kind": "SUPPORT",
+      "families": [],
+      "expected_source_commit": "e2d5531b8449cb345d8dcaa7954472ff29dedd02",
+      "optional": true
+    }
+  ],
+  "selected_result_ids": {},
+  "policy": {
+    "policy_id": "stock-observation-ranking-v1",
+    "calculation_version": "stock-observation-ranking-v1",
+    "group_order": [
+      "READY_FOR_OPTIONS_REVIEW",
+      "WATCH_SETUP",
+      "NOT_CURRENTLY_APPLICABLE",
+      "NO_SETUP",
+      "INSUFFICIENT_EVIDENCE"
+    ],
+    "sort_fields": [
+      {
+        "field": "current_required_complete",
+        "direction": "DESC",
+        "nulls": "LAST"
+      },
+      {
+        "field": "live_support_class",
+        "direction": "ASC",
+        "nulls": "LAST"
+      },
+      {
+        "field": "confirmation_fraction",
+        "direction": "DESC",
+        "nulls": "LAST"
+      },
+      {
+        "field": "remaining_entry_sessions",
+        "direction": "DESC",
+        "nulls": "LAST"
+      },
+      {
+        "field": "dollar_volume_median_20",
+        "direction": "DESC",
+        "nulls": "LAST"
+      },
+      {
+        "field": "symbol",
+        "direction": "ASC",
+        "nulls": "LAST"
+      }
+    ],
+    "live_test_order": [
+      "MULTIPLE_INDEPENDENT_HELD",
+      "SINGLE_HELD",
+      "IN_PROGRESS",
+      "UNCONFIRMED_TEST",
+      "UNKNOWN"
+    ],
+    "representative_order": [
+      "CURRENT_APPLICABILITY",
+      "CURRENT_REQUIRED_COMPLETE",
+      "CONFIRMATION_DATE_DESC_NULL_LAST",
+      "STABLE_ID_ASC"
+    ],
+    "liquidity_currency": "USD",
+    "purpose": "OBSERVATION_ONLY_NOT_RETURN_VALIDATED"
+  }
+}

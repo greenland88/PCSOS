@@ -23,6 +23,9 @@ from pcs.analysis_contracts import (
 
 UNKNOWN_REASON = "NOT_SAVED_IN_SOURCE_ARTIFACT"
 
+# Explicit v2 discussion APIs; legacy scan explanations retain their original path.
+from pcs.selection.packets import build_decision_evidence_packet, resolve_evidence, record_ai_review
+
 
 def _plain(value):
     if is_dataclass(value):
