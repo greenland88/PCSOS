@@ -116,8 +116,6 @@ def load_selection_input(input_manifest: str | Path | SelectionInputManifest) ->
                         source_identity=digest([source['sha256'],source['record_identity']]))
                     if result.base_result and result.base_result.calendar!=binding.calendar:
                         raise ValueError('SAVED_CALENDAR_MISMATCH')
-                    if result.breakout_result and result.breakout_result.calendar!=binding.calendar:
-                        raise ValueError('SAVED_CALENDAR_MISMATCH')
                     if any(getattr(result.next_state,field)!=getattr(binding,field)
                         for field in ('price_basis','indicator_identity','corporate_action_version')):
                         raise ValueError('RESULT_INPUT_BINDING_MISMATCH')

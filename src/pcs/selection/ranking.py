@@ -26,7 +26,7 @@ def binding_for(result, supplied):
         schema_version=result.version,calculation_version=result.calculation_version,
         price_basis=state.price_basis,indicator_identity=state.indicator_identity,
         corporate_action_version=state.corporate_action_version,
-        calendar=result.base_result.calendar if result.base_result else result.breakout_result.calendar if result.breakout_result else 'XNYS',
+        calendar=result.base_result.calendar if result.base_result else 'XNYS',
         source_identity=digest([source.sha256,source.record_identity]) if source and source.validated and source.sha256 and source.record_identity else '')
 
 

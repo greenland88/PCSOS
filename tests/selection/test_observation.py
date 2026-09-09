@@ -373,12 +373,26 @@ def test_attaching_packet_does_not_change_ranking_identity():
     assert link_packets(ranked,[packet]).shortlist_id==ranked.shortlist_id
 
 
-def test_saved_adapter_selects_old_children_before_typed_validation(tmp_path):
+@pytest.mark.parametrize('with_breakout',[False,True])
+def test_saved_adapter_selects_old_children_before_typed_validation(tmp_path,with_breakout):
     from pcs.trend.selection_models import OpportunityInput,OpportunityFeatureView
     from pcs.pool.opportunities import write_opportunity_artifacts
     from pcs.selection.adapters import SelectionInputManifest,BundleSelection,load_selection_input
     from hashlib import sha256
     r=result()
+    if with_breakout:
+        from pcs.trend.selection_models import BreakoutRetestResult,BreakoutRetestState,BreakoutRetestPolicy
+        state=BreakoutRetestState(analysis_start=DAY,symbol=r.symbol,events=[],timeline=[],evaluated_through=DAY,
+            input_prefix_sha256='TEST:input',source_identity='TEST:source',policy_identity='TEST:policy',
+            indicator_identity='TEST:indicator',price_basis='TEST:adjusted',corporate_action_version='TEST:ca',state_revision=1)
+        breakout=BreakoutRetestResult(symbol=r.symbol,as_of=DAY,status='COMPLETED',run_id='TEST',request_id='TEST',
+            result_id='TEST:breakout',reason_codes=[],call_context=r.call_context,effective_policy=BreakoutRetestPolicy(),
+            policy_sha256='TEST:policy',events=[],timeline=[],eligible_at_requested_time=True,requested_session=DAY,
+            request_time_semantics='HISTORICAL',evaluated_through=DAY,missing_sessions=[],coverage_missing_evidence=[],
+            next_state=state,provenance=[SOURCE],explanation='TEST saved schema without calendar')
+        r=r.model_copy(update={'breakout_result':breakout})
+        from pcs.selection.ranking import binding_for
+        assert binding_for(r,[]).calendar=='XNYS'
     view=OpportunityFeatureView(symbol=r.symbol,bars=[],expected_sessions=[DAY],analysis_start=DAY,indicator_seed_start=DAY,
         indicator_identity='TEST:indicator',source=SOURCE,price_basis='TEST:adjusted',corporate_action_version='TEST:ca',input_kind='TEST')
     saved_input=OpportunityInput(call_context=r.call_context,feature_view=view,support_facts=[])
