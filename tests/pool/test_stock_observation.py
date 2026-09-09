@@ -369,3 +369,48 @@ def test_partial_indicator_opt_in_preserves_full_input_values_and_legacy_rejecti
     with pytest.raises(TrendIndicatorValidationError):calculate_base_indicators(data.iloc[:170])
     partial=calculate_base_indicators(data.iloc[:170],allow_partial_warmup=True)
     assert partial.sma200.isna().all() and partial.sma20.notna().any()
+
+
+def test_output_failure_and_not_started_have_distinct_counts(tmp_path,monkeypatch):
+    import pcs.selection.packets as packets
+    def fail(_):raise ValueError('TEST_OUTPUT_FAILURE')
+    monkeypatch.setattr(packets,'build_decision_evidence_packet',fail)
+    adapter=TestAdapter();result=run(spec(tmp_path,adapter),adapter)
+    assert result.summary['failed_count']==1 and result.summary['timed_out_count']==0
+    assert not result.current_published
+    limited=run(spec(tmp_path,adapter,run_id='not-started',budgets=ObservationBudgets(total_seconds=.001)),adapter)
+    assert limited.summary['unprocessed_count']==1 and limited.summary['timed_out_count']==0
+    assert limited.status=='PARTIAL' and not limited.current_published
+
+
+def test_dependency_changed_during_run_cannot_publish(tmp_path,monkeypatch):
+    import pcs.pool.observation_components as components
+    original=components.dependencies;calls=[]
+    def changing():
+        calls.append(True)
+        return original() if len(calls)==1 else {'TEST':'changed during run'}
+    monkeypatch.setattr(components,'dependencies',changing)
+    adapter=TestAdapter()
+    with pytest.raises(ValueError,match='CODE_CHANGED_DURING_RUN'):
+        run(spec(tmp_path,adapter),adapter)
+    assert not (tmp_path/'CURRENT.json').exists()
+
+
+def test_later_component_timeout_is_not_hidden_by_earlier_failure(tmp_path,monkeypatch):
+    import pcs.pool.observation_components as components
+    from pcs.pool.runtime import PoolRuntime,StageRun
+    from pcs.pool.concurrency import WorkerOutcome
+    original=PoolRuntime.run_stage
+    def stage(runtime,symbols,worker,**kwargs):
+        if kwargs.get('stage_name')=='CONSTRUCTIVE_BASE':
+            return StageRun(tuple(WorkerOutcome(s,reason_codes=('WORKER_TIMEOUT',)) for s in symbols),1.)
+        return original(runtime,symbols,worker,**kwargs)
+    def fail(*args,**kwargs):raise ValueError('TEST_EARLIER_FAMILY_FAILURE')
+    monkeypatch.setattr(PoolRuntime,'run_stage',stage)
+    monkeypatch.setattr(components,'family_component',fail)
+    adapter=TestAdapter();result=run(spec(tmp_path,adapter,
+        selection_profile=SelectionProfile(families=['HEALTHY_PULLBACK','CONSTRUCTIVE_BASE'])),adapter)
+    query=read_stock_observation(ObservationQuery(run_directory=result.output_directory,symbol='TEST'))
+    assert result.summary['timed_out_count']==1
+    assert query.state.component_failures['CONSTRUCTIVE_BASE']==['WORKER_TIMEOUT']
+    assert 'TEST_EARLIER_FAMILY_FAILURE' in query.state.reason_codes

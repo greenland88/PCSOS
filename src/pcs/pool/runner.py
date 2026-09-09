@@ -225,7 +225,13 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                     run=runtime.run_stage(runnable,worker,stage_name=stage,timeout_seconds=max(.001,limit-perf_counter()),on_outcome=commit)
                     stats['elapsed_ms']+=run.elapsed_ms
                     for outcome in run.outcomes:
-                        if outcome.reason_codes and not errors[outcome.symbol]:errors[outcome.symbol]+=list(outcome.reason_codes)
+                        if outcome.reason_codes:
+                            s=outcome.symbol
+                            errors[s]=list(dict.fromkeys(errors[s]+list(outcome.reason_codes)))
+                            if stage not in states[s].component_failures:
+                                stats['failed_or_timed_out']+=1
+                            states[s]=states[s].model_copy(update={'component_failures':{
+                                **states[s].component_failures,stage:list(outcome.reason_codes)}})
                 if not saved:
                     execute('VERIFY',lambda s:adapter.verify(s,originals[s]),spec.budgets.verification_seconds,symbols)
                     for s in symbols:
@@ -311,7 +317,9 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                             states[s]=states[s].model_copy(update={'execution':'FAILED','reason_codes':reasons+['RANKING_REFERENCE_UNRESOLVED']})
                         query_counts[s]=len(refs);packet_refs[s]=packet.packet_id
                     else:
-                        states[s]=states[s].model_copy(update={'execution':'TIMED_OUT','reason_codes':errors[s]+['PACKET_NOT_COMMITTED']})
+                        output_execution=('UNPROCESSED' if any(r in errors[s] for r in ('GLOBAL_DEADLINE_NOT_STARTED','STAGE_DEADLINE_NOT_STARTED')) else
+                            'TIMED_OUT' if any(r in errors[s] for r in ('WORKER_TIMEOUT','OBSERVATION_COMMIT_DEADLINE_EXCEEDED')) else 'FAILED')
+                        states[s]=states[s].model_copy(update={'execution':output_execution,'reason_codes':errors[s]+['PACKET_NOT_COMMITTED']})
                     states[s]=states[s].model_copy(update={'served_attempt':store.token})
                     store.save_state(states[s]);states_summary[s]=states[s].execution
                     lineage_by_symbol[s]=states[s].lineage[-1] if states[s].lineage else {}
@@ -322,6 +330,7 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                     progress[key]+=1
                 if adapter and hasattr(adapter,'release'):adapter.release(symbols)
             progress['stage']='FINALIZE';emit()
+            output_deadline=min(deadline,perf_counter()+spec.budgets.output_seconds)
             base=RankingInput(context=spec.context,requested_symbols=spec.symbols,enabled_families=profile.families,
                 opportunities=[],policy=profile.ranking,previous=previous_shortlist)
             shortlist=rank_prepared_rows(base,pairs)
@@ -371,8 +380,6 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
             execution='COMPLETED' if not count['FAILED'] and not count['TIMED_OUT'] and not count['UNPROCESSED'] else 'PARTIAL'
             audit=saved.read_audit if saved else {'counts':adapter.counts,'source_verification':adapter.verify_unchanged(),
                 'reads':getattr(getattr(adapter,'reader',None),'audit',[])}
-            if any(hashlib.sha256(Path(path).read_bytes()).hexdigest()!=checksum for path,checksum in config_snapshot.items()):
-                raise ValueError('OBSERVATION_CONFIG_CHANGED_DURING_RUN')
             run=StockObservationRun(run_id=spec.run_id,attempt_id=store.token,status=execution,coverage=coverage,
                 context=spec.context,source_commit=source_commit,spec_id=spec_id,profile_id=digest(profile),universe_id=spec.universe_id,
                 requested_symbols=spec.symbols,output_directory=str(root),checkpoint=str(store.path),summary=summary,
@@ -390,6 +397,14 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                 hashes[name]=hashlib.sha256((root/name).read_bytes()).hexdigest()
             hashes['stock_shortlist.csv']=_write_observation_text(root/'stock_shortlist.csv',shortlist_csv(shortlist))
             hashes['stock_shortlist.zh-CN.md']=_write_observation_text(root/'stock_shortlist.zh-CN.md',shortlist_markdown(shortlist))
+            if any(hashlib.sha256(Path(path).read_bytes()).hexdigest()!=checksum for path,checksum in config_snapshot.items()):
+                raise ValueError('OBSERVATION_CONFIG_CHANGED_DURING_RUN')
+            if dependencies()!=closure or __import__('subprocess').check_output(['git','rev-parse','HEAD'],cwd=code,text=True).strip()!=source_commit:
+                raise ValueError('OBSERVATION_CODE_CHANGED_DURING_RUN')
+            if perf_counter()>output_deadline:
+                run=run.model_copy(update={'status':'PARTIAL','current_published':False,
+                    'reason_codes':run.reason_codes+['OBSERVATION_OUTPUT_DEADLINE_EXCEEDED']})
+                hashes['observation_run.json']=write_json(root/'observation_run.json',run.model_dump(mode='json'))
             write_json(root/'observation_manifest.json',dict(scope=spec.scope,version='1.0',run_id=spec.run_id,
                 attempt_id=store.token,status=run.status,coverage=run.coverage,source_commit=source_commit,sha256=hashes))
             store.checkpoint['status']=run.status;store.flush()

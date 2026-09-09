@@ -82,25 +82,25 @@ HEAD/依赖、spec、原2953成员/hash、实际命令和结果。
 ```powershell
 Set-Location H:/workspace/PCSOS
 $env:PYTHONPATH='H:/workspace/PCSOS-selection-v2-step-11a/src'
-python H:/workspace/PCSOS-selection-v2-step-11a/scripts/accept_stock_observation.py --full-universe --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4 --previous-run H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v3/historical-20260904
+python H:/workspace/PCSOS-selection-v2-step-11a/scripts/accept_stock_observation.py --full-universe --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v5 --previous-run H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4/historical-20260904
 ```
 
 同一逻辑全池因超时恢复，不另建全池run：
 
 ```powershell
-python H:/workspace/PCSOS-selection-v2-step-11a/scripts/accept_stock_observation.py --full-universe --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4 --previous-run H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v3/historical-20260904 --resume-run-id historical-20260904
+python H:/workspace/PCSOS-selection-v2-step-11a/scripts/accept_stock_observation.py --full-universe --output-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v5 --previous-run H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4/historical-20260904 --resume-run-id historical-20260904
 ```
 
 普通CLI使用同一spec；无需再传重复的旧scope预算参数：
 
 ```powershell
-python -m pcs.cli pool-scan --mode EOD --scope STOCK_OBSERVATION --selection-profile selection-v2-observation-v1 --observation-spec H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4/actual_spec.json
+python -m pcs.cli pool-scan --mode EOD --scope STOCK_OBSERVATION --selection-profile selection-v2-observation-v1 --observation-spec H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v5/actual_spec.json
 ```
 
 创建CURRENT_EOD请求spec不读取价格；随后由同一个CLI执行（本轮不执行今日全池）：
 
 ```powershell
-python H:/workspace/PCSOS-selection-v2-step-11a/examples/update_stock_observation.py H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4/actual_spec.json --previous-run H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v4/historical-20260904 --output H:/workspace/PCSOS/selection_v2_outputs/next_current_spec.json
+python H:/workspace/PCSOS-selection-v2-step-11a/examples/update_stock_observation.py H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v5/actual_spec.json --previous-run H:/workspace/PCSOS/selection_v2_outputs/step_11a_final_v5/historical-20260904 --output H:/workspace/PCSOS/selection_v2_outputs/next_current_spec.json
 python -m pcs.cli pool-scan --mode EOD --scope STOCK_OBSERVATION --observation-spec H:/workspace/PCSOS/selection_v2_outputs/next_current_spec.json
 ```
 
@@ -108,8 +108,8 @@ python -m pcs.cli pool-scan --mode EOD --scope STOCK_OBSERVATION --observation-s
 `--resume-run-id` 使用typed恢复API。被拒绝票AAL、历史缺数票UBER的保存证据查询：
 
 ```powershell
-python -m pcs.pool.observation_cli --run-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved_v4/saved-eight --symbol AAL
-python -m pcs.pool.observation_cli --run-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved_v4/saved-eight --symbol UBER
+python -m pcs.pool.observation_cli --run-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved_v5/saved-eight --symbol AAL
+python -m pcs.pool.observation_cli --run-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved_v5/saved-eight --symbol UBER
 ```
 
 查询返回packet后，复制真实排序键source_refs、condition/test/component ID，通过同命令
@@ -120,7 +120,7 @@ H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved`，不重新检测原七�
 只渲染保存结果（不调用canonical/指标/检测器）：
 
 ```powershell
-python -m pcs.pool.observation_cli --run-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved_v4/saved-eight --render-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_rendered_v4
+python -m pcs.pool.observation_cli --run-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_saved_v5/saved-eight --render-directory H:/workspace/PCSOS/selection_v2_outputs/step_11a_rendered_v5
 ```
 
 回退方式：停止新观察调用，原调用保持默认PRODUCTION，或显式 `--scope PRODUCTION`；
@@ -169,6 +169,12 @@ SUPERSEDED_PARTIAL。最终修复同时核验结果缓存和状态延续的依�
 检查在接受HEAD也失败（第2步underlying_profile已有TA-Lib导入），单独记录，未改旧档案算法。
 当前最终命令输出根为 `step_11a_final_v4`，前序为v3根；保存八票根 `step_11a_saved_v4`。
 所有前序尝试、原数据和原七票检测产物保留，均不推进CURRENT。
+
+第四版126完成、122数据阻断、2705未处理时，TEST故障注入复现输出异常被误计超时；
+停止并保留该断点。最新修复区分输出失败、未启动与超时，并保留后续组件超时，
+不被之前组件失败掩盖；全局/输出截止不发布CURRENT，发布前重新核验源码及配置。
+25项集成测试通过。最新输出根为 `step_11a_final_v5`（前序v4），保存八票根
+`step_11a_saved_v5`；上方实际命令已同步。全部旧尝试只作可追溯恢复来源，不算全池通过。
 
 保存八票验收核对接受的shortlist/八packet IDs；原7步包只取旧三family，R1包只取平台。
 正式全池仅使用原冻结 `included_symbols` 2953只（不是原38只），日期2026-09-04。
