@@ -5,6 +5,40 @@
 独立工作树 `H:/workspace/PCSOS-selection-v2-step-08`，分支 `codex/selection-v2-step-08`。
 当前交付源码和远端完整HEAD以提交记录及正式产物manifest为准。
 
+## 2026-09-09 R1–R3限定修复
+
+复核基线 `3ba80901691a11de67ac0c3b669d464bb7e3d064` 暂不通过。
+本轮仅修下列三项，保留第1–7步和平台R1接受结论，仍等待第8步限定复核。
+
+- R1：意见文件名改为完整序列化AIReview的SHA-256，包含review_id；内容hash仍用于
+  同ID幂等/冲突校验。文件以独占创建方式追加，已存在不同字节拒绝写入。意见manifest
+  升为1.1；有效旧日志可读且不迁移旧文件。已损坏日志仍拒绝读取，不伪造丢失意见。
+- R2：查询支持证据hash、实体ID、`result_id:json_pointer`，以及条件的
+  `result_id:日期:condition_id`。同别名不同内容明确AMBIGUOUS_EVIDENCE_ID；可用精确
+  pointer或hash消歧。当前条件直接保存于/current_conditions；第3步支撑测试逐条索引。
+  组件ID解析到简洁COMPONENT定位记录。流动性排序引用/diagnostics中的已保存诊断，
+  原上游source_refs仍在诊断内容内，不再冒充可直接解析的排序引用。
+- R3：消费保存的确认期限/入场窗口届满标记，true优先于WATCH/CONFIRMING或入场等待，
+  当前归为NOT_CURRENTLY_APPLICABLE并保存具体原因；原状态和原资格不改写。
+  另一通道仍合法时照常作为当前代表通道。
+
+名单/证据包schema均为1.1；计算版本分别为stock-observation-ranking-v2和
+decision-evidence-packet-v2。固定排序政策ID和排序方向未改。v1输出不得typed复用为v2，
+仅可在hash核验后作为原始JSON历史对比；旧输出原样保留，本轮以新的独立目录交付。
+AIReview的意见内容语义仍为ai-review-record-v1，仅存储manifest升级。
+
+必要重导出命令（干净提交后执行）：
+
+```powershell
+python scripts/accept_stock_shortlist.py H:/workspace/PCSOS/selection_v2_outputs/step_08_r1_r3_20260909 --compare-directory H:/workspace/PCSOS/selection_v2_outputs/step_08_acceptance_20260909
+```
+
+验收从实际名单每个排序键的source_refs及component_refs逐一解析；另保留全部detail_index
+校验、四视图对账和旧21个子ID检查。acceptance.json的revision_comparison记录新旧版本、
+名单/行/packet身份、分组和排序数值差异，并校验旧产物字节未变。专项TEST覆盖不同意见ID
+相同内容、旧文件不变、幂等/冲突、真实输出引用、仅当前条件、冲突消歧、期限过期及另一
+通道仍可用。未重跑检测器、canonical、供应商或全池。
+
 ## 独立公开接口
 
 从 `pcs.selection` 导入以下函数，均消费typed输入：

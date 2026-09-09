@@ -43,7 +43,7 @@ class SortField(StrictModel):
 
 class RankingPolicy(StrictModel):
     policy_id: str = 'stock-observation-ranking-v1'
-    calculation_version: Literal['stock-observation-ranking-v1'] = 'stock-observation-ranking-v1'
+    calculation_version: Literal['stock-observation-ranking-v2'] = 'stock-observation-ranking-v2'
     group_order: list[Group] = Field(default_factory=lambda: list(GROUPS))
     sort_fields: list[SortField] = Field(default_factory=lambda: [SortField(field=k,direction='ASC' if k in {'live_support_class','symbol'} else 'DESC') for k in KEYS])
     live_test_order: list[str] = Field(default_factory=lambda: ['MULTIPLE_INDEPENDENT_HELD','SINGLE_HELD','IN_PROGRESS','UNCONFIRMED_TEST','UNKNOWN'])
@@ -205,6 +205,8 @@ class FamilyAssessment(StrictModel):
     setup_date: str | None = None
     touch_date: str | None = None
     confirmation_deadline: str | None = None
+    confirmation_deadline_elapsed_at_requested_session: bool | None = None
+    entry_window_elapsed_at_requested_session: bool | None = None
     entry_start: str | None = None
     entry_end: str | None = None
     support_zone_id: str | None = None
@@ -247,8 +249,8 @@ class StockRow(StrictModel):
 
 class StockShortlist(StrictModel):
     module: Literal['stock_shortlist'] = 'stock_shortlist'
-    version: Literal['1.0'] = '1.0'
-    calculation_version: Literal['stock-observation-ranking-v1'] = 'stock-observation-ranking-v1'
+    version: Literal['1.1'] = '1.1'
+    calculation_version: Literal['stock-observation-ranking-v2'] = 'stock-observation-ranking-v2'
     shortlist_id: str
     as_of: str
     status: Literal['COMPLETED'] = 'COMPLETED'
@@ -300,8 +302,8 @@ class DecisionPacketInput(StrictModel):
 
 class DecisionEvidencePacket(StrictModel):
     module: Literal['decision_evidence_packet'] = 'decision_evidence_packet'
-    version: Literal['1.0'] = '1.0'
-    calculation_version: Literal['decision-evidence-packet-v1'] = 'decision-evidence-packet-v1'
+    version: Literal['1.1'] = '1.1'
+    calculation_version: Literal['decision-evidence-packet-v2'] = 'decision-evidence-packet-v2'
     packet_id: str
     content_identity: str
     symbol: str

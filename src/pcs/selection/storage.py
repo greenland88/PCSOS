@@ -239,8 +239,18 @@ def import_ai_review(directory, packet, submission: ReviewSubmission):
             return review
         manifest_path=root/'review_manifest.json'
         manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else {'version':'1.0','reviews':{}}
-        name=review.content_sha256.replace(':','_')+'.json'
-        checksum=_write_atomic(root/name,review.model_dump_json(indent=2))
+        # Storage identity includes review_id; content identity deliberately does not.
+        raw=review.model_dump_json(indent=2).encode('utf-8')
+        checksum=sha256(raw).hexdigest()
+        name=checksum+'.json'
+        path=root/name
+        try:
+            with path.open('xb') as handle:
+                handle.write(raw)
+        except FileExistsError:
+            if path.read_bytes()!=raw:
+                raise ValueError('REVIEW_STORAGE_IDENTITY_CONFLICT')
+        manifest['version']='1.1'
         manifest['reviews'][review.review_id]=dict(file=name,sha256=checksum,packet_id=review.packet_id,origin=review.origin)
         _write_atomic(manifest_path,json.dumps(manifest,indent=2))
         return review

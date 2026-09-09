@@ -23,7 +23,7 @@ def packet_identity(packet):
 
 def packet_identity_valid(packet):
     identity=packet_identity(packet)
-    return identity==packet.content_identity and packet.packet_id==digest(['decision-evidence-packet-v1',identity])
+    return identity==packet.content_identity and packet.packet_id==digest([packet.calculation_version,identity])
 
 
 def build_decision_evidence_packet(input: DecisionPacketInput) -> DecisionEvidencePacket:
@@ -52,6 +52,9 @@ def build_decision_evidence_packet(input: DecisionPacketInput) -> DecisionEviden
         assessment.pop('conditions')
         ref = add('/','assessment:'+result.result_id,result.as_of,'PROGRAM_ASSESSMENT',assessment)
         assessments.append(dict(**assessment,evidence_ref=ref.model_dump(mode='json')))
+        for i,condition in enumerate(result.current_conditions):
+            if condition.session<=ctx.effective_daily_session:
+                add(f'/current_conditions/{i}',condition.condition_id,condition.session,'CONDITION',condition)
         for i, day in enumerate(result.timeline):
             if day.session>ctx.effective_daily_session:
                 continue
@@ -88,17 +91,27 @@ def build_decision_evidence_packet(input: DecisionPacketInput) -> DecisionEviden
                 for i,zone in enumerate(getattr(support,field)):
                     records.append(evidence_record(support.result_id,f'/{field}/{i}',zone.zone_id,support.as_of,
                         support.version,'SAVED_SUPPORT','SUPPORT_ZONE',zone))
+                    for j,test in enumerate(zone.tests):
+                        records.append(evidence_record(support.result_id,f'/{field}/{i}/tests/{j}',test.test_id,support.as_of,
+                            support.version,'SAVED_SUPPORT','LIVE_SUPPORT_TEST',test))
     for diagnostic in inp.diagnostics if in_scope else []:
         if diagnostic.symbol==symbol and diagnostic.as_of<=ctx.effective_daily_session:
             components.append(dict(module='underlying_profile',result_id=diagnostic.result_id,as_of=diagnostic.as_of))
-            records.append(evidence_record(diagnostic.result_id,'/measurements/'+diagnostic.metric_id,diagnostic.metric_id,
+            records.append(evidence_record(diagnostic.result_id,'/diagnostics/'+diagnostic.metric_id,diagnostic.metric_id,
                 diagnostic.as_of,'1.0','SAVED_PROFILE','METRIC',diagnostic))
     for legacy in inp.legacy if in_scope else []:
         if legacy.symbol==symbol:
             components.append(dict(module='selection_explanation',result_id=legacy.result_id,as_of=legacy.as_of))
-            records.append(evidence_record(legacy.result_id,'/legacy_assessment',legacy.result_id,legacy.as_of,
+            records.append(evidence_record(legacy.result_id,'/legacy_assessment','legacy:'+legacy.result_id,legacy.as_of,
                 '1.0','SAVED_EXPLANATION','LEGACY_ASSESSMENT',legacy))
     records += [r for r in input.extra_records if r.ref.known_at[:10]<=ctx.effective_daily_session] if in_scope else []
+    components=sorted({digest(c):c for c in components}.values(),key=lambda c:(c['result_id'],c.get('family','')))
+    for component in components:
+        # A result ID resolves to a compact component locator, never a raw source dump.
+        record=evidence_record(component['result_id'],'/component',component['result_id'],component['as_of'],
+            component.get('schema_version','1.0'),component.get('source_bundle','SAVED_COMPONENT'),'COMPONENT',component)
+        records.append(record)
+        component['evidence_ref']=record.ref.model_dump(mode='json')
     unique = {r.ref.evidence_id:r for r in records}
     if any(digest(r.value)!=r.ref.content_sha256 for r in records):
         raise ValueError('EVIDENCE_CONTENT_HASH_MISMATCH')
@@ -141,7 +154,7 @@ def build_decision_evidence_packet(input: DecisionPacketInput) -> DecisionEviden
         data_timestamp=max((r.as_of for r in results if r.as_of<=ctx.effective_daily_session),default=None),run_id=ctx.run_id,request_id=ctx.request_id,context=ctx,
         evidence_scope=dict(requested_symbols=inp.requested_symbols,enabled_families=sorted(set(inp.enabled_families)),
             executed_families=[r.family for r in results],scope='DECLARED_STOCK_OBSERVATION_NOT_FULL_MARKET'),
-        component_refs=sorted({digest(c):c for c in components}.values(),key=lambda c:(c['result_id'],c.get('family',''))),
+        component_refs=components,
         program_assessments=assessments,supporting_evidence=[r.ref for r in current if condition_supports(r.value) is True],
         opposing_evidence=[r.ref for r in current if condition_supports(r.value) is False],
         current_gaps=row.current_gaps if row else [{'reason_codes':['NOT_IN_INPUT_SCOPE']}],
@@ -155,7 +168,7 @@ def build_decision_evidence_packet(input: DecisionPacketInput) -> DecisionEviden
         shortlist_id=input.shortlist.shortlist_id if input.shortlist else None,
         reason_codes=errors+(['COMPANY_QUALITY_NOT_EVALUATED'] if input.company_context.status=='NOT_EVALUATED' else []))
     identity = packet_identity(packet)
-    return packet.model_copy(update={'packet_id':digest(['decision-evidence-packet-v1',identity]),'content_identity':identity})
+    return packet.model_copy(update={'packet_id':digest([packet.calculation_version,identity]),'content_identity':identity})
 
 
 def resolve_evidence(input: EvidenceQuery) -> EvidenceQueryResult:
@@ -167,7 +180,10 @@ def resolve_evidence(input: EvidenceQuery) -> EvidenceQueryResult:
         return EvidenceQueryResult(status='NOT_FOUND',record=None,reason_codes=['EVIDENCE_ID_REQUIRED'])
     lookup = {}
     for record in packet.evidence_records:
-        for key in (record.ref.evidence_id,record.ref.entity_id):
+        keys=[record.ref.evidence_id,record.ref.entity_id,f'{record.ref.source_result_id}:{record.ref.json_pointer}']
+        if record.kind in ('CONDITION','METRIC'):
+            keys.append(f'{record.ref.source_result_id}:{record.ref.known_at}:{record.ref.entity_id}')
+        for key in keys:
             lookup.setdefault(key,[]).append(record)
     index = {r.evidence_id:r for r in packet.detail_index}
     resolved,unresolved,reasons = [],[],[]

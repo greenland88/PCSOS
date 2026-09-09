@@ -76,7 +76,7 @@
   "selected_result_ids": {},
   "policy": {
     "policy_id": "stock-observation-ranking-v1",
-    "calculation_version": "stock-observation-ranking-v1",
+    "calculation_version": "stock-observation-ranking-v2",
     "group_order": [
       "READY_FOR_OPTIONS_REVIEW",
       "WATCH_SETUP",

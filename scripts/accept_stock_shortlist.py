@@ -23,6 +23,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output_directory')
     parser.add_argument('--input-manifest',default='examples/selection_step08_inputs.json')
+    parser.add_argument('--compare-directory',help='Hash-verified historical output; compare raw JSON without reusing old semantics')
     args=parser.parse_args()
     code=Path(__file__).resolve().parents[1]
     root=Path(args.output_directory)
@@ -33,6 +34,18 @@ def main():
         raise ValueError('ACCEPTANCE_REQUIRES_COMMITTED_CLEAN_SOURCE')
     if root.exists():
         raise ValueError('ACCEPTANCE_OUTPUT_ALREADY_EXISTS')
+    previous=None
+    previous_hashes={}
+    if args.compare_directory:
+        previous_root=Path(args.compare_directory)
+        manifest_path=previous_root/'artifact_manifest.json'
+        previous_manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+        previous_hashes={**previous_manifest['sha256'],'artifact_manifest.json':sha256(manifest_path.read_bytes()).hexdigest()}
+        for name,checksum in previous_hashes.items():
+            path=(previous_root/name).resolve()
+            assert path.is_relative_to(previous_root.resolve())
+            assert sha256(path.read_bytes()).hexdigest()==checksum
+        previous=json.loads((previous_root/'stock_shortlist.json').read_text(encoding='utf-8'))
     targets=['pcs.pool.opportunities.evaluate_entry_opportunity','pcs.trend.opportunity_engine.evaluate_entry_opportunity',
         'pcs.trend.constructive_base.detect_constructive_base','pcs.trend.support_zones.evaluate_support_zones',
         'pcs.pool.opportunities.calculate_base_indicators','pcs.trend.indicators.calculate_base_indicators',
@@ -84,6 +97,16 @@ def main():
         reference=next(r for r in aal.opposing_evidence if resolve_evidence(EvidenceQuery(packet=aal,evidence_id=r.evidence_id)).record.kind=='CONDITION')
         invoke(['pool-evidence','--selection-directory',str(root),'--symbol','AAL','--evidence-id',reference.evidence_id])
         resolved_counts={}
+        ranking_reference_counts={}
+        for row in shortlist.rows:
+            refs=sorted({ref for key in row.sort_keys for ref in key.source_refs})
+            packet=by_symbol[row.symbol]
+            if refs:
+                query=resolve_evidence(EvidenceQuery(packet=packet,evidence_ids=refs))
+                assert query.status=='RESOLVED',(row.symbol,query.unresolved_refs,query.reason_codes)
+            ranking_reference_counts[row.symbol]=len(refs)
+            for component in packet.component_refs:
+                assert resolve_evidence(EvidenceQuery(packet=packet,evidence_id=component['result_id'])).status=='RESOLVED'
         for packet in packets:
             if packet.detail_index:
                 query=resolve_evidence(EvidenceQuery(packet=packet,evidence_ids=[r.evidence_id for r in packet.detail_index]))
@@ -129,10 +152,23 @@ def main():
     report=dict(status='PASS',source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=code,text=True).strip(),
         as_of=shortlist.as_of,mode=shortlist.context.mode,shortlist_id=shortlist.shortlist_id,source_checks=source_checks,
         package_read_count=loaded.read_audit['package_read_count'],old_21_child_ids_unchanged=sorted(old_ids),
-        resolved_evidence_counts=resolved_counts,aal_query=reference.model_dump(mode='json'),
+        resolved_evidence_counts=resolved_counts,ranking_reference_counts=ranking_reference_counts,aal_query=reference.model_dump(mode='json'),
         model_called=False,provider_read=False,canonical_read=False,detector_called=False,scope='EIGHT_SAVED_STOCKS_ONLY',
         rows=[r.model_dump(mode='json') for r in shortlist.rows],test_review_id=reviews[0].review_id,
         validation='Pure TEST tests are separate; this run only assembled saved derived results and resolved references.')
+    if previous:
+        for name,checksum in previous_hashes.items():
+            assert sha256((previous_root/name).read_bytes()).hexdigest()==checksum
+        old_rows={r['symbol']:r for r in previous['rows']}
+        report['revision_comparison']=dict(previous_directory=str(previous_root),previous_artifacts_unchanged=True,
+            previous_calculation_version=previous['calculation_version'],calculation_version=shortlist.calculation_version,
+            previous_shortlist_id=previous['shortlist_id'],shortlist_id=shortlist.shortlist_id,
+            rows=[dict(symbol=r.symbol,old_group=old_rows[r.symbol]['group'],group=r.group,
+                old_row_id=old_rows[r.symbol]['row_id'],row_id=r.row_id,
+                old_packet_id=old_rows[r.symbol]['packet_id'],packet_id=r.packet_id,
+                sort_values_changed={k.field:dict(old=next(x['value'] for x in old_rows[r.symbol]['sort_keys'] if x['field']==k.field),new=k.value)
+                    for k in r.sort_keys if next(x['value'] for x in old_rows[r.symbol]['sort_keys'] if x['field']==k.field)!=k.value})
+                for r in shortlist.rows])
     (root/'acceptance.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     (root/'actual_commands.json').write_text(json.dumps(commands,ensure_ascii=False,indent=2),encoding='utf-8')
     for path in (root,single_dir,aal_dir,render,review_root,review_file):

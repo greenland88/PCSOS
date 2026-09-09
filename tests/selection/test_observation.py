@@ -235,6 +235,90 @@ def test_review_validation_idempotence_and_separation(tmp_path):
         record_ai_review(AIReviewInput(packet=new,submission=s))
 
 
+def test_distinct_review_ids_with_identical_content_are_append_only(tmp_path):
+    packet=build_decision_evidence_packet(DecisionPacketInput(symbol='TEST_A',selection_input=input_for([result()])))
+    root=tmp_path/'reviews'
+    first=import_ai_review(root,packet,submission(packet,review_id='TEST:first'))
+    manifest=json.loads((root/'review_manifest.json').read_text())
+    first_file=root/manifest['reviews'][first.review_id]['file']
+    original=first_file.read_bytes()
+    second=import_ai_review(root,packet,submission(packet,review_id='TEST:second'))
+    assert first.content_sha256==second.content_sha256
+    assert first_file.read_bytes()==original
+    assert {r.review_id:r for r in read_ai_reviews(root)}=={first.review_id:first,second.review_id:second}
+    before=(root/'review_manifest.json').read_bytes()
+    assert import_ai_review(root,packet,submission(packet,review_id='TEST:first'))==first
+    with pytest.raises(ValueError,match='REVIEW_ID_CONTENT_CONFLICT'):
+        import_ai_review(root,packet,submission(packet,review_id='TEST:second',recommendation='changed'))
+    assert (root/'review_manifest.json').read_bytes()==before and first_file.read_bytes()==original
+
+
+@pytest.mark.parametrize('state,flag',[('WATCH','confirmation_deadline_elapsed_at_requested_session'),
+    ('CONFIRMING','confirmation_deadline_elapsed_at_requested_session'),
+    ('ENTRY_READY','entry_window_elapsed_at_requested_session')])
+def test_saved_expiry_overrides_historical_state_and_preserves_other_family(state,flag):
+    day='2026-09-08'
+    r=result(state=state,eligible=False)
+    r=r.model_copy(update={'as_of':day,'requested_session':day,flag:True})
+    context=BatchContext(requested_as_of=day,requested_session=day,effective_daily_session=day)
+    inp=input_for([r]).model_copy(update={'context':context})
+    row=rank_stock_opportunities(inp).rows[0]
+    family=row.family_assessments[0]
+    assert row.group=='NOT_CURRENTLY_APPLICABLE' and row.current_eligible is False
+    assert family.state==state and getattr(family,flag) is True
+    assert any('ELAPSED_AT_REQUEST' in reason for reason in family.reason_codes)
+    other=result(family='SHALLOW_PULLBACK').model_copy(update={'as_of':day,'requested_session':day})
+    mixed=inp.model_copy(update={'opportunities':[r,other],'enabled_families':['HEALTHY_PULLBACK','SHALLOW_PULLBACK']})
+    assert rank_stock_opportunities(mixed).rows[0].group=='READY_FOR_OPTIONS_REVIEW'
+
+
+def test_actual_sort_references_resolve_with_support_tests_and_current_only_conditions(tmp_path):
+    r=result().model_copy(update={'current_conditions':[condition('CURRENT_ONLY',False)]})
+    test=held('T1','2026-09-01','2026-09-02')
+    support=support_for(r,[test])
+    diagnostic=Diagnostic(symbol=r.symbol,metric_id='dollar_volume_median_20',result_id='TEST:profile',as_of=DAY,
+        value=100,unit='USD/session',currency='USD',price_basis='TEST:adjusted',validated=True,source_refs=['TEST:upstream'])
+    inp=input_for([r],supports=[support],diagnostics=[diagnostic])
+    row=rank_stock_opportunities(inp).rows[0]
+    packet=build_decision_evidence_packet(DecisionPacketInput(symbol=r.symbol,selection_input=inp))
+    write_packet(tmp_path/'packet',packet)
+    (tmp_path/'packet').rename(tmp_path/'moved')
+    packet=read_packet(tmp_path/'moved')
+    refs=[ref for k in row.sort_keys for ref in k.source_refs]
+    assert 'T1' in refs and any(':CONFIRM_A' in ref for ref in refs)
+    for ref in refs:
+        query=resolve_evidence(EvidenceQuery(packet=packet,evidence_id=ref))
+        assert query.status=='RESOLVED',(ref,query.reason_codes)
+    query=resolve_evidence(EvidenceQuery(packet=packet,evidence_id=f'{r.result_id}:{DAY}:CURRENT_ONLY'))
+    assert query.status=='RESOLVED' and query.record.value['predicate_value'] is False
+    assert query.record.ref.json_pointer.startswith('/current_conditions/')
+    for component in packet.component_refs:
+        assert resolve_evidence(EvidenceQuery(packet=packet,evidence_id=component['result_id'])).status=='RESOLVED'
+
+
+def test_conflicting_condition_alias_requires_exact_pointer():
+    r=result().model_copy(update={'current_conditions':[condition(value=False)]})
+    packet=build_decision_evidence_packet(DecisionPacketInput(symbol=r.symbol,selection_input=input_for([r])))
+    alias=f'{r.result_id}:{DAY}:CURRENT_DISTANCE_FROM_FIXED_ZONE'
+    assert resolve_evidence(EvidenceQuery(packet=packet,evidence_id=alias)).reason_codes==['AMBIGUOUS_EVIDENCE_ID']
+    exact=resolve_evidence(EvidenceQuery(packet=packet,evidence_id=f'{r.result_id}:/current_conditions/0'))
+    assert exact.status=='RESOLVED' and exact.record.value['predicate_value'] is False
+
+
+def test_v1_outputs_cannot_silently_reuse_v2_semantics():
+    from pcs.selection.models import StockShortlist,DecisionEvidencePacket
+    inp=input_for([result()])
+    ranked=rank_stock_opportunities(inp)
+    packet=build_decision_evidence_packet(DecisionPacketInput(symbol='TEST_A',selection_input=inp))
+    assert ranked.calculation_version=='stock-observation-ranking-v2'
+    assert packet.calculation_version=='decision-evidence-packet-v2'
+    for obj,model,old in [(ranked,StockShortlist,'stock-observation-ranking-v1'),
+        (packet,DecisionEvidencePacket,'decision-evidence-packet-v1')]:
+        raw=obj.model_dump(mode='json');raw.update(version='1.0',calculation_version=old)
+        with pytest.raises(ValueError):
+            model.model_validate(raw)
+
+
 def test_bundle_roundtrip_views_and_interrupted_publish(tmp_path,monkeypatch):
     inp=input_for([result()])
     packet=build_decision_evidence_packet(DecisionPacketInput(symbol='TEST_A',selection_input=inp))

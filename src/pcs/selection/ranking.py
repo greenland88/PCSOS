@@ -104,6 +104,11 @@ def assess_family(result, family, enabled, errors, failures, ctx):
     confirmation = last.confirmation_date if last else None
     start, end = r.entry_permitted_from, r.entry_permitted_until
     errors = list(errors)
+    expiry_reasons = []
+    if r.confirmation_deadline_elapsed_at_requested_session:
+        expiry_reasons.append('CONFIRMATION_DEADLINE_ELAPSED_AT_REQUEST')
+    if r.entry_window_elapsed_at_requested_session:
+        expiry_reasons.append('ENTRY_WINDOW_ELAPSED_AT_REQUEST')
     if confirmation and confirmation>ctx.effective_daily_session:
         errors.append('CONFIRMATION_AFTER_EVIDENCE_SESSION')
         complete=False
@@ -113,6 +118,8 @@ def assess_family(result, family, enabled, errors, failures, ctx):
         complete=False
     if errors:
         group = 'INSUFFICIENT_EVIDENCE'
+    elif expiry_reasons:
+        group = 'NOT_CURRENTLY_APPLICABLE'
     elif r.eligible_at_requested_time is True:
         group = 'READY_FOR_OPTIONS_REVIEW'
     elif not complete:
@@ -132,7 +139,9 @@ def assess_family(result, family, enabled, errors, failures, ctx):
         current_required_complete=complete,confirmation_date=confirmation,entry_start=start,entry_end=end,
         setup_date=last.setup_date if last else None,touch_date=last.touch_date if last else None,
         confirmation_deadline=last.confirmation_deadline if last else None,
-        support_zone_id=last.support_zone_id if last else None,reason_codes=list(dict.fromkeys(errors+
+        confirmation_deadline_elapsed_at_requested_session=r.confirmation_deadline_elapsed_at_requested_session,
+        entry_window_elapsed_at_requested_session=r.entry_window_elapsed_at_requested_session,
+        support_zone_id=last.support_zone_id if last else None,reason_codes=list(dict.fromkeys(errors+expiry_reasons+
             ([c.condition_id for c in r.current_conditions if c.role!='DIAGNOSTIC' and c.predicate_value is not True])+[group])),
         current_gaps=current,coverage_gaps=[g.model_dump(mode='json') for g in r.coverage_missing_evidence],
         conditions=r.current_conditions,representative_key=key)
@@ -232,7 +241,7 @@ def sort_keys(inp, symbol, representative, result):
         'confirmation_fraction':(fraction,'fraction',confirm_refs,[] if fraction is not None else ['CONFIRMATION_NOT_EXECUTED_OR_NOT_RECORDED'],confirmation),
         'remaining_entry_sessions':(remaining,'exchange_sessions',refs,window_reasons,{'waiting_sessions':waiting,'calendar':inp.context.calendar}),
         'dollar_volume_median_20':(liquidity.value if liquidity else None,inp.policy.liquidity_currency+'/session',
-            [liquidity.result_id,*liquidity.source_refs] if liquidity else [],[] if liquidity else ['COMPATIBLE_LIQUIDITY_NOT_AVAILABLE'],{}),
+            [liquidity.result_id, f'{liquidity.result_id}:/diagnostics/{liquidity.metric_id}'] if liquidity else [],[] if liquidity else ['COMPATIBLE_LIQUIDITY_NOT_AVAILABLE'],{}),
         'symbol':(symbol,None,[],[],{}),
     }
     return [SortKey(field=f.field,value=values[f.field][0],unit=values[f.field][1],direction=f.direction,
