@@ -717,6 +717,7 @@ class OpportunityInput(StrictModel):
     support_facts: list[OpportunitySupportFact]
     support_result_ids: dict[str, str] = Field(default_factory=dict)
     effective_policy: OpportunityPolicy = Field(default_factory=OpportunityPolicy)
+    support_policy: SupportZonePolicy = Field(default_factory=SupportZonePolicy)
     prior_state: OpportunityStateCheckpoint | None = None
     prior_timeline: list[OpportunityDay] = Field(default_factory=list)
     prior_transitions: list[OpportunityTransition] = Field(default_factory=list)

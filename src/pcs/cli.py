@@ -205,6 +205,11 @@ def onboarding_status(args):
 
 
 def pool_scan(args):
+    if getattr(args,'scope','PRODUCTION')=='STOCK_OBSERVATION':
+        from pcs.pool.observation_cli import run_observation_command
+        return run_observation_command(args)
+    if getattr(args,'observation_spec',None):
+        raise ValueError('OBSERVATION_SPEC_REQUIRES_OBSERVATION_SCOPE')
     print(json.dumps({"status": "POOL_SCAN_STARTED", "mode": args.mode,
                       "as_of": args.as_of, "universe_id": args.universe_id,
                       "explicit_symbol_count": len(args.symbols or []),
@@ -361,6 +366,9 @@ def main():
     status_cmd.set_defaults(func=pcs_status)
 
     pool = sub.add_parser("pool-scan", help="scan the PCS universe with optional on-demand data preparation")
+    pool.add_argument('--scope',choices=['PRODUCTION','STOCK_OBSERVATION'],default='PRODUCTION')
+    pool.add_argument('--observation-spec')
+    pool.add_argument('--selection-profile',default='selection-v2-observation-v1')
     pool.add_argument("--symbol", dest="symbols", action="append", help="explicit symbol; repeat for multiple symbols")
     pool.add_argument("--universe-id")
     pool.add_argument("--as-of", default="latest")
@@ -499,6 +507,13 @@ def main():
 
     args = parser.parse_args()
     if args.func is pool_scan:
+        if args.scope=='STOCK_OBSERVATION':
+            allowed={'--mode','--scope','--selection-profile','--observation-spec','--resume-run-id','--data-mode'}
+            conflicting={a.split('=')[0] for a in sys.argv[2:] if a.startswith('--')}-allowed
+            if conflicting:
+                parser.error('observation parameters belong in --observation-spec: '+', '.join(sorted(conflicting)))
+            if args.mode!='EOD':
+                parser.error('STOCK_OBSERVATION requires --mode EOD')
         from math import isfinite
         if args.max_workers < 1:
             parser.error("--max-workers must be positive")

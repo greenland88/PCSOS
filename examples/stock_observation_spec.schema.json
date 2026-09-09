@@ -1,0 +1,887 @@
+{
+  "$defs": {
+    "BatchContext": {
+      "additionalProperties": false,
+      "properties": {
+        "requested_as_of": {
+          "title": "Requested As Of",
+          "type": "string"
+        },
+        "requested_session": {
+          "title": "Requested Session",
+          "type": "string"
+        },
+        "effective_daily_session": {
+          "title": "Effective Daily Session",
+          "type": "string"
+        },
+        "mode": {
+          "default": "HISTORICAL",
+          "enum": [
+            "HISTORICAL",
+            "CURRENT_EOD"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "calendar": {
+          "default": "XNYS",
+          "title": "Calendar",
+          "type": "string"
+        },
+        "run_id": {
+          "default": "stock-observation",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "request_id": {
+          "default": "stock-observation",
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requested_as_of",
+        "requested_session",
+        "effective_daily_session"
+      ],
+      "title": "BatchContext",
+      "type": "object"
+    },
+    "BreakoutRetestPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "breakout-retest-observation-v1",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "calculation_version": {
+          "const": "breakout-retest-v2",
+          "default": "breakout-retest-v2",
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "resistance_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "Resistance Sessions",
+          "type": "integer"
+        },
+        "resistance_tie_rule": {
+          "const": "LATEST_SESSION",
+          "default": "LATEST_SESSION",
+          "title": "Resistance Tie Rule",
+          "type": "string"
+        },
+        "breakout_buffer_atr": {
+          "default": 0.1,
+          "minimum": 0,
+          "title": "Breakout Buffer Atr",
+          "type": "number"
+        },
+        "minimum_breakout_rvol20": {
+          "default": 0.9,
+          "minimum": 0,
+          "title": "Minimum Breakout Rvol20",
+          "type": "number"
+        },
+        "retest_wait_sessions": {
+          "const": 15,
+          "default": 15,
+          "title": "Retest Wait Sessions",
+          "type": "integer"
+        },
+        "parameter_source": {
+          "default": "PLAN_V1_7",
+          "enum": [
+            "PLAN_V1_7",
+            "REQUEST"
+          ],
+          "title": "Parameter Source",
+          "type": "string"
+        }
+      },
+      "title": "BreakoutRetestPolicy",
+      "type": "object"
+    },
+    "ConstructiveBasePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "constructive-base-observation-v1",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "calculation_version": {
+          "const": "constructive-base-v2",
+          "default": "constructive-base-v2",
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "formation_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "Formation Sessions",
+          "type": "integer"
+        },
+        "preceding_uptrend_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "Preceding Uptrend Sessions",
+          "type": "integer"
+        },
+        "maximum_width_atr": {
+          "default": 4.0,
+          "exclusiveMinimum": 0,
+          "title": "Maximum Width Atr",
+          "type": "number"
+        },
+        "contraction_recent": {
+          "const": 5,
+          "default": 5,
+          "title": "Contraction Recent",
+          "type": "integer"
+        },
+        "contraction_reference": {
+          "const": 15,
+          "default": 15,
+          "title": "Contraction Reference",
+          "type": "integer"
+        },
+        "minimum_held_tests": {
+          "default": 2,
+          "minimum": 2,
+          "title": "Minimum Held Tests",
+          "type": "integer"
+        },
+        "first_live_touch_wait_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "First Live Touch Wait Sessions",
+          "type": "integer"
+        },
+        "maximum_base_position": {
+          "default": 0.5,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Maximum Base Position",
+          "type": "number"
+        },
+        "upside_exit_buffer_atr": {
+          "default": 0.1,
+          "minimum": 0,
+          "title": "Upside Exit Buffer Atr",
+          "type": "number"
+        },
+        "reformation_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "Reformation Sessions",
+          "type": "integer"
+        },
+        "extreme_tie_rule": {
+          "const": "LATEST_SESSION",
+          "default": "LATEST_SESSION",
+          "title": "Extreme Tie Rule",
+          "type": "string"
+        },
+        "parameter_source": {
+          "default": "STEP_07_OBSERVATION_INITIAL",
+          "enum": [
+            "STEP_07_OBSERVATION_INITIAL",
+            "REQUEST"
+          ],
+          "title": "Parameter Source",
+          "type": "string"
+        }
+      },
+      "title": "ConstructiveBasePolicy",
+      "type": "object"
+    },
+    "ObservationBudgets": {
+      "additionalProperties": false,
+      "properties": {
+        "verification_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Verification Seconds",
+          "type": "number"
+        },
+        "preparation_seconds": {
+          "default": 180,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Preparation Seconds",
+          "type": "number"
+        },
+        "component_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Component Seconds",
+          "type": "number"
+        },
+        "output_seconds": {
+          "default": 180,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Output Seconds",
+          "type": "number"
+        },
+        "total_seconds": {
+          "default": 7200,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Total Seconds",
+          "type": "number"
+        }
+      },
+      "title": "ObservationBudgets",
+      "type": "object"
+    },
+    "OpportunityPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "healthy-pullback-opportunity-v1.7",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "calculation_version": {
+          "const": "entry-opportunity-v2",
+          "default": "entry-opportunity-v2",
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "family": {
+          "default": "HEALTHY_PULLBACK",
+          "enum": [
+            "HEALTHY_PULLBACK",
+            "SHALLOW_PULLBACK",
+            "BREAKOUT_RETEST",
+            "CONSTRUCTIVE_BASE"
+          ],
+          "title": "Family",
+          "type": "string"
+        },
+        "analysis_sessions": {
+          "default": 60,
+          "maximum": 252,
+          "minimum": 20,
+          "title": "Analysis Sessions",
+          "type": "integer"
+        },
+        "indicator_warmup_sessions": {
+          "default": 200,
+          "maximum": 1000,
+          "minimum": 50,
+          "title": "Indicator Warmup Sessions",
+          "type": "integer"
+        },
+        "recent_high_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "Recent High Sessions",
+          "type": "integer"
+        },
+        "healthy_pullback_min_pct": {
+          "default": 0.05,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Healthy Pullback Min Pct",
+          "type": "number"
+        },
+        "healthy_pullback_max_pct": {
+          "default": 0.15,
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Healthy Pullback Max Pct",
+          "type": "number"
+        },
+        "shallow_pullback_max_pct": {
+          "default": 0.05,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Shallow Pullback Max Pct",
+          "type": "number"
+        },
+        "sma20_near_atr": {
+          "default": 1.5,
+          "minimum": 0,
+          "title": "Sma20 Near Atr",
+          "type": "number"
+        },
+        "sma50_near_atr": {
+          "default": 2.0,
+          "minimum": 0,
+          "title": "Sma50 Near Atr",
+          "type": "number"
+        },
+        "reclaim_buffer_atr": {
+          "default": 0.1,
+          "minimum": 0,
+          "title": "Reclaim Buffer Atr",
+          "type": "number"
+        },
+        "confirmation_sessions": {
+          "const": 3,
+          "default": 3,
+          "title": "Confirmation Sessions",
+          "type": "integer"
+        },
+        "entry_window_sessions": {
+          "const": 3,
+          "default": 3,
+          "title": "Entry Window Sessions",
+          "type": "integer"
+        },
+        "minimum_close_location": {
+          "default": 0.55,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Minimum Close Location",
+          "type": "number"
+        },
+        "minimum_rvol20": {
+          "default": 0.8,
+          "minimum": 0,
+          "title": "Minimum Rvol20",
+          "type": "number"
+        },
+        "maximum_entry_distance_atr": {
+          "default": 1.75,
+          "minimum": 0,
+          "title": "Maximum Entry Distance Atr",
+          "type": "number"
+        },
+        "upper_wick_rejection_atr": {
+          "default": 0.5,
+          "minimum": 0,
+          "title": "Upper Wick Rejection Atr",
+          "type": "number"
+        },
+        "upper_rejection_close_location": {
+          "default": 0.35,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Upper Rejection Close Location",
+          "type": "number"
+        },
+        "upper_wick_role": {
+          "const": "CONFIRMATION_BLOCKER",
+          "default": "CONFIRMATION_BLOCKER",
+          "title": "Upper Wick Role",
+          "type": "string"
+        },
+        "parameter_source": {
+          "default": "PLAN_V1_7",
+          "enum": [
+            "PLAN_V1_7",
+            "REQUEST"
+          ],
+          "title": "Parameter Source",
+          "type": "string"
+        }
+      },
+      "title": "OpportunityPolicy",
+      "type": "object"
+    },
+    "ProfilePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "underlying-profile-descriptive-v1",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "calculation_version": {
+          "const": "underlying-profile-v1",
+          "default": "underlying-profile-v1",
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "analysis_sessions": {
+          "default": 252,
+          "maximum": 2520,
+          "minimum": 60,
+          "title": "Analysis Sessions",
+          "type": "integer"
+        },
+        "atr_period": {
+          "default": 14,
+          "maximum": 100,
+          "minimum": 2,
+          "title": "Atr Period",
+          "type": "integer"
+        },
+        "peak_lookback": {
+          "default": 60,
+          "maximum": 252,
+          "minimum": 2,
+          "title": "Peak Lookback",
+          "type": "integer"
+        },
+        "episode_threshold": {
+          "default": 0.05,
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Episode Threshold",
+          "type": "number"
+        },
+        "annualization_sessions": {
+          "default": 252,
+          "minimum": 1,
+          "title": "Annualization Sessions",
+          "type": "integer"
+        },
+        "parameter_source": {
+          "default": "DEFAULT",
+          "enum": [
+            "DEFAULT",
+            "REQUEST"
+          ],
+          "title": "Parameter Source",
+          "type": "string"
+        }
+      },
+      "title": "ProfilePolicy",
+      "type": "object"
+    },
+    "RankingPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "stock-observation-ranking-v1",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "calculation_version": {
+          "const": "stock-observation-ranking-v2",
+          "default": "stock-observation-ranking-v2",
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "group_order": {
+          "items": {
+            "enum": [
+              "READY_FOR_OPTIONS_REVIEW",
+              "WATCH_SETUP",
+              "NOT_CURRENTLY_APPLICABLE",
+              "NO_SETUP",
+              "INSUFFICIENT_EVIDENCE"
+            ],
+            "type": "string"
+          },
+          "title": "Group Order",
+          "type": "array"
+        },
+        "sort_fields": {
+          "items": {
+            "$ref": "#/$defs/SortField"
+          },
+          "title": "Sort Fields",
+          "type": "array"
+        },
+        "live_test_order": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Live Test Order",
+          "type": "array"
+        },
+        "representative_order": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Representative Order",
+          "type": "array"
+        },
+        "liquidity_currency": {
+          "default": "USD",
+          "title": "Liquidity Currency",
+          "type": "string"
+        },
+        "purpose": {
+          "const": "OBSERVATION_ONLY_NOT_RETURN_VALIDATED",
+          "default": "OBSERVATION_ONLY_NOT_RETURN_VALIDATED",
+          "title": "Purpose",
+          "type": "string"
+        }
+      },
+      "title": "RankingPolicy",
+      "type": "object"
+    },
+    "SelectionProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": {
+          "const": "selection-v2-observation-v1",
+          "default": "selection-v2-observation-v1",
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "families": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Families",
+          "type": "array"
+        },
+        "profile": {
+          "$ref": "#/$defs/ProfilePolicy"
+        },
+        "support": {
+          "$ref": "#/$defs/SupportZonePolicy"
+        },
+        "opportunity": {
+          "$ref": "#/$defs/OpportunityPolicy"
+        },
+        "shallow": {
+          "$ref": "#/$defs/ShallowPullbackPolicy"
+        },
+        "breakout": {
+          "$ref": "#/$defs/BreakoutRetestPolicy"
+        },
+        "base": {
+          "$ref": "#/$defs/ConstructiveBasePolicy"
+        },
+        "ranking": {
+          "$ref": "#/$defs/RankingPolicy"
+        }
+      },
+      "title": "SelectionProfile",
+      "type": "object"
+    },
+    "ShallowPullbackPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "shallow-pullback-observation-v1",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "calculation_version": {
+          "const": "shallow-pullback-v1",
+          "default": "shallow-pullback-v1",
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "peak_sessions": {
+          "const": 20,
+          "default": 20,
+          "title": "Peak Sessions",
+          "type": "integer"
+        },
+        "peak_tie_rule": {
+          "const": "LATEST_SESSION",
+          "default": "LATEST_SESSION",
+          "title": "Peak Tie Rule",
+          "type": "string"
+        },
+        "minimum_depth_atr": {
+          "default": 0.25,
+          "minimum": 0,
+          "title": "Minimum Depth Atr",
+          "type": "number"
+        },
+        "maximum_depth_atr": {
+          "default": 1.5,
+          "exclusiveMinimum": 0,
+          "title": "Maximum Depth Atr",
+          "type": "number"
+        },
+        "parameter_source": {
+          "default": "STEP_05_TASK_OBSERVATION_POLICY",
+          "title": "Parameter Source",
+          "type": "string"
+        }
+      },
+      "title": "ShallowPullbackPolicy",
+      "type": "object"
+    },
+    "SortField": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "ASC",
+            "DESC"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "nulls": {
+          "const": "LAST",
+          "default": "LAST",
+          "title": "Nulls",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "direction"
+      ],
+      "title": "SortField",
+      "type": "object"
+    },
+    "SupportZonePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "default": "support-zones-research-v1",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "calculation_version": {
+          "default": "support-zones-v2",
+          "enum": [
+            "support-zones-v1",
+            "support-zones-v2"
+          ],
+          "title": "Calculation Version",
+          "type": "string"
+        },
+        "analysis_sessions": {
+          "default": 60,
+          "maximum": 252,
+          "minimum": 7,
+          "title": "Analysis Sessions",
+          "type": "integer"
+        },
+        "indicator_warmup_sessions": {
+          "default": 200,
+          "maximum": 1000,
+          "minimum": 50,
+          "title": "Indicator Warmup Sessions",
+          "type": "integer"
+        },
+        "pivot_left_bars": {
+          "const": 3,
+          "default": 3,
+          "title": "Pivot Left Bars",
+          "type": "integer"
+        },
+        "pivot_right_bars": {
+          "const": 3,
+          "default": 3,
+          "title": "Pivot Right Bars",
+          "type": "integer"
+        },
+        "atr_period": {
+          "const": 14,
+          "default": 14,
+          "title": "Atr Period",
+          "type": "integer"
+        },
+        "zone_width_atr": {
+          "default": 0.35,
+          "exclusiveMinimum": 0,
+          "title": "Zone Width Atr",
+          "type": "number"
+        },
+        "break_buffer_atr": {
+          "default": 0.35,
+          "exclusiveMinimum": 0,
+          "title": "Break Buffer Atr",
+          "type": "number"
+        },
+        "held_rebound_atr": {
+          "default": 0.5,
+          "exclusiveMinimum": 0,
+          "title": "Held Rebound Atr",
+          "type": "number"
+        },
+        "retest_departure_atr": {
+          "default": 0.5,
+          "exclusiveMinimum": 0,
+          "title": "Retest Departure Atr",
+          "type": "number"
+        },
+        "confirmation_sessions": {
+          "const": 3,
+          "default": 3,
+          "title": "Confirmation Sessions",
+          "type": "integer"
+        },
+        "parameter_source": {
+          "default": "DEFAULT",
+          "enum": [
+            "DEFAULT",
+            "REQUEST"
+          ],
+          "title": "Parameter Source",
+          "type": "string"
+        }
+      },
+      "title": "SupportZonePolicy",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Version",
+      "type": "string"
+    },
+    "scope": {
+      "const": "STOCK_OBSERVATION",
+      "default": "STOCK_OBSERVATION",
+      "title": "Scope",
+      "type": "string"
+    },
+    "symbols": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Symbols",
+      "type": "array"
+    },
+    "universe_id": {
+      "default": "explicit",
+      "title": "Universe Id",
+      "type": "string"
+    },
+    "universe_source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Universe Source"
+    },
+    "universe_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Universe Sha256"
+    },
+    "universe_members_field": {
+      "default": "symbols",
+      "enum": [
+        "symbols",
+        "included_symbols"
+      ],
+      "title": "Universe Members Field",
+      "type": "string"
+    },
+    "context": {
+      "$ref": "#/$defs/BatchContext"
+    },
+    "selection_profile": {
+      "$ref": "#/$defs/SelectionProfile"
+    },
+    "data_mode": {
+      "const": "READ_ONLY",
+      "default": "READ_ONLY",
+      "title": "Data Mode",
+      "type": "string"
+    },
+    "output_directory": {
+      "title": "Output Directory",
+      "type": "string"
+    },
+    "manifest_path": {
+      "default": "data/manifests/storage_manifest.csv",
+      "title": "Manifest Path",
+      "type": "string"
+    },
+    "parquet_root": {
+      "default": "data/parquet",
+      "title": "Parquet Root",
+      "type": "string"
+    },
+    "max_workers": {
+      "default": 4,
+      "maximum": 16,
+      "minimum": 1,
+      "title": "Max Workers",
+      "type": "integer"
+    },
+    "budgets": {
+      "$ref": "#/$defs/ObservationBudgets"
+    },
+    "previous_run": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Previous Run"
+    },
+    "resume_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resume Run Id"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "saved_selection_manifest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Saved Selection Manifest"
+    }
+  },
+  "required": [
+    "symbols",
+    "context",
+    "output_directory"
+  ],
+  "title": "StockObservationInput",
+  "type": "object"
+}

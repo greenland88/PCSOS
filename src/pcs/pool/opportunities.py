@@ -63,12 +63,22 @@ class OpportunityDataReader:
             benchmark = self.daily._read("SPY", day, policy, calendar)
         except (ValueError, RuntimeError) as exc:
             benchmark_error = str(exc)
+        return self.prepare(context, daily=daily, benchmark=benchmark, policy=policy,
+            prior_state=prior_state, calendar=calendar, benchmark_error=benchmark_error)
+
+    def prepare(self, context, *, daily, benchmark=None, policy=None, prior_state=None,
+                calendar='XNYS', benchmark_error=None, analysis_start=None, defer_support=False,
+                support_analysis_start=None, allow_partial=False):
+        """Prepare one verified view shared by all families; no storage reads here."""
+        import exchange_calendars as xc
+        policy=policy or OpportunityPolicy()
+        day=context.effective_daily_session
         frame = pd.DataFrame([{"date": b.session, "open": b.open, "high": b.high,
             "low": b.low, "close": b.close, "volume": b.volume} for b in daily.bars])
         benchmark_frame = (pd.DataFrame([{"date": b.session, "open": b.open,
             "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
             for b in benchmark.bars]) if benchmark else None)
-        if len(frame) < policy.indicator_warmup_sessions:
+        if len(frame) < (1 if allow_partial else policy.indicator_warmup_sessions):
             raise ValueError("OPPORTUNITY_INDICATOR_WARMUP_INSUFFICIENT")
         config = TrendIndicatorConfig(pivot_left_bars=3, pivot_right_bars=3)
         indicator_frame = frame.copy()
@@ -83,6 +93,9 @@ class OpportunityDataReader:
         end_loc = cal.sessions.get_loc(pd.Timestamp(day))
         analysis = [str(s.date()) for s in cal.sessions[
             end_loc-policy.analysis_sessions+1:end_loc+1]]
+        if analysis_start:
+            analysis=[str(s.date()) for s in cal.sessions_in_range(analysis_start,day)]
+        support_analysis_start=support_analysis_start or analysis[0]
         future = [str(s.date()) for s in cal.sessions[
             end_loc+1:end_loc+policy.confirmation_sessions+policy.entry_window_sessions+2]]
         expected = analysis + future
@@ -148,7 +161,7 @@ class OpportunityDataReader:
                 legacy_pullback_gate_reasons=pullback_reasons,
                 legacy_pullback_state=pullback.pullback_state,
                 legacy_pullback_reasons=list(pullback.reasons)))
-            if session in analysis:
+            if support_analysis_start<=session<=day:
                 support_bars.append(SupportFeatureBar(session=session,
                     open=_number(row.open), high=_number(row.high), low=_number(row.low),
                     close=_number(row.close), sma20=_number(ind.sma20),
@@ -158,7 +171,7 @@ class OpportunityDataReader:
         from pcs.trend.selection_models import ConfirmedSwingEvidence
         for swing in swings:
             confirmed_at = str(pd.Timestamp(swing.confirmed_at).date())
-            if confirmed_at >= analysis[0]:
+            if confirmed_at >= min(analysis[0],support_analysis_start):
                 confirmed.append(ConfirmedSwingEvidence(source_id="sha256:"+_hash([
                     context.symbol, str(pd.Timestamp(swing.pivot_date).date()),
                     swing.swing_type, swing.price, confirmed_at, 3, 3]),
@@ -176,8 +189,8 @@ class OpportunityDataReader:
                                  if benchmark else None)}
         indicator_identity = "sha256:"+_hash(indicator_payload)
         support_view = SupportFeatureView(symbol=context.symbol, bars=support_bars,
-            confirmed_swings=confirmed, expected_sessions=expected,
-            analysis_start=analysis[0],
+            confirmed_swings=confirmed, expected_sessions=[str(s.date()) for s in cal.sessions_in_range(support_analysis_start,day)]+future,
+            analysis_start=support_analysis_start,
             indicator_seed_start=str(pd.Timestamp(frame.date.iloc[0]).date()),
             indicator_identity=indicator_identity, source=daily.source,
             price_basis=daily.price_basis,
@@ -186,11 +199,12 @@ class OpportunityDataReader:
             received_at=daily.received_at)
         support_policy = SupportZonePolicy(analysis_sessions=policy.analysis_sessions,
             indicator_warmup_sessions=policy.indicator_warmup_sessions)
+        self.prepared_support_view=support_view
         support_state = None
         support_facts = []
         support_result_ids = {}
         support_results = []
-        for session in analysis:
+        for session in ([] if defer_support else analysis):
             if session not in by_date:
                 continue
             support_context = context.model_copy(update={
@@ -219,6 +233,7 @@ class OpportunityDataReader:
                             source_ids=list(zone.observed_source_ids),
                             sources=list(zone.observed_sources or zone.creation_sources),
                             reason_codes=list(dict.fromkeys(zone.reason_codes+test.reason_codes))))
+        self.prepared_support_result=support_results[-1] if support_results else None
         feature = OpportunityFeatureView(symbol=context.symbol, bars=feature_bars,
             expected_sessions=[str(s.date()) for s in cal.sessions[
                 end_loc-policy.required_sessions+1:end_loc+1]] + future, analysis_start=analysis[0],

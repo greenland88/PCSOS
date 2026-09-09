@@ -518,6 +518,7 @@ def evaluate_base_opportunity(input):
     previous = next((r for r in input.prior_family_results if r.family == 'CONSTRUCTIVE_BASE'), None)
     result = detect_constructive_base(ConstructiveBaseInput(call_context=input.call_context,
         feature_view=input.feature_view, effective_policy=input.base_policy, opportunity_policy=input.effective_policy,
+        support_policy=input.support_policy,
         structure_evidence=input.base_structure_evidence, calendar=input.calendar,
         replay_of_result_id=input.base_replay_of_result_id,
         prior_state=previous.base_result.next_state if previous and previous.base_result else None))

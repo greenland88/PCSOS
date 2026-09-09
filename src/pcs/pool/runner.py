@@ -40,6 +40,341 @@ from .options import discover_spreads, load_pool_option_rules
 _PREPARATION_LOCK = RLock()
 
 
+def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_callback=None):
+    """Observation scope of this runner, before any legacy eligibility/timing gates.
+
+    Workers return values only. This thread owns every durable component commit.
+    Histories are loaded for at most max_workers symbols and then released.
+    """
+    from collections import Counter
+    from threading import Event,Thread
+    import sys
+    from pcs.selection.identity import digest,semantic
+    from pcs.selection.models import RankingInput,DecisionPacketInput,StockRow,ResultBinding,StockShortlist,DecisionEvidencePacket,GROUPS
+    from pcs.selection.ranking import build_row,rank_prepared_rows
+    from pcs.selection.packets import build_decision_evidence_packet,resolve_evidence
+    from pcs.selection.models import EvidenceQuery
+    from pcs.selection.storage import shortlist_csv,shortlist_markdown
+    from .observation_models import StockObservationInput,StockObservationRun,ObservationSymbol
+    from .observation_storage import ObservationStore,read_json,read_ref,write_json
+    from .observation_components import (CanonicalObservationAdapter,PreparedObservation,SupportObservation,
+        dependencies,now,support_component,family_component,ranking_input,compatible_prefix,
+        measure_underlying_profile,EntryOpportunity,UnderlyingProfile,digest,profile_records)
+    spec=StockObservationInput.model_validate(spec)
+    if adapter is not None and getattr(adapter,'input_kind',None)!='TEST':
+        raise ValueError('OBSERVATION_CUSTOM_ADAPTER_TEST_ONLY')
+    profile=spec.selection_profile
+    started=perf_counter();deadline=started+spec.budgets.total_seconds
+    print(json.dumps(dict(status='POOL_SCAN_STARTED',scope=spec.scope,run_id=spec.run_id,total=len(spec.symbols))),file=sys.stderr,flush=True)
+    code=Path(__file__).resolve().parents[3]
+    source_commit=__import__('subprocess').check_output(['git','rev-parse','HEAD'],cwd=code,text=True).strip()
+    closure=dependencies();code_id=digest(closure)
+    config_snapshot={str(p.resolve()):hashlib.sha256(p.read_bytes()).hexdigest() for p in
+        (Path('config/data_source_routes.yaml'),Path('config/market_data_source_registry.yaml'),
+         Path('config/data_remediation_registry.yaml'),Path('config/data/corporate_actions.csv')) if p.is_file()}
+    code_id=digest([code_id,config_snapshot])
+    payload=spec.model_dump(mode='json',exclude={'resume_run_id','run_id'})
+    spec_id=digest([payload,source_commit,code_id])
+    root=Path(spec.output_directory)/spec.run_id
+    if spec.universe_source:
+        if hashlib.sha256(Path(spec.universe_source).read_bytes()).hexdigest()!=spec.universe_sha256:
+            raise ValueError('OBSERVATION_UNIVERSE_HASH_MISMATCH')
+        universe=read_json(spec.universe_source)
+        members=universe.get(spec.universe_members_field,[])
+        if sorted(set(members))!=spec.symbols:
+            raise ValueError('OBSERVATION_UNIVERSE_MEMBERSHIP_MISMATCH')
+    with PCSDataAccess._file_lock(root/'writer',blocking=False):
+        store=ObservationStore(root,spec_id,spec.run_id,resume=bool(spec.resume_run_id))
+        if checkpoint_callback:
+            checkpoint_callback(str(store.path),spec_id)
+        write_json(root/'observation_spec.json',spec.model_dump(mode='json'))
+        write_json(root/'dependency_manifest.json',dict(source_commit=source_commit,code_id=code_id,sha256=closure,config_snapshot=config_snapshot))
+        write_json(root/'universe.json',dict(universe_id=spec.universe_id,symbols=spec.symbols,membership_sha256=digest(spec.symbols),source=spec.universe_source,source_sha256=spec.universe_sha256))
+        progress={'stage':'INITIALIZING','completed':0,'total':len(spec.symbols),'cache_hits':0,
+            'execution_completed_count':0,'data_blocked_count':0,'failed_count':0,'timed_out_count':0,'unprocessed_count':len(spec.symbols)}
+        stage_counts={}
+        stop=Event()
+        def emit():
+            record=dict(status='POOL_SCAN_PROGRESS',scope=spec.scope,run_id=spec.run_id,attempt_id=store.token,
+                elapsed_seconds=round(perf_counter()-started,3),checkpoint=str(store.path),**progress)
+            print(json.dumps(record),file=sys.stderr,flush=True)
+            write_json(root/'progress.json',record)
+        def heartbeat():
+            while not stop.wait(20): emit()
+        thread=Thread(target=heartbeat,daemon=True);thread.start()
+        try:
+            saved=None;global_errors=[]
+            if spec.saved_selection_manifest:
+                from pcs.selection.adapters import load_selection_input
+                saved=load_selection_input(spec.saved_selection_manifest)
+                if semantic(saved.ranking_input.context)!=semantic(spec.context) or saved.ranking_input.requested_symbols!=spec.symbols:
+                    raise ValueError('OBSERVATION_SAVED_SCOPE_OR_TIME_MISMATCH')
+            access=None if saved or adapter else data_access or PCSDataAccess.canonical(manifest_path=spec.manifest_path,parquet_root=spec.parquet_root)
+            runtime=PoolRuntime(access=access,run_id=spec.run_id,as_of=spec.context.requested_as_of,
+                max_workers=spec.max_workers,stage_timeout_seconds=spec.budgets.component_seconds)
+            if not saved and adapter is None:
+                adapter=CanonicalObservationAdapter(spec,runtime)
+            previous_index={};previous_root=None;previous_shortlist=None;previous_profile=None
+            if spec.previous_run:
+                previous_root=Path(spec.previous_run)
+                manifest=read_json(previous_root/'observation_manifest.json')
+                for name in ('symbol_index.json','stock_shortlist.json','observation_spec.json'):
+                    if hashlib.sha256((previous_root/name).read_bytes()).hexdigest()!=manifest['sha256'][name]:
+                        raise ValueError('OBSERVATION_PREVIOUS_HASH_MISMATCH')
+                previous_index=read_json(previous_root/'symbol_index.json')
+                previous_profile=read_json(previous_root/'observation_spec.json')['selection_profile']
+                previous_shortlist=StockShortlist.model_validate(read_json(previous_root/'stock_shortlist.json'))
+            if not saved:
+                progress['stage']='BENCHMARK_VERIFICATION';emit()
+                seeds=[]
+                if isinstance(adapter,CanonicalObservationAdapter):
+                    for origin,index in ((root,store.checkpoint['symbols']),(previous_root,previous_index)):
+                        for symbol,ref in index.items():
+                            if symbol in spec.symbols:
+                                seed=read_ref(origin,ref).get('input_seed_start')
+                                if seed:seeds.append(seed)
+                def benchmark_worker(_):
+                    return adapter.load_benchmark(min(seeds) if seeds else None) if isinstance(adapter,CanonicalObservationAdapter) else adapter.load_benchmark()
+                run=runtime.run_stage(['SPY'],benchmark_worker,timeout_seconds=min(spec.budgets.verification_seconds,max(.001,deadline-perf_counter())))
+                if run.outcomes[0].reason_codes:
+                    global_errors+=list(run.outcomes[0].reason_codes)
+                    if isinstance(adapter,CanonicalObservationAdapter):
+                        adapter.benchmark_error='BENCHMARK_VERIFICATION_TIMEOUT_OR_FAILED'
+                elif isinstance(adapter,CanonicalObservationAdapter):
+                    adapter.benchmark,adapter.benchmark_error=run.outcomes[0].value
+            pairs=[];packet_refs={};query_counts={};family_counts={};states_summary={};lineage_by_symbol={}
+            for offset in range(0,len(spec.symbols),spec.max_workers):
+                symbols=spec.symbols[offset:offset+spec.max_workers]
+                states={s:store.state(s) for s in symbols}
+                prior_states={s:ObservationSymbol.model_validate(read_ref(previous_root,previous_index[s]))
+                    for s in symbols if s in previous_index}
+                originals={};prepared={};values={s:{} for s in symbols};verified={};proofs={}
+                blocked=set();errors={s:[] for s in symbols}
+                def old_value(s,kind,model):
+                    state=states[s] if kind in states[s].components else prior_states.get(s)
+                    source=root if kind in states[s].components else previous_root
+                    if state and kind in state.components:
+                        return model.model_validate(read_ref(source,state.components[kind]))
+                    return None
+                for s in symbols:
+                    if not saved:
+                        originals[s]=old_value(s,'PREPARED',PreparedObservation)
+                def execute(stage,worker,budget,targets,dependencies_by_symbol=None):
+                    if not targets:return
+                    stats=stage_counts.setdefault(stage,Counter())
+                    progress['stage']=stage;emit()
+                    limit=min(deadline,perf_counter()+budget)
+                    runnable=[]
+                    for s in targets:
+                        if perf_counter()>=deadline:
+                            errors[s].append('GLOBAL_DEADLINE_NOT_STARTED');continue
+                        dep=dependencies_by_symbol.get(s) if dependencies_by_symbol else None
+                        old=states[s].components.get(stage)
+                        other=prior_states.get(s)
+                        old=old or (other.components.get(stage) if other else None)
+                        if dep and old and old.dependency_id==dep:
+                            origin=root if stage in states[s].components else previous_root
+                            values[s][stage]=read_ref(origin,old)
+                            if origin!=root:
+                                copied=store.put(s,stage,dep,values[s][stage],old.revision)
+                                copied=copied.model_copy(update={'computed_at':old.computed_at})
+                            else: copied=old
+                            states[s]=states[s].model_copy(update={'components':{**states[s].components,stage:copied},
+                                'served_at':now(),'cache_hits':states[s].cache_hits+1,
+                                'component_failures':{k:v for k,v in states[s].component_failures.items() if k!=stage}})
+                            store.save_state(states[s]);progress['cache_hits']+=1
+                            stats['cache_hits']+=1
+                        else:runnable.append(s)
+                    if not runnable:return
+                    expected={s:states[s].components[stage].revision if stage in states[s].components else 0 for s in runnable}
+                    def commit(outcome):
+                        s=outcome.symbol
+                        if outcome.reason_codes:
+                            stats['failed_or_timed_out']+=1
+                            states[s]=states[s].model_copy(update={'component_failures':{**states[s].component_failures,stage:list(outcome.reason_codes)}})
+                            errors[s]+=list(outcome.reason_codes);return
+                        value=outcome.value
+                        if dependencies_by_symbol:
+                            dep=dependencies_by_symbol[s]
+                            try:
+                                states[s]=store.commit(states[s],stage,dep,value,token=store.token,
+                                    expected_revision=expected[s],deadline=limit)
+                            except ValueError as exc:
+                                errors[s].append(str(exc));return
+                        values[s][stage]=value
+                        states[s]=states[s].model_copy(update={'component_failures':{k:v for k,v in states[s].component_failures.items() if k!=stage}})
+                        stats['committed' if dependencies_by_symbol else 'verified']+=1
+                    run=runtime.run_stage(runnable,worker,stage_name=stage,timeout_seconds=max(.001,limit-perf_counter()),on_outcome=commit)
+                    stats['elapsed_ms']+=run.elapsed_ms
+                    for outcome in run.outcomes:
+                        if outcome.reason_codes and not errors[outcome.symbol]:errors[outcome.symbol]+=list(outcome.reason_codes)
+                if not saved:
+                    execute('VERIFY',lambda s:adapter.verify(s,originals[s]),spec.budgets.verification_seconds,symbols)
+                    for s in symbols:
+                        if 'VERIFY' in values[s]:verified[s]=values[s]['VERIFY']
+                        else:blocked.add(s)
+                    if hasattr(adapter,'profile_input'):
+                        profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session]) for s in verified}
+                        execute('PROFILE',lambda s:measure_underlying_profile(adapter.profile_input(s,verified[s])),
+                            spec.budgets.component_seconds,list(verified),profile_deps)
+                    prep_deps={s:digest([code_id,verified[s][1],profile.opportunity,profile.support,
+                        spec.context.effective_daily_session,
+                        adapter.preparation_identity(originals[s]) if hasattr(adapter,'preparation_identity') else None]) for s in verified}
+                    execute('PREPARED',lambda s:adapter.prepare(s,verified[s],originals[s]),spec.budgets.preparation_seconds,list(verified),prep_deps)
+                    for s in verified:
+                        if 'PREPARED' not in values[s]:blocked.add(s);continue
+                        obj=PreparedObservation.model_validate(values[s]['PREPARED'])
+                        context=obj.opportunity.call_context.model_copy(update={'requested_as_of':spec.context.requested_as_of,
+                            'effective_daily_session':spec.context.effective_daily_session,'mode':spec.context.mode,
+                            'run_id':spec.run_id,'request_id':spec.context.request_id})
+                        prepared[s]=obj.model_copy(update={'opportunity':obj.opportunity.model_copy(update={'call_context':context})})
+                        proofs[s]=compatible_prefix(originals[s],prepared[s]) if originals[s] else {'compatible':False,'reason':'COLD_START'}
+                        states[s]=states[s].model_copy(update={'lineage':states[s].lineage+[proofs[s]],
+                            'input_seed_start':obj.opportunity.feature_view.indicator_seed_start})
+                    eligible=list(prepared)
+                    support_deps={s:digest([code_id,prep_deps[s],profile.support]) for s in eligible}
+                    execute('SUPPORT',lambda s:support_component(prepared[s],profile,
+                        old_value(s,'SUPPORT',SupportObservation) if proofs[s]['compatible'] else None),
+                        spec.budgets.component_seconds,eligible,support_deps)
+                    profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session]) for s in eligible}
+                    if not hasattr(adapter,'profile_input'):
+                        execute('PROFILE',lambda s:measure_underlying_profile(prepared[s].profile_input),spec.budgets.component_seconds,eligible,profile_deps)
+                    for family in profile.families:
+                        policies=[profile.opportunity,profile.shallow if family=='SHALLOW_PULLBACK' else
+                            profile.breakout if family=='BREAKOUT_RETEST' else profile.base if family=='CONSTRUCTIVE_BASE' else None]
+                        targets=[s for s in eligible if 'SUPPORT' in values[s]]
+                        deps={s:digest([code_id,prep_deps[s],support_deps[s],policies,semantic(spec.context)]) for s in targets}
+                        def evaluate(s,f=family):
+                            prior=old_value(s,f,EntryOpportunity) if proofs[s]['compatible'] else None
+                            # Core compatibility checks remain authoritative; no checkpoint fields are rewritten.
+                            return family_component(prepared[s],SupportObservation.model_validate(values[s]['SUPPORT']),profile,f,prior)
+                        execute(family,evaluate,spec.budgets.component_seconds,targets,deps)
+                for s in symbols:
+                    if saved:
+                        inp=saved.ranking_input.model_copy(update={'policy':profile.ranking})
+                        extra=saved.extra_records.get(s,[])
+                        has_results=any(r.symbol==s for r in inp.opportunities)
+                        execution='COMPLETED' if has_results else 'DATA_BLOCKED'
+                        reasons=[c for f in inp.failures if f.symbol==s for c in f.reason_codes]
+                    else:
+                        components={f:EntryOpportunity.model_validate(values[s][f]) for f in profile.families if f in values[s]}
+                        if 'SUPPORT' in values[s]:components['SUPPORT']=SupportObservation.model_validate(values[s]['SUPPORT'])
+                        if 'PROFILE' in values[s]:components['PROFILE']=UnderlyingProfile.model_validate(values[s]['PROFILE'])
+                        inp=ranking_input(spec,s,components,errors[s]);extra=profile_records(components.get('PROFILE'))
+                        reasons=errors[s]
+                        execution=('UNPROCESSED' if 'GLOBAL_DEADLINE_NOT_STARTED' in reasons or 'STAGE_DEADLINE_NOT_STARTED' in reasons else
+                            'TIMED_OUT' if 'WORKER_TIMEOUT' in reasons else 'DATA_BLOCKED' if s in blocked else
+                            'FAILED' if reasons else 'COMPLETED')
+                    pair=build_row(inp,s);pairs.append(pair)
+                    states[s]=states[s].model_copy(update={'execution':execution,'reason_codes':reasons,'served_at':now()})
+                    # Output is a distinct resumable stage; packet construction never invokes a detector.
+                    packet_dep=digest([pair[0].row_id,[b.result_id for b in pair[1]],extra,
+                        hashlib.sha256((code/'src/pcs/selection/packets.py').read_bytes()).hexdigest()])
+                    execute('PACKET',lambda _,i=inp,symbol=s,e=extra:build_decision_evidence_packet(
+                        DecisionPacketInput(symbol=symbol,selection_input=i,extra_records=e)),spec.budgets.output_seconds,[s],{s:packet_dep})
+                    if 'PACKET' in values[s]:
+                        packet=DecisionEvidencePacket.model_validate(values[s]['PACKET'])
+                        refs=sorted({ref for k in pair[0].sort_keys for ref in k.source_refs}|
+                            {c['result_id'] for c in packet.component_refs})
+                        if refs and resolve_evidence(EvidenceQuery(packet=packet,evidence_ids=refs)).status!='RESOLVED':
+                            states[s]=states[s].model_copy(update={'execution':'FAILED','reason_codes':reasons+['RANKING_REFERENCE_UNRESOLVED']})
+                        query_counts[s]=len(refs);packet_refs[s]=packet.packet_id
+                    else:
+                        states[s]=states[s].model_copy(update={'execution':'TIMED_OUT','reason_codes':errors[s]+['PACKET_NOT_COMMITTED']})
+                    states[s]=states[s].model_copy(update={'served_attempt':store.token})
+                    store.save_state(states[s]);states_summary[s]=states[s].execution
+                    lineage_by_symbol[s]=states[s].lineage[-1] if states[s].lineage else {}
+                    progress['completed']+=1
+                    key={'COMPLETED':'execution_completed_count','DATA_BLOCKED':'data_blocked_count',
+                        'FAILED':'failed_count','TIMED_OUT':'timed_out_count','UNPROCESSED':'unprocessed_count'}[states[s].execution]
+                    progress['unprocessed_count']-=1
+                    progress[key]+=1
+                if adapter and hasattr(adapter,'release'):adapter.release(symbols)
+            progress['stage']='FINALIZE';emit()
+            base=RankingInput(context=spec.context,requested_symbols=spec.symbols,enabled_families=profile.families,
+                opportunities=[],policy=profile.ranking,previous=previous_shortlist)
+            shortlist=rank_prepared_rows(base,pairs)
+            if previous_shortlist:
+                changes=[]
+                old_rows={r.symbol:r for r in previous_shortlist.rows}
+                new_rows={r.symbol:r for r in shortlist.rows}
+                for change in shortlist.changes:
+                    s=change['symbol'];proof=lineage_by_symbol.get(s,{})
+                    reasons=change['reason_codes']
+                    if previous_profile!=profile.model_dump(mode='json'):
+                        reasons=[r for r in reasons if r!='UNCHANGED']+['POLICY_CHANGED']
+                    if s in old_rows and s in new_rows:
+                        before={a.family:a for a in old_rows[s].family_assessments}
+                        for assessment in new_rows[s].family_assessments:
+                            old=before[assessment.family]
+                            if assessment.execution=='EXECUTED' and old.execution=='NOT_EXECUTED':
+                                reasons.append('EVIDENCE_COMPLETED')
+                            if ((assessment.entry_window_elapsed_at_requested_session is True and old.entry_window_elapsed_at_requested_session is not True) or
+                                (assessment.confirmation_deadline_elapsed_at_requested_session is True and old.confirmation_deadline_elapsed_at_requested_session is not True)):
+                                reasons.append('WINDOW_OR_CONFIRMATION_DEADLINE_ELAPSED')
+                    if proof.get('reason')=='HISTORICAL_DATA_REVISED':
+                        reasons=[r for r in reasons if r!='NEW_CONFIRMATION']+['HISTORICAL_DATA_REVISED','EVIDENCE_REPLAYED']
+                    changes.append(dict(**{k:v for k,v in change.items() if k!='reason_codes'},reason_codes=sorted(set(reasons)),
+                        previous_result_id=old_rows[s].representative_result_id if s in old_rows else None,
+                        result_id=new_rows[s].representative_result_id if s in new_rows else None,
+                        requested_session=spec.context.requested_session,lineage=proof))
+                shortlist=shortlist.model_copy(update={'changes':changes})
+                from pcs.selection.storage import shortlist_identity
+                shortlist=shortlist.model_copy(update={'shortlist_id':shortlist_identity(shortlist)})
+            shortlist=shortlist.model_copy(update={'rows':[r.model_copy(update={'packet_id':packet_refs.get(r.symbol)}) for r in shortlist.rows]})
+            count=Counter(states_summary.values())
+            summary={k:count[state] for k,state in [('execution_completed_count','COMPLETED'),('data_blocked_count','DATA_BLOCKED'),
+                ('failed_count','FAILED'),('timed_out_count','TIMED_OUT'),('unprocessed_count','UNPROCESSED')]}
+            assert sum(summary.values())==len(spec.symbols)
+            summary.update(requested_count=len(spec.symbols),elapsed_seconds=perf_counter()-started)
+            groups={g:sum(r.group==g for r in shortlist.rows) for g in GROUPS}
+            for f in profile.families:
+                assessments=[a for r in shortlist.rows for a in r.family_assessments if a.family==f]
+                family_counts[f]=dict(execution=dict(Counter(a.execution for a in assessments)),
+                    states=dict(Counter(a.state or 'UNKNOWN' for a in assessments)),current_true=sum(a.eligible_at_requested_time is True for a in assessments),
+                    applicability=dict(Counter(a.applicability for a in assessments)),
+                    deadline_elapsed=sum(a.confirmation_deadline_elapsed_at_requested_session is True for a in assessments),
+                    window_elapsed=sum(a.entry_window_elapsed_at_requested_session is True for a in assessments),
+                    current_unknown=sum(a.eligible_at_requested_time is None for a in assessments))
+            coverage='COMPLETE' if shortlist.coverage_complete and count['COMPLETED']==len(spec.symbols) else 'PARTIAL'
+            execution='COMPLETED' if not count['FAILED'] and not count['TIMED_OUT'] and not count['UNPROCESSED'] else 'PARTIAL'
+            audit=saved.read_audit if saved else {'counts':adapter.counts,'source_verification':adapter.verify_unchanged(),
+                'reads':getattr(getattr(adapter,'reader',None),'audit',[])}
+            if any(hashlib.sha256(Path(path).read_bytes()).hexdigest()!=checksum for path,checksum in config_snapshot.items()):
+                raise ValueError('OBSERVATION_CONFIG_CHANGED_DURING_RUN')
+            run=StockObservationRun(run_id=spec.run_id,attempt_id=store.token,status=execution,coverage=coverage,
+                context=spec.context,source_commit=source_commit,spec_id=spec_id,profile_id=digest(profile),universe_id=spec.universe_id,
+                requested_symbols=spec.symbols,output_directory=str(root),checkpoint=str(store.path),summary=summary,
+                selection_v2=dict(groups=groups,unique_stocks=len(spec.symbols),family_coverage=family_counts,
+                    current_unknown=sum(r.current_eligible is None for r in shortlist.rows),query_reference_counts=query_counts,
+                    cache_hits=progress['cache_hits'],component_counts={k:dict(v) for k,v in stage_counts.items()}),
+                current_published=execution=='COMPLETED' and coverage=='COMPLETE',reason_codes=global_errors)
+            documents={'observation_run.json':run.model_dump(mode='json'),'symbol_index.json':store.checkpoint['symbols'],
+                'stock_shortlist.json':shortlist.model_dump(mode='json'),'stock_shortlist.ai.json':shortlist.model_dump(mode='json'),
+                'shortlist_changes.json':shortlist.changes,'read_audit.json':audit,'selection_profile.schema.json':type(profile).model_json_schema(),
+                'observation_spec.schema.json':StockObservationInput.model_json_schema(),
+                'stage_counts.json':{k:dict(v) for k,v in stage_counts.items()}}
+            hashes={name:write_json(root/name,value) for name,value in documents.items()}
+            for name in ('observation_spec.json','universe.json','dependency_manifest.json'):
+                hashes[name]=hashlib.sha256((root/name).read_bytes()).hexdigest()
+            hashes['stock_shortlist.csv']=_write_observation_text(root/'stock_shortlist.csv',shortlist_csv(shortlist))
+            hashes['stock_shortlist.zh-CN.md']=_write_observation_text(root/'stock_shortlist.zh-CN.md',shortlist_markdown(shortlist))
+            write_json(root/'observation_manifest.json',dict(scope=spec.scope,version='1.0',run_id=spec.run_id,
+                attempt_id=store.token,status=run.status,coverage=run.coverage,source_commit=source_commit,sha256=hashes))
+            store.checkpoint['status']=run.status;store.flush()
+            write_json(Path(spec.output_directory)/'LATEST_ATTEMPT.json',dict(run_id=spec.run_id,directory=str(root),status=run.status,coverage=coverage))
+            if run.current_published:
+                write_json(Path(spec.output_directory)/'CURRENT.json',dict(scope=spec.scope,run_id=spec.run_id,directory=str(root),as_of=spec.context.requested_as_of))
+            return run
+        finally:
+            stop.set();thread.join(timeout=1)
+
+
+def _write_observation_text(path,value):
+    from .artifacts import _write_atomic
+    return _write_atomic(path,value)
+
+
 def _evidence_record(value):
     """Serialize real result objects and lightweight test doubles safely."""
     if value is None:
@@ -1091,8 +1426,17 @@ def run_pcs_pool(*, universe_id: str | None = None, symbols: Sequence[str] | Non
                  timeout_seconds: float | None = None, baseline_run_id: str | None = None,
                  recovery_run_id: str | None = None, resume: bool = True,
                  new_run: bool = False, resume_run_id: str | None = None,
-                 checkpoint_callback=None, evidence_window: int = 60) -> PoolScanResult:
+                 checkpoint_callback=None, evidence_window: int = 60,
+                 scope: str = 'PRODUCTION', observation_input=None,
+                 observation_adapter=None) -> PoolScanResult:
     """Scan pinned daily/options inputs; preparation requires explicit opt-in."""
+    if scope=='STOCK_OBSERVATION':
+        if observation_input is None or data_mode!='READ_ONLY' or auto_prepare_data:
+            raise ValueError('OBSERVATION_READ_ONLY_SPEC_REQUIRED')
+        return _run_stock_observation(observation_input,data_access=data_access,
+            adapter=observation_adapter,checkpoint_callback=checkpoint_callback)
+    if scope!='PRODUCTION' or observation_input is not None:
+        raise ValueError('POOL_SCOPE_INVALID')
     if mode not in {"PREMARKET", "INTRADAY", "EOD"}:
         raise ValueError("mode must be PREMARKET, INTRADAY, or EOD")
     if data_mode not in {"PREPARE_THEN_SCAN", "READ_ONLY"}:

@@ -1,0 +1,189 @@
+{
+  "version": "1.0",
+  "scope": "STOCK_OBSERVATION",
+  "symbols": [
+    "MDLZ"
+  ],
+  "universe_id": "explicit",
+  "universe_source": null,
+  "universe_sha256": null,
+  "universe_members_field": "symbols",
+  "context": {
+    "requested_as_of": "2026-09-04",
+    "requested_session": "2026-09-04",
+    "effective_daily_session": "2026-09-04",
+    "mode": "HISTORICAL",
+    "calendar": "XNYS",
+    "run_id": "stock-observation",
+    "request_id": "stock-observation"
+  },
+  "selection_profile": {
+    "profile_id": "selection-v2-observation-v1",
+    "families": [
+      "HEALTHY_PULLBACK",
+      "SHALLOW_PULLBACK",
+      "BREAKOUT_RETEST",
+      "CONSTRUCTIVE_BASE"
+    ],
+    "profile": {
+      "policy_id": "underlying-profile-descriptive-v1",
+      "schema_version": "1.0",
+      "calculation_version": "underlying-profile-v1",
+      "analysis_sessions": 252,
+      "atr_period": 14,
+      "peak_lookback": 60,
+      "episode_threshold": 0.05,
+      "annualization_sessions": 252,
+      "parameter_source": "DEFAULT"
+    },
+    "support": {
+      "policy_id": "support-zones-research-v1",
+      "schema_version": "1.0",
+      "calculation_version": "support-zones-v2",
+      "analysis_sessions": 60,
+      "indicator_warmup_sessions": 200,
+      "pivot_left_bars": 3,
+      "pivot_right_bars": 3,
+      "atr_period": 14,
+      "zone_width_atr": 0.35,
+      "break_buffer_atr": 0.35,
+      "held_rebound_atr": 0.5,
+      "retest_departure_atr": 0.5,
+      "confirmation_sessions": 3,
+      "parameter_source": "DEFAULT"
+    },
+    "opportunity": {
+      "policy_id": "healthy-pullback-opportunity-v1.7",
+      "schema_version": "1.0",
+      "calculation_version": "entry-opportunity-v2",
+      "family": "HEALTHY_PULLBACK",
+      "analysis_sessions": 60,
+      "indicator_warmup_sessions": 200,
+      "recent_high_sessions": 20,
+      "healthy_pullback_min_pct": 0.05,
+      "healthy_pullback_max_pct": 0.15,
+      "shallow_pullback_max_pct": 0.05,
+      "sma20_near_atr": 1.5,
+      "sma50_near_atr": 2.0,
+      "reclaim_buffer_atr": 0.1,
+      "confirmation_sessions": 3,
+      "entry_window_sessions": 3,
+      "minimum_close_location": 0.55,
+      "minimum_rvol20": 0.8,
+      "maximum_entry_distance_atr": 1.75,
+      "upper_wick_rejection_atr": 0.5,
+      "upper_rejection_close_location": 0.35,
+      "upper_wick_role": "CONFIRMATION_BLOCKER",
+      "parameter_source": "PLAN_V1_7"
+    },
+    "shallow": {
+      "policy_id": "shallow-pullback-observation-v1",
+      "calculation_version": "shallow-pullback-v1",
+      "peak_sessions": 20,
+      "peak_tie_rule": "LATEST_SESSION",
+      "minimum_depth_atr": 0.25,
+      "maximum_depth_atr": 1.5,
+      "parameter_source": "STEP_05_TASK_OBSERVATION_POLICY"
+    },
+    "breakout": {
+      "policy_id": "breakout-retest-observation-v1",
+      "calculation_version": "breakout-retest-v2",
+      "resistance_sessions": 20,
+      "resistance_tie_rule": "LATEST_SESSION",
+      "breakout_buffer_atr": 0.1,
+      "minimum_breakout_rvol20": 0.9,
+      "retest_wait_sessions": 15,
+      "parameter_source": "PLAN_V1_7"
+    },
+    "base": {
+      "policy_id": "constructive-base-observation-v1",
+      "calculation_version": "constructive-base-v2",
+      "formation_sessions": 20,
+      "preceding_uptrend_sessions": 20,
+      "maximum_width_atr": 4.0,
+      "contraction_recent": 5,
+      "contraction_reference": 15,
+      "minimum_held_tests": 2,
+      "first_live_touch_wait_sessions": 20,
+      "maximum_base_position": 0.5,
+      "upside_exit_buffer_atr": 0.1,
+      "reformation_sessions": 20,
+      "extreme_tie_rule": "LATEST_SESSION",
+      "parameter_source": "STEP_07_OBSERVATION_INITIAL"
+    },
+    "ranking": {
+      "policy_id": "stock-observation-ranking-v1",
+      "calculation_version": "stock-observation-ranking-v2",
+      "group_order": [
+        "READY_FOR_OPTIONS_REVIEW",
+        "WATCH_SETUP",
+        "NOT_CURRENTLY_APPLICABLE",
+        "NO_SETUP",
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "sort_fields": [
+        {
+          "field": "current_required_complete",
+          "direction": "DESC",
+          "nulls": "LAST"
+        },
+        {
+          "field": "live_support_class",
+          "direction": "ASC",
+          "nulls": "LAST"
+        },
+        {
+          "field": "confirmation_fraction",
+          "direction": "DESC",
+          "nulls": "LAST"
+        },
+        {
+          "field": "remaining_entry_sessions",
+          "direction": "DESC",
+          "nulls": "LAST"
+        },
+        {
+          "field": "dollar_volume_median_20",
+          "direction": "DESC",
+          "nulls": "LAST"
+        },
+        {
+          "field": "symbol",
+          "direction": "ASC",
+          "nulls": "LAST"
+        }
+      ],
+      "live_test_order": [
+        "MULTIPLE_INDEPENDENT_HELD",
+        "SINGLE_HELD",
+        "IN_PROGRESS",
+        "UNCONFIRMED_TEST",
+        "UNKNOWN"
+      ],
+      "representative_order": [
+        "CURRENT_APPLICABILITY",
+        "CURRENT_REQUIRED_COMPLETE",
+        "CONFIRMATION_DATE_DESC_NULL_LAST",
+        "STABLE_ID_ASC"
+      ],
+      "liquidity_currency": "USD",
+      "purpose": "OBSERVATION_ONLY_NOT_RETURN_VALIDATED"
+    }
+  },
+  "data_mode": "READ_ONLY",
+  "output_directory": "H:/workspace/PCSOS/selection_v2_outputs/stock_observation_example",
+  "manifest_path": "data/manifests/storage_manifest.csv",
+  "parquet_root": "data/parquet",
+  "max_workers": 4,
+  "budgets": {
+    "verification_seconds": 120.0,
+    "preparation_seconds": 180.0,
+    "component_seconds": 120.0,
+    "output_seconds": 180.0,
+    "total_seconds": 7200.0
+  },
+  "previous_run": null,
+  "resume_run_id": null,
+  "run_id": "example-historical",
+  "saved_selection_manifest": null
+}

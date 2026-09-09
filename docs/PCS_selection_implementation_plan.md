@@ -73,8 +73,10 @@
 `896f2249cb8b88dc2abc7724090c1d9e5710c6c6`。
 第8步在独立 `codex/selection-v2-step-08` 实现观察排序、独立讨论包和AI意见记录；
 公开接口、固定政策、真实保存包范围及限定验证见
-[第8步交接](operations/selection_v2/step_08.md)。实现交付仍待第8步限定复核，
-不合并main，不进入第9步。此前第6/7步验证范围保留在各自交接中。
+[第8步交接](operations/selection_v2/step_08.md)。第8步R1–R3已由用户接受，完整HEAD为
+`2d5fe9b86deed36c475fabae4315c5e52af2af7a`。第11A步在独立功能分支实现观察scope及恢复，
+见[第11A步交接](operations/selection_v2/step_11a.md)，等待限定复核。
+不合并main，不进入第9步或11B。此前第1–7步验证范围保留在各自交接中。
 
 | 组件 | 已验收基线 | 当前状态与复用边界 |
 |---|---|---|

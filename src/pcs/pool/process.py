@@ -34,10 +34,17 @@ class ReadOnlyScanRequest:
     resume: bool = True
     new_run: bool = False
     resume_run_id: str | None = None
+    observation_spec: dict | None = None
 
 
 def _scan_worker(request: ReadOnlyScanRequest, sender: Any) -> None:
     try:
+        if request.observation_spec is not None:
+            from .observation import run_stock_observation
+            from .observation_models import StockObservationInput
+            result=run_stock_observation(StockObservationInput.model_validate(request.observation_spec))
+            sender.send(('result',result))
+            return
         from pcs.data.access import PCSDataAccess
         from .options import load_pool_option_rules
         from .runner import run_pcs_pool
@@ -171,6 +178,11 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
                 if kind == "checkpoint":
                     checkpoint_anchor = payload
                     continue
+                if kind=='result' and request.observation_spec is not None:
+                    from .observation_models import StockObservationRun
+                    if not isinstance(payload,StockObservationRun) or set(payload.requested_symbols)!=set(spec.symbols):
+                        raise ValueError('OBSERVATION_CHILD_RESULT_INVALID')
+                    return payload
                 if kind == "result" and isinstance(payload, PoolScanResult):
                     from .validation import validate_pool_result
                     validate_pool_result(payload, spec.symbols)
@@ -192,6 +204,10 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
                 process.join(timeout=0.9)
             process.close()
 
+    if request.observation_spec is not None:
+        from .observation_models import StockObservationInput
+        from .observation_storage import interrupted_run
+        return interrupted_run(StockObservationInput.model_validate(request.observation_spec),reason,detail)
     if checkpoint_anchor:
         import json
         from pathlib import Path

@@ -423,6 +423,7 @@ def evaluate_breakout_opportunity(input):
     result = detect_breakout_retest(BreakoutRetestInput(call_context=input.call_context,
         feature_view=input.feature_view, effective_policy=input.breakout_policy,
         opportunity_policy=input.effective_policy,
+        support_policy=input.support_policy,
         prior_state=prior, calendar=input.calendar))
     episodes = []
     for event in result.events:

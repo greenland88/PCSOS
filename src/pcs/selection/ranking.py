@@ -362,6 +362,14 @@ def rank_stock_opportunities(input: RankingInput) -> StockShortlist:
     if not inp.enabled_families:
         raise ValueError('ENABLED_FAMILY_SCOPE_REQUIRED')
     pairs = [build_row(inp,symbol) for symbol in inp.requested_symbols]
+    timestamps=[r.as_of for r in flatten_results(inp.opportunities) if r.symbol in inp.requested_symbols and r.as_of<=inp.context.effective_daily_session]
+    return rank_prepared_rows(inp,pairs,data_timestamps=timestamps)
+
+
+def rank_prepared_rows(inp,pairs,*,data_timestamps=None):
+    """Same ordering for runner-prepared rows; avoids retaining full histories."""
+    if sorted(row.symbol for row,_ in pairs)!=sorted(inp.requested_symbols):
+        raise ValueError('PREPARED_RANKING_SCOPE_MISMATCH')
     def key(row):
         return (inp.policy.group_order.index(row.group),*[(k.value is None,
             -k.value if k.value is not None and k.direction=='DESC' and isinstance(k.value,(float,int)) else
@@ -373,7 +381,9 @@ def rank_stock_opportunities(input: RankingInput) -> StockShortlist:
         counts[row.group]+=1
         rows.append(row.model_copy(update={'rank':rank,'group_rank':counts[row.group]}))
     policy_hash = digest(inp.policy)
-    timestamps=[r.as_of for r in flatten_results(inp.opportunities) if r.symbol in inp.requested_symbols and r.as_of<=inp.context.effective_daily_session]
+    timestamps=[f.data_session for row,_ in pairs for f in row.family_assessments
+        if f.data_session and f.data_session<=inp.context.effective_daily_session]
+    if data_timestamps is not None:timestamps=data_timestamps
     payload = dict(shortlist_id='',as_of=inp.context.requested_as_of,data_timestamp=max(timestamps) if timestamps else None,
         run_id=inp.context.run_id,request_id=inp.context.request_id,context=inp.context,requested_symbols=inp.requested_symbols,
         enabled_families=sorted(set(inp.enabled_families)),effective_policy=inp.policy,policy_sha256=policy_hash,rows=rows,
