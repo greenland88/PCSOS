@@ -17,6 +17,33 @@ from pcs.trend.selection_models import DailyFeatureView,DailyBar,SupportFeatureV
 sample=runpy.run_path(str(Path(__file__).parents[1]/'trend/test_constructive_base.py'))['sample']
 
 
+def test_heartbeat_and_stage_atomic_writes_are_serialized(tmp_path,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import pcs.pool.observation_storage as storage
+    original=storage._write_atomic
+    entered=Event();release=Event();second_entered=Event()
+    def held_write(path,text):
+        if json.loads(text)['writer']=='heartbeat':
+            entered.set()
+            assert release.wait(5)
+        else:
+            second_entered.set()
+        return original(path,text)
+    monkeypatch.setattr(storage,'_write_atomic',held_write)
+    path=tmp_path/'progress.json'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first=pool.submit(storage.write_json,path,{'writer':'heartbeat'})
+        assert entered.wait(5)
+        second=pool.submit(storage.write_json,path,{'writer':'stage'})
+        try:
+            assert not second_entered.wait(.1)
+        finally:
+            release.set()
+        first.result();second.result()
+    assert read_json(path)=={'writer':'stage'}
+
+
 class TestAdapter:
     __test__=False
     input_kind='TEST'

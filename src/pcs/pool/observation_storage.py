@@ -4,11 +4,14 @@ from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
+from threading import Lock
 
 from pcs.pool.artifacts import _write_atomic
 from pcs.selection.identity import digest
 from .observation_models import ComponentRef,ObservationSymbol
 from .observation_components import now
+
+_json_write_lock = Lock()
 
 
 def read_json(path):
@@ -16,7 +19,11 @@ def read_json(path):
 
 
 def write_json(path,value):
-    return _write_atomic(Path(path),json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False,separators=(',',':')))
+    # Heartbeat and stage updates share the atomic writer's fixed temporary name.
+    # Serialize their writes; the run-level file lock still owns cross-process writes.
+    encoded=json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False,separators=(',',':'))
+    with _json_write_lock:
+        return _write_atomic(Path(path),encoded)
 
 
 def checked_path(root,file):
