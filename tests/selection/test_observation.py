@@ -305,6 +305,32 @@ def test_conflicting_condition_alias_requires_exact_pointer():
     assert exact.status=='RESOLVED' and exact.record.value['predicate_value'] is False
 
 
+@pytest.mark.parametrize('collision',['discovery','current','identical'])
+def test_actual_confirmation_sort_refs_disambiguate_saved_conditions(collision):
+    r=result()
+    confirmation=r.timeline[0].conditions[0]
+    other=confirmation if collision=='identical' else confirmation.model_copy(update={
+        'role':'DISCOVERY' if collision=='discovery' else 'CURRENT_ELIGIBILITY','left_value':0.5})
+    first=r.timeline[0].model_copy(update={'conditions':[other,*r.timeline[0].conditions]})
+    r=r.model_copy(update={'timeline':[first,*r.timeline[1:]]}) if collision!='current' else r.model_copy(update={'current_conditions':[other]})
+    inp=input_for([r])
+    row=rank_stock_opportunities(inp).rows[0]
+    packet=build_decision_evidence_packet(DecisionPacketInput(symbol=r.symbol,selection_input=inp))
+    confirmation_key=key(row,'confirmation_fraction')
+    assert confirmation_key.value==1.0
+    for ref in confirmation_key.source_refs:
+        query=resolve_evidence(EvidenceQuery(packet=packet,evidence_id=ref))
+        assert query.status=='RESOLVED'
+        assert query.record.value['role']=='CONFIRMATION'
+        assert query.record.value['left_value']==1.0
+    alias=f'{r.result_id}:2026-09-03:CONFIRM_A'
+    if collision=='identical':
+        assert alias in confirmation_key.source_refs
+    else:
+        assert alias not in confirmation_key.source_refs
+        assert resolve_evidence(EvidenceQuery(packet=packet,evidence_id=alias)).reason_codes==['AMBIGUOUS_EVIDENCE_ID']
+
+
 def test_v1_outputs_cannot_silently_reuse_v2_semantics():
     from pcs.selection.models import StockShortlist,DecisionEvidencePacket
     inp=input_for([result()])

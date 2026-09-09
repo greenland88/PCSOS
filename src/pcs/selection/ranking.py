@@ -204,7 +204,24 @@ def confirmation_details(result, assessment, day):
         'not_executed':sum(c.status=='NOT_EVALUATED' for c in conditions),'total':len(conditions),
         'condition_ids':[c.condition_id for c in conditions], 'session':candidates[0].session if candidates else None}
     fraction = counts['true']/len(conditions) if conditions and counts['not_executed']<len(conditions) else None
-    return fraction, counts, [f'{result.result_id}:{c.session}:{c.condition_id}' for c in conditions]
+    # A day can contain discovery and confirmation conditions with the same ID.
+    # Keep the legacy alias only when its saved content is unambiguous, otherwise
+    # point to the actual confirmation record using the existing pointer contract.
+    contents = {}
+    wanted = {(c.session,c.condition_id) for c in conditions}
+    for c in [*result.current_conditions, *[c for d in result.timeline if d.session<=day for c in d.conditions]]:
+        if (c.session,c.condition_id) in wanted:
+            contents.setdefault((c.session,c.condition_id),set()).add(digest(semantic(c)))
+    refs = []
+    for i,d in enumerate(result.timeline):
+        if d not in candidates:
+            continue
+        for j,c in enumerate(d.conditions):
+            if c.role=='CONFIRMATION':
+                refs.append(f'{result.result_id}:/timeline/{i}/conditions/{j}'
+                    if len(contents[(c.session,c.condition_id)])>1 else
+                    f'{result.result_id}:{c.session}:{c.condition_id}')
+    return fraction, counts, refs
 
 
 def window_sessions(context, start, end):
