@@ -379,13 +379,24 @@ def _csv_view(results):
         "current_missing_evidence", "coverage_missing_evidence",
         "requested_session", "request_time_semantics", "eligible_at_requested_time",
         "base_id", "base_lower", "base_upper", "base_position", "base_validity", "first_touch_deadline"]
+    has_base = any(r.base_result for r in results)
+    if has_base:
+        columns += ['base_structure_resolution', 'base_structure_conditions', 'base_formation_structure_resolutions']
     writer = csv.DictWriter(stream, fieldnames=columns)
     writer.writeheader()
     for result in results:
         base_days = {d.session: d for d in result.base_result.timeline} if result.base_result else {}
         for day in result.timeline:
             base = base_days.get(day.session)
-            writer.writerow({"symbol": result.symbol, "family": result.family, "session": day.session,
+            structure = {} if not has_base else {
+                'base_structure_resolution': base.structure_resolution.model_dump_json() if base and base.structure_resolution else '',
+                'base_structure_conditions': json.dumps([c.model_dump(mode='json') for c in day.conditions
+                    if 'STRUCTURE' in c.condition_id or c.condition_id == 'BASE_PRECEDING_BULLISH_EXISTS'], ensure_ascii=False) if base else '',
+                'base_formation_structure_resolutions': json.dumps([r.model_dump(mode='json')
+                    for c in result.base_result.formation_candidates if c.session == day.session
+                    for r in c.structure_resolutions], ensure_ascii=False) if base else '',
+            }
+            writer.writerow({**structure, "symbol": result.symbol, "family": result.family, "session": day.session,
                 "base_id": base.base_id if base else '', "base_lower": base.lower if base else '',
                 "base_upper": base.upper if base else '', "base_position": base.base_position if base else '',
                 "base_validity": base.base_validity if base else '',
@@ -475,6 +486,11 @@ def write_opportunity_artifacts(output_directory, results, *, audit=None, inputs
             "details": "CSV rows reference complete conditions by result_id and day"},
         "read_audit.json": audit or {},
     }
+    if any(r.base_result for r in children):
+        documents['field_dictionary.json']['base_structure_resolution'] = (
+            'Platform only: DETAIL_LH_LL > non-null DETAIL_STATE > FEATURE_BAR; actual selected value/source, '
+            'original bar/detail and overridden sources are retained. Conditions reference resolution_id; '
+            'conflicts are disclosed, unknown remains null. CSV includes dated resolutions and structure gates.')
     from pcs.trend.selection_models import (BreakoutRetestInput, BreakoutRetestResult,
         ShallowPullbackInput, SetupEvidence)
     documents["shallow_pullback_input.schema.json"] = ShallowPullbackInput.model_json_schema()

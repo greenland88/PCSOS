@@ -946,7 +946,7 @@ class BreakoutRetestResult(StrictModel):
 
 class ConstructiveBasePolicy(StrictModel):
     policy_id: str = "constructive-base-observation-v1"
-    calculation_version: Literal["constructive-base-v1"] = "constructive-base-v1"
+    calculation_version: Literal["constructive-base-v2"] = "constructive-base-v2"
     formation_sessions: Literal[20] = 20
     preceding_uptrend_sessions: Literal[20] = 20
     maximum_width_atr: float = Field(default=4., gt=0)
@@ -981,6 +981,20 @@ class BaseStructureEvidence(StrictModel):
     calculation_version: str
 
 
+class BaseStructureResolution(StrictModel):
+    """Platform-local authority decision retaining the original evidence."""
+    resolution_id: str
+    session: str
+    selected_value: Literal["bullish", "neutral", "deteriorating", "bearish"] | None
+    selected_from: Literal["DETAIL_LH_LL", "DETAIL_STATE", "FEATURE_BAR"]
+    selected_source_refs: list[str]
+    bar_value: str | None
+    bar_source_refs: list[str]
+    detail: BaseStructureEvidence | None
+    overridden_sources: list[str]
+    reason_codes: list[str]
+
+
 class BaseBoundary(StrictModel):
     source_id: str
     source_type: Literal["BASE_LOWER_BOUNDARY", "BASE_UPPER_BOUNDARY"]
@@ -1011,6 +1025,7 @@ class BaseLiveTest(StrictModel):
 
 
 class BaseFormationCandidate(StrictModel):
+    structure_resolutions: list[BaseStructureResolution] = Field(default_factory=list)
     candidate_id: str
     session: str
     preceding_window: list[str]
@@ -1062,6 +1077,7 @@ class BaseEvent(StrictModel):
 
 
 class BaseDay(StrictModel):
+    structure_resolution: BaseStructureResolution | None = None
     session: str
     base_id: str | None = None
     formed_at: str | None = None
@@ -1086,7 +1102,7 @@ class BaseDay(StrictModel):
 
 
 class BaseState(StrictModel):
-    calculation_version: Literal["constructive-base-v1"]
+    calculation_version: Literal["constructive-base-v2"]
     symbol: str
     analysis_start: str
     evaluated_through: str | None
@@ -1128,7 +1144,7 @@ class BaseBreakoutRelationship(StrictModel):
 class BaseResult(StrictModel):
     module: Literal["constructive_base"] = "constructive_base"
     version: Literal["1.0"] = "1.0"
-    calculation_version: Literal["constructive-base-v1"] = "constructive-base-v1"
+    calculation_version: Literal["constructive-base-v2"] = "constructive-base-v2"
     symbol: str
     as_of: str
     run_id: str

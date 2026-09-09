@@ -1,6 +1,7 @@
 # 第7步：上涨后的平台整理
 
 状态：实现提交供第7步限定复核；未合并main，不进入第8步排序。
+2026-09-09 R1修复见文末；本页2026-09-08记录为历史证据，不代表第7步已通过。
 授权基线为第6步R1–R5已接受完整HEAD
 `45634c1b8b0e0a5896017f503c22fdee864cb3e2`。
 工作树 `H:/workspace/PCSOS-selection-v2-step-07`，分支 `codex/selection-v2-step-07`。
@@ -22,7 +23,7 @@ true优先，无true但存在unknown则保留unknown。排序仅解决展示主�
 
 F的前20个session为W，包含F；W之前20个为P。全部使用交易所下标及完整OHLC。
 P存在已保存bullish足以证明上涨基础，其他未知保留覆盖；完全已知无bullish为false，
-仍缺必需证据则unknown。F的neutral可形成，确认仍消费原有实际bullish/health/phase条件。
+仍缺必需证据则unknown。F的neutral可形成，确认消费统一解析后的bullish及原有health/phase条件。
 `BaseStructureEvidence`是独立可选证据：有来源、算法、确认日期和高低点比较；
 已确认LH+LL拒绝，未来或过早确认的摆动点拒绝。未保存细节明确记录，不伪填pivot。
 
@@ -67,7 +68,7 @@ F前没有平台信号，r前没有live/economic身份，c前没有entry窗口�
 真实XNYS提前补齐日历尾部，不按价格数组尾部截短期限。
 CURRENT_EOD沿时区、休市、盘中既有解析，过窗口false，缺对应请求证据null并列session。
 
-`BaseResult` schema1.0 / `constructive-base-v1`；新机会family及含平台聚合
+`BaseResult` schema1.0 / `constructive-base-v2`（R1升级）；新机会family及含平台聚合
 schema1.4 / `entry-opportunity-v2.5`。新平台版本不匹配明确拒绝，不给旧结果补造平台。
 旧三family政策及语义ID保持；新增可选input/result字段默认空，不参与旧子结果计算。
 平台policy包括执行单全部初值、来源标记，及实际消费的共用确认/支撑policy。
@@ -84,7 +85,7 @@ CSV逐日记录base_id/L/U/position/validity及首次触及期限，不用最终
 独立查询 `find_base_event`、`find_base_day`、`find_base_test`；最后一个返回typed
 历史或live对象并明确retrospective。`--summary`为已有CLI新增的短中文输出，仍完整保存。
 
-## 已运行源码验证
+## 2026-09-08历史源码验证
 
 平台54项专项，包括执行单手工算术样例：L/U=100/104，宽度/A=2，TR中位数1.6/0.6，
 两次回溯HELD、F无live test、S23确认且当日false、S24–S26可评估。
@@ -99,7 +100,7 @@ $env:PYTHONPATH='src'
 python -m pytest tests/trend/test_constructive_base.py tests/trend/test_breakout_review_regressions.py tests/trend/test_breakout_retest.py tests/trend/test_shallow_pullback.py tests/trend/test_entry_opportunity_v2.py tests/trend/test_opportunity_engine.py tests/trend/test_support_zones.py tests/trend/test_support.py tests/trend/test_market_structure.py tests/trend/test_pullback.py tests/trend/test_indicators.py tests/trend/test_snapshot.py tests/trend/test_cleanliness.py -q -p no:cacheprovider -k 'not talib_dependency_stays_inside_indicator_implementation'
 ```
 
-## 最终提交的有界产物与实际命令记录
+## 2026-09-08历史提交的有界产物与实际命令记录
 
 输入优先复用第6步最终目录
 `H:/workspace/PCSOS/selection_v2_outputs/step_06_r1_r5_20260908`，已预检所有登记hash、
@@ -127,3 +128,58 @@ python -m pcs.cli entry-opportunity --symbols NVDA,PLTR,MSFT,HOOD,UBER,MDLZ,AAL,
 选择的股票/日期和结果身份另存最终目录 `command_validation.json`，不提前编造真实F。
 若7票没有合法平台，明确使用手工TEST平台做该演示并标记，不补行情强造市场平台。
 所有产物仅为股票观察；完成自动提交、普通push、回读远端完整HEAD后停在第7步等待复核。
+
+## 2026-09-09 R1：平台结构来源统一解析
+
+复核输入源码为 `a1282a8d83dc54b955c8241cf963aa5e01284ea1`。
+R1反例已先用未修复实现复现：S42确认和S43当前资格的两条回归测试失败，
+同日明细neutral而bar bullish时，bullish门槛仍错误通过。反例是TEST，不是市场机会。
+
+`_resolve_structure`集中保留既有来源优先级：明细LH+LL → 明细非null结构值 → bar结构。
+平台形成、前置上涨依据、失效、确认和当前资格全部消费该解析结果。
+传给共用确认函数的是平台局部副本；原输入、前缀hash及旧三通道算法不改。
+已知冲突按上述权威来源解决，记录 `BASE_STRUCTURE_SOURCE_CONFLICT_RESOLVED`，
+不让每个条件自行选值。反向bar bearish/明细bullish也按相同明细优先规则披露覆盖。
+明细neutral允许观察，不能作为bullish确认或当前资格；有效bearish先失效。
+明细未保存或结构值null时继续回退bar；两者未知仍为null/PARTIAL，诊断缺项不冒充PASS。
+
+新增 `BaseStructureResolution`，保留实际选择值、来源、原bar值及来源、完整明细、
+被覆盖来源和原因码。`BaseDay`逐日保存记录，候选保留其前置窗口和F使用的记录。
+结构条件的left_value保存实际值，source_refs引用相同resolution_id及实际来源；
+`BASE_PRECEDING_BULLISH_EXISTS`引用全部实际考察日期的解析记录。
+JSON与AI保留typed对象，中文列出原值/选择/覆盖，CSV增加逐日解析、结构条件及形成依据三列。
+只输出旧三通道时不增加CSV列；不把最终日来源倒填历史。
+
+平台计算版本升级为 `constructive-base-v2`，policy/result/checkpoint均拒绝v1。
+schema新增字段为兼容扩展，外层机会schema1.4/calculation2.5不变；平台子ID通过新result_id更新。
+平台policy哈希和候选/base/result及关联身份随计算版本变化，不能静默复用v1含义。
+旧三通道政策、阈值和子结果ID保持。旧输入只有通过下述限定迁移脚本才能用于本次重放，
+该脚本明确升级输入policy计算版本，参数原样保留，清空旧checkpoint的行为不被隐式代办：
+有prior直接拒绝。新结果用replay_of_result_id指回原平台结果。
+
+限定测试命令（开发态已执行197 passed，最终提交态同命令记录于独立验证文件）：
+
+```powershell
+$env:PYTHONPATH='src'
+python -m pytest tests/trend/test_constructive_base_structure_resolution.py tests/trend/test_constructive_base.py tests/trend/test_breakout_review_regressions.py tests/trend/test_breakout_retest.py tests/trend/test_shallow_pullback.py tests/trend/test_entry_opportunity_v2.py tests/trend/test_opportunity_engine.py -q -p no:cacheprovider
+```
+
+包含双向冲突、一致输入、明细缺失/未知、bearish优先、前置窗口、日期前缀、序列化续算、
+旧版本拒绝、独立API/第四family一致、旧三通道身份及冲突四视图对账。
+日期使用已安装exchange_calendars的真实XNYS；价格和指标使用已有TEST夹具。
+不是重跑复核方的“9组/21组”独立脚本，也不是重跑历史260项全套。
+
+提交干净源码后执行已授权的有界重导出：
+
+```powershell
+python scripts/reconcile_base_structure_r1.py H:/workspace/PCSOS/selection_v2_outputs/step_07_r1_20260909
+```
+
+脚本限定原7票、原a1282a8完整SHA及全部有效hash，只输出平台结果。
+原7票没有可选明细；程序逐票比较全部既有候选/事件/日历状态/条件数值和资格，
+独立列出版本引起的candidate/base/result ID变化，同时核对21个旧三通道子ID。
+从真实形成日或中间日保存typed checkpoint再恢复，并以同一typed结果重建四视图。
+正式证据为新目录的 `artifact_manifest.json`、`r1_validation_run.json`、
+`r1_reconciliation.json`；具体计数和源码SHA以实际文件为准，不预填。
+历史UBER失败原样标为未重试，不代表本轮重新检查。旧7票及无关产物保留，
+本轮不访问provider、不重读canonical、不下载、不全池扫描。
