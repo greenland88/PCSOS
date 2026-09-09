@@ -117,11 +117,12 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
             def compute(producer,*args):
                 return runtime.run_cpu(producer,*args) if isinstance(adapter,CanonicalObservationAdapter) else producer(*args)
             previous_index={};previous_root=None;previous_shortlist=None;previous_profile=None
+            prior_code_compatible=True
             if spec.previous_run:
                 previous_root=Path(spec.previous_run)
                 if (previous_root/'observation_manifest.json').exists():
                     manifest=read_json(previous_root/'observation_manifest.json')
-                    for name in ('symbol_index.json','stock_shortlist.json','observation_spec.json'):
+                    for name in ('symbol_index.json','stock_shortlist.json','observation_spec.json','dependency_manifest.json'):
                         if hashlib.sha256((previous_root/name).read_bytes()).hexdigest()!=manifest['sha256'][name]:
                             raise ValueError('OBSERVATION_PREVIOUS_HASH_MISMATCH')
                     previous_index=read_json(previous_root/'symbol_index.json')
@@ -135,6 +136,10 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                         raise ValueError('OBSERVATION_PREVIOUS_CHECKPOINT_IDENTITY_MISMATCH')
                     previous_index=prior_checkpoint['symbols']
                 previous_profile=read_json(previous_root/'observation_spec.json')['selection_profile']
+                prior_dependency=read_json(previous_root/'dependency_manifest.json')
+                if digest([digest(prior_dependency['sha256']),prior_dependency['config_snapshot']])!=prior_dependency['code_id']:
+                    raise ValueError('OBSERVATION_PREVIOUS_DEPENDENCY_IDENTITY_MISMATCH')
+                prior_code_compatible=prior_dependency['code_id']==code_id
             if not saved:
                 progress['stage']='BENCHMARK_VERIFICATION';emit()
                 seeds=[]
@@ -157,6 +162,8 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
             for offset in range(0,len(spec.symbols),spec.max_workers):
                 symbols=spec.symbols[offset:offset+spec.max_workers]
                 states={s:store.state(s) for s in symbols}
+                original_from_current={s:'PREPARED' in states[s].components for s in symbols}
+                original_component_kinds={s:set(states[s].components) for s in symbols}
                 prior_states={s:ObservationSymbol.model_validate(read_ref(previous_root,previous_index[s]))
                     for s in symbols if s in previous_index}
                 originals={};prepared={};values={s:{} for s in symbols};verified={};proofs={}
@@ -225,7 +232,7 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                         if 'VERIFY' in values[s]:verified[s]=values[s]['VERIFY']
                         else:blocked.add(s)
                     if hasattr(adapter,'profile_input'):
-                        profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session]) for s in verified}
+                        profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session,spec.context.calendar]) for s in verified}
                         execute('PROFILE',lambda s:compute(measure_underlying_profile,adapter.profile_input(s,verified[s])),
                             spec.budgets.component_seconds,list(verified),profile_deps)
                     prep_deps={s:digest([code_id,verified[s][1],profile.opportunity,profile.support,
@@ -240,14 +247,20 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                             'run_id':spec.run_id,'request_id':spec.context.request_id})
                         prepared[s]=obj.model_copy(update={'opportunity':obj.opportunity.model_copy(update={'call_context':context})})
                         proofs[s]=compatible_prefix(originals[s],prepared[s]) if originals[s] else {'compatible':False,'reason':'COLD_START'}
+                        # Recomputing a result is not sufficient when its old
+                        # state was produced by different code/config semantics.
+                        if not original_from_current[s] and not prior_code_compatible and originals[s]:
+                            proofs[s]=dict(proofs[s],compatible=False,reason='CODE_DEPENDENCY_CHANGED_REPLAY',
+                                original_prefix_reason=proofs[s]['reason'])
                         states[s]=states[s].model_copy(update={'lineage':states[s].lineage+[proofs[s]],
                             'input_seed_start':obj.opportunity.feature_view.indicator_seed_start})
                     eligible=list(prepared)
                     support_deps={s:digest([code_id,prep_deps[s],profile.support]) for s in eligible}
                     execute('SUPPORT',lambda s:compute(support_component,prepared[s],profile,
-                        old_value(s,'SUPPORT',SupportObservation) if proofs[s]['compatible'] else None),
+                        old_value(s,'SUPPORT',SupportObservation) if proofs[s]['compatible'] and
+                            (prior_code_compatible or 'SUPPORT' in original_component_kinds[s]) else None),
                         spec.budgets.component_seconds,eligible,support_deps)
-                    profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session]) for s in eligible}
+                    profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session,spec.context.calendar]) for s in eligible}
                     if not hasattr(adapter,'profile_input'):
                         execute('PROFILE',lambda s:measure_underlying_profile(prepared[s].profile_input),spec.budgets.component_seconds,eligible,profile_deps)
                     for family in profile.families:
@@ -257,7 +270,8 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                         targets=[s for s in eligible if independent or 'SUPPORT' in values[s]]
                         deps={s:digest([code_id,prep_deps[s],profile.support if independent else support_deps[s],policies,semantic(spec.context)]) for s in targets}
                         def evaluate(s,f=family):
-                            prior=old_value(s,f,EntryOpportunity) if proofs[s]['compatible'] else None
+                            prior=old_value(s,f,EntryOpportunity) if proofs[s]['compatible'] and (
+                                prior_code_compatible or f in original_component_kinds[s]) else None
                             # Core compatibility checks remain authoritative; no checkpoint fields are rewritten.
                             return compute(family_component,prepared[s],SupportObservation.model_validate(values[s].get('SUPPORT',{})),profile,f,prior)
                         execute(family,evaluate,spec.budgets.component_seconds,targets,deps)

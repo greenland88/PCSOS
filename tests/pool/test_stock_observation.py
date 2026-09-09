@@ -313,3 +313,22 @@ def test_runtime_cpu_values_and_owned_worker_cleanup():
         assert len({p.pid for p in multiprocessing.active_children()}-before)==2
     finally:runtime.close()
     assert {p.pid for p in multiprocessing.active_children()}==before
+
+
+def test_changed_code_dependency_invalidates_prior_state(tmp_path,monkeypatch):
+    import pcs.pool.observation_components as components
+    a=TestAdapter();first=run(spec(tmp_path,a),a)
+    original=components.family_component;priors=[]
+    def inspect_prior(prepared,support,profile,family,previous=None):
+        priors.append(previous)
+        if len(priors)==1:raise RuntimeError('TEST_INTERRUPT_NEW_CODE_COMPONENT')
+        return original(prepared,support,profile,family,previous)
+    monkeypatch.setattr(components,'family_component',inspect_prior)
+    monkeypatch.setattr(components,'dependencies',lambda:{'TEST_SHARED_INDICATOR_DEPENDENCY':'changed'})
+    inp=spec(tmp_path,a,run_id='code-change',previous_run=first.output_directory)
+    second=run(inp,a)
+    assert priors==[None]
+    query=read_stock_observation(ObservationQuery(run_directory=second.output_directory,symbol='TEST'))
+    assert query.state.lineage[-1]['reason']=='CODE_DEPENDENCY_CHANGED_REPLAY'
+    run(inp.model_copy(update={'resume_run_id':inp.run_id}),a)
+    assert priors==[None,None]
