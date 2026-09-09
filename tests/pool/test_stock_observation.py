@@ -269,6 +269,8 @@ def test_interrupted_query_reads_only_committed_and_counts_current_attempt(tmp_p
     retried=interrupted_run(inp,'TEST_PROCESS_TIMEOUT','TEST')
     assert retried.summary['unprocessed_count']==2
     assert not (tmp_path/'CURRENT.json').exists()
+    continued=run(inp.model_copy(update={'run_id':'from-partial','previous_run':str(root)}),a)
+    assert continued.selection_v2['cache_hits']>=4
 
 
 def test_scope_removed_and_missing_are_not_invalidation(tmp_path):
@@ -281,3 +283,33 @@ def test_scope_removed_and_missing_are_not_invalidation(tmp_path):
     packet=read_stock_observation(ObservationQuery(run_directory=second.output_directory,symbol='TEST')).packet
     assert packet.ai_review_status=='NOT_REVIEWED'
     assert packet.user_decision_status=='NOT_RECORDED'
+
+
+def test_support_failure_preserves_independent_base_and_breakout(tmp_path,monkeypatch):
+    import pcs.pool.observation_components as components
+    def unavailable(*args,**kwargs):raise ValueError('TEST_SUPPORT_UNAVAILABLE')
+    monkeypatch.setattr(components,'support_component',unavailable)
+    adapter=TestAdapter()
+    result=run(spec(tmp_path,adapter,selection_profile=SelectionProfile()),adapter)
+    query=read_stock_observation(ObservationQuery(run_directory=result.output_directory,symbol='TEST'))
+    assert result.status=='PARTIAL'
+    assert {'PROFILE','CONSTRUCTIVE_BASE','BREAKOUT_RETEST','PACKET'}<=set(query.state.components)
+    assert 'HEALTHY_PULLBACK' not in query.state.components
+
+
+def _cpu_identity(value):
+    import os
+    return os.getpid(),value
+
+
+def test_runtime_cpu_values_and_owned_worker_cleanup():
+    import multiprocessing,os
+    from pcs.pool.runtime import PoolRuntime
+    runtime=PoolRuntime(max_workers=2)
+    before={p.pid for p in multiprocessing.active_children()}
+    try:
+        result=runtime.run_cpu(_cpu_identity,{'TEST':'typed payload'},timeout_seconds=30)
+        assert result[0]!=os.getpid() and result[1]=={'TEST':'typed payload'}
+        assert len({p.pid for p in multiprocessing.active_children()}-before)==2
+    finally:runtime.close()
+    assert {p.pid for p in multiprocessing.active_children()}==before

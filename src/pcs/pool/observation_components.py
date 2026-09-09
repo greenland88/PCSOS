@@ -55,6 +55,15 @@ class SupportObservation(StrictModel):
     result_ids: dict[str,str] = Field(default_factory=dict)
 
 
+def _prepare_cpu(spec,symbol,verified,benchmark,benchmark_error,previous,window):
+    # Only verified typed values cross the process boundary, never a data reader.
+    adapter=object.__new__(CanonicalObservationAdapter)
+    adapter.spec=spec;adapter.benchmark=benchmark;adapter.benchmark_error=benchmark_error
+    adapter.windows={symbol:window}
+    adapter.counts={'base_indicator_calculations':0,'prepared_symbols':0}
+    return adapter._prepare_local(symbol,verified,previous)
+
+
 class CanonicalObservationAdapter:
     def __init__(self,spec,runtime):
         self.spec,self.runtime=spec,runtime
@@ -123,6 +132,13 @@ class CanonicalObservationAdapter:
                 str(cal.sessions[end-self.spec.selection_profile.support.analysis_sessions+1].date()))
 
     def prepare(self,symbol,verified,previous=None):
+        result=self.runtime.run_cpu(_prepare_cpu,self.spec,symbol,verified,self.benchmark,
+            self.benchmark_error,previous,self.windows[symbol],timeout_seconds=self.spec.budgets.preparation_seconds)
+        self.counts['base_indicator_calculations']+=1
+        self.counts['prepared_symbols']+=1
+        return result
+
+    def _prepare_local(self,symbol,verified,previous=None):
         daily,identity=verified
         profile=self.spec.selection_profile
         context=CallContext(symbol=symbol,requested_as_of=self.spec.context.requested_as_of,

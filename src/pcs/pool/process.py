@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from math import isfinite
 import multiprocessing
+import sys
 from time import perf_counter
 from typing import Any
 import uuid
@@ -196,6 +197,14 @@ def run_read_only_scan(request: ReadOnlyScanRequest, *, timeout_seconds: float =
             # A returned stage result can leave uninterruptible read threads.
             # Termination is safe only because this child has no write authority.
             process.join(timeout=0.05)
+            if process.is_alive() and request.observation_spec is not None and sys.platform=='win32':
+                # Observation may own bounded pure-computation workers. Reap the
+                # entire owned tree on a hard deadline, not unrelated processes.
+                import subprocess
+                try:
+                    subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True,timeout=2)
+                except (OSError,subprocess.TimeoutExpired):
+                    pass
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=1.0)

@@ -173,6 +173,7 @@ class PoolRuntime:
         self.active_operations = {}
         self._routed_snapshots = {}
         self._stop = Event()
+        self._cpu_pool = None
         if telemetry:
             Thread(target=self._heartbeat, daemon=True, name="pcs-progress").start()
 
@@ -191,6 +192,26 @@ class PoolRuntime:
 
     def close(self):
         self._stop.set()
+        if self._cpu_pool is not None:
+            self._cpu_pool.terminate()
+            self._cpu_pool.join()
+            self._cpu_pool = None
+
+    def run_cpu(self, producer, *args, timeout_seconds=None):
+        """Optional pure computation under the same runtime's worker bound.
+
+        Canonical reads and durable commits stay in the owning runner. Existing
+        production stages do not opt in. Spawned workers never own checkpoints.
+        """
+        import multiprocessing
+        timeout=self.stage_timeout_seconds if timeout_seconds is None else timeout_seconds
+        if not isfinite(timeout) or timeout<=0:
+            raise ValueError('CPU_STAGE_BUDGET_INVALID')
+        with self._lock:
+            if self._cpu_pool is None:
+                self._cpu_pool=multiprocessing.get_context('spawn').Pool(self.max_workers)
+            result=self._cpu_pool.apply_async(producer,args)
+        return result.get(timeout=timeout)
 
     def input_identity(self, symbol, benchmark, *, options=False):
         """Bind a saved assessment to its own rows, shared inputs and file objects."""

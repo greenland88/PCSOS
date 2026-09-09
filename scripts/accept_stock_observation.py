@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--saved-anchor',action='store_true')
     parser.add_argument('--full-universe',action='store_true')
     parser.add_argument('--resume-run-id')
+    parser.add_argument('--previous-run')
     args=parser.parse_args()
     if args.saved_anchor==args.full_universe:parser.error('choose one acceptance scope')
     code=Path(__file__).resolve().parents[1]
@@ -50,7 +51,7 @@ def main():
         spec=StockObservationInput(symbols=symbols,universe_id=universe['universe_id'],universe_source=str(source),
             universe_sha256=sha256(source.read_bytes()).hexdigest(),universe_members_field='included_symbols',context=context,
             output_directory=str(root),run_id=args.resume_run_id or 'historical-20260904',resume_run_id=args.resume_run_id,
-            budgets=ObservationBudgets(total_seconds=21600))
+            previous_run=args.previous_run,budgets=ObservationBudgets(total_seconds=21600))
     (root/'actual_spec.json').write_text(spec.model_dump_json(indent=2),encoding='utf-8')
     try:
         if args.saved_anchor:

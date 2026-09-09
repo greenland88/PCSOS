@@ -114,16 +114,27 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                 max_workers=spec.max_workers,stage_timeout_seconds=spec.budgets.component_seconds)
             if not saved and adapter is None:
                 adapter=CanonicalObservationAdapter(spec,runtime)
+            def compute(producer,*args):
+                return runtime.run_cpu(producer,*args) if isinstance(adapter,CanonicalObservationAdapter) else producer(*args)
             previous_index={};previous_root=None;previous_shortlist=None;previous_profile=None
             if spec.previous_run:
                 previous_root=Path(spec.previous_run)
-                manifest=read_json(previous_root/'observation_manifest.json')
-                for name in ('symbol_index.json','stock_shortlist.json','observation_spec.json'):
-                    if hashlib.sha256((previous_root/name).read_bytes()).hexdigest()!=manifest['sha256'][name]:
-                        raise ValueError('OBSERVATION_PREVIOUS_HASH_MISMATCH')
-                previous_index=read_json(previous_root/'symbol_index.json')
+                if (previous_root/'observation_manifest.json').exists():
+                    manifest=read_json(previous_root/'observation_manifest.json')
+                    for name in ('symbol_index.json','stock_shortlist.json','observation_spec.json'):
+                        if hashlib.sha256((previous_root/name).read_bytes()).hexdigest()!=manifest['sha256'][name]:
+                            raise ValueError('OBSERVATION_PREVIOUS_HASH_MISMATCH')
+                    previous_index=read_json(previous_root/'symbol_index.json')
+                    previous_shortlist=StockShortlist.model_validate(read_json(previous_root/'stock_shortlist.json'))
+                else:
+                    prior_checkpoint=read_json(previous_root/'checkpoint.json')
+                    prior_spec=read_json(previous_root/'observation_spec.json')
+                    prior_dependency=read_json(previous_root/'dependency_manifest.json')
+                    prior_payload={k:v for k,v in prior_spec.items() if k not in ('resume_run_id','run_id')}
+                    if digest([prior_payload,prior_dependency['source_commit'],prior_dependency['code_id']])!=prior_checkpoint['spec_id']:
+                        raise ValueError('OBSERVATION_PREVIOUS_CHECKPOINT_IDENTITY_MISMATCH')
+                    previous_index=prior_checkpoint['symbols']
                 previous_profile=read_json(previous_root/'observation_spec.json')['selection_profile']
-                previous_shortlist=StockShortlist.model_validate(read_json(previous_root/'stock_shortlist.json'))
             if not saved:
                 progress['stage']='BENCHMARK_VERIFICATION';emit()
                 seeds=[]
@@ -215,7 +226,7 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                         else:blocked.add(s)
                     if hasattr(adapter,'profile_input'):
                         profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session]) for s in verified}
-                        execute('PROFILE',lambda s:measure_underlying_profile(adapter.profile_input(s,verified[s])),
+                        execute('PROFILE',lambda s:compute(measure_underlying_profile,adapter.profile_input(s,verified[s])),
                             spec.budgets.component_seconds,list(verified),profile_deps)
                     prep_deps={s:digest([code_id,verified[s][1],profile.opportunity,profile.support,
                         spec.context.effective_daily_session,
@@ -233,7 +244,7 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                             'input_seed_start':obj.opportunity.feature_view.indicator_seed_start})
                     eligible=list(prepared)
                     support_deps={s:digest([code_id,prep_deps[s],profile.support]) for s in eligible}
-                    execute('SUPPORT',lambda s:support_component(prepared[s],profile,
+                    execute('SUPPORT',lambda s:compute(support_component,prepared[s],profile,
                         old_value(s,'SUPPORT',SupportObservation) if proofs[s]['compatible'] else None),
                         spec.budgets.component_seconds,eligible,support_deps)
                     profile_deps={s:digest([code_id,verified[s][1],profile.profile,spec.context.effective_daily_session]) for s in eligible}
@@ -242,13 +253,15 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                     for family in profile.families:
                         policies=[profile.opportunity,profile.shallow if family=='SHALLOW_PULLBACK' else
                             profile.breakout if family=='BREAKOUT_RETEST' else profile.base if family=='CONSTRUCTIVE_BASE' else None]
-                        targets=[s for s in eligible if 'SUPPORT' in values[s]]
-                        deps={s:digest([code_id,prep_deps[s],support_deps[s],policies,semantic(spec.context)]) for s in targets}
+                        independent=family in ('BREAKOUT_RETEST','CONSTRUCTIVE_BASE')
+                        targets=[s for s in eligible if independent or 'SUPPORT' in values[s]]
+                        deps={s:digest([code_id,prep_deps[s],profile.support if independent else support_deps[s],policies,semantic(spec.context)]) for s in targets}
                         def evaluate(s,f=family):
                             prior=old_value(s,f,EntryOpportunity) if proofs[s]['compatible'] else None
                             # Core compatibility checks remain authoritative; no checkpoint fields are rewritten.
-                            return family_component(prepared[s],SupportObservation.model_validate(values[s]['SUPPORT']),profile,f,prior)
+                            return compute(family_component,prepared[s],SupportObservation.model_validate(values[s].get('SUPPORT',{})),profile,f,prior)
                         execute(family,evaluate,spec.budgets.component_seconds,targets,deps)
+                packet_inputs={};packet_deps={};batch_rows={}
                 for s in symbols:
                     if saved:
                         inp=saved.ranking_input.model_copy(update={'policy':profile.ranking})
@@ -266,15 +279,19 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
                             'TIMED_OUT' if 'WORKER_TIMEOUT' in reasons else 'DATA_BLOCKED' if s in blocked else
                             'FAILED' if reasons else 'COMPLETED')
                     pair=build_row(inp,s);pairs.append(pair)
+                    batch_rows[s]=pair[0]
                     states[s]=states[s].model_copy(update={'execution':execution,'reason_codes':reasons,'served_at':now()})
                     # Output is a distinct resumable stage; packet construction never invokes a detector.
-                    packet_dep=digest([pair[0].row_id,[b.result_id for b in pair[1]],extra,
+                    packet_deps[s]=digest([pair[0].row_id,[b.result_id for b in pair[1]],extra,
                         hashlib.sha256((code/'src/pcs/selection/packets.py').read_bytes()).hexdigest()])
-                    execute('PACKET',lambda _,i=inp,symbol=s,e=extra:build_decision_evidence_packet(
-                        DecisionPacketInput(symbol=symbol,selection_input=i,extra_records=e)),spec.budgets.output_seconds,[s],{s:packet_dep})
+                    packet_inputs[s]=DecisionPacketInput(symbol=s,selection_input=inp,extra_records=extra)
+                execute('PACKET',lambda s:compute(build_decision_evidence_packet,packet_inputs[s]),
+                    spec.budgets.output_seconds,symbols,packet_deps)
+                for s in symbols:
+                    reasons=states[s].reason_codes
                     if 'PACKET' in values[s]:
                         packet=DecisionEvidencePacket.model_validate(values[s]['PACKET'])
-                        refs=sorted({ref for k in pair[0].sort_keys for ref in k.source_refs}|
+                        refs=sorted({ref for k in batch_rows[s].sort_keys for ref in k.source_refs}|
                             {c['result_id'] for c in packet.component_refs})
                         if refs and resolve_evidence(EvidenceQuery(packet=packet,evidence_ids=refs)).status!='RESOLVED':
                             states[s]=states[s].model_copy(update={'execution':'FAILED','reason_codes':reasons+['RANKING_REFERENCE_UNRESOLVED']})
@@ -368,6 +385,7 @@ def _run_stock_observation(spec, *, data_access=None, adapter=None, checkpoint_c
             return run
         finally:
             stop.set();thread.join(timeout=1)
+            if 'runtime' in locals():runtime.close()
 
 
 def _write_observation_text(path,value):
