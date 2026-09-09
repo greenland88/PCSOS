@@ -332,3 +332,40 @@ def test_changed_code_dependency_invalidates_prior_state(tmp_path,monkeypatch):
     assert query.state.lineage[-1]['reason']=='CODE_DEPENDENCY_CHANGED_REPLAY'
     run(inp.model_copy(update={'resume_run_id':inp.run_id}),a)
     assert priors==[None,None]
+
+
+def test_real_preparation_retains_short_history_and_unknown_long_indicator():
+    import exchange_calendars as xc
+    from pcs.pool.opportunities import OpportunityDataReader
+    from pcs.analysis_contracts import CallContext,SourceReference
+    sessions=[str(s.date()) for s in xc.get_calendar('XNYS').sessions_in_range('2025-01-02','2026-09-04')][-170:]
+    bars=[DailyBar(session=s,open=100+i*.1,high=102+i*.1,low=99+i*.1,close=101+i*.1,volume=1000000.) for i,s in enumerate(sessions)]
+    view=DailyFeatureView(symbol='TEST',bars=bars,source=SourceReference(source_id='TEST:short',source_kind='TEST',validated=True),
+        price_basis='TEST',corporate_action_version='TEST',input_kind='TEST')
+    context=CallContext(symbol='TEST',requested_as_of=sessions[-1],effective_daily_session=sessions[-1],mode='HISTORICAL',run_id='TEST',request_id='TEST')
+    reader=object.__new__(OpportunityDataReader);reader.audit=[]
+    result=reader.prepare(context,daily=view,defer_support=True,allow_partial=True)
+    assert len(result.feature_view.bars)==170
+    assert result.feature_view.bars[-1].sma20 is not None
+    assert result.feature_view.bars[-1].sma200 is None
+    assert result.feature_view.bars[-1].trend_health is None
+    assert len(reader.prepared_support_view.bars)==60
+    from pcs.pool.observation_components import SupportObservation,family_component
+    prepared=PreparedObservation(opportunity=result,support_view=reader.prepared_support_view,
+        profile_input=ProfileInput(call_context=context,feature_view=view),data_identity='TEST:170',audit={'TEST':True})
+    for family in SelectionProfile().families:
+        opportunity=family_component(prepared,SupportObservation(),SelectionProfile(),family)
+        assert opportunity.family==family
+        assert opportunity.eligible_at_requested_time is not True
+
+
+def test_partial_indicator_opt_in_preserves_full_input_values_and_legacy_rejection():
+    import pandas as pd
+    from pcs.trend.indicators import calculate_base_indicators
+    from pcs.trend.models import TrendIndicatorValidationError
+    fixture=runpy.run_path(str(Path(__file__).parents[1]/'trend/test_indicators.py'))
+    data=fixture['make_ohlcv'](260)
+    pd.testing.assert_frame_equal(calculate_base_indicators(data),calculate_base_indicators(data,allow_partial_warmup=True))
+    with pytest.raises(TrendIndicatorValidationError):calculate_base_indicators(data.iloc[:170])
+    partial=calculate_base_indicators(data.iloc[:170],allow_partial_warmup=True)
+    assert partial.sma200.isna().all() and partial.sma20.notna().any()

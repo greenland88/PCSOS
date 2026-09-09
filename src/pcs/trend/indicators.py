@@ -6,10 +6,12 @@ from pcs.trend.config import TrendIndicatorConfig
 from pcs.trend.models import REQUIRED_OHLCV_COLUMNS, TrendIndicatorValidationError
 
 
-def calculate_base_indicators(df: pd.DataFrame, config: TrendIndicatorConfig | None = None, *, allow_missing_volume=False) -> pd.DataFrame:
+def calculate_base_indicators(df: pd.DataFrame, config: TrendIndicatorConfig | None = None, *, allow_missing_volume=False,
+                              allow_partial_warmup=False) -> pd.DataFrame:
     config = config or TrendIndicatorConfig()
     config.validate()
-    _validate_ohlcv_input(df, config, allow_missing_volume=allow_missing_volume)
+    _validate_ohlcv_input(df, config, allow_missing_volume=allow_missing_volume,
+                          allow_partial_warmup=allow_partial_warmup)
 
     talib = _load_talib()
     source = df.copy(deep=True)
@@ -32,7 +34,7 @@ def calculate_base_indicators(df: pd.DataFrame, config: TrendIndicatorConfig | N
     output[adx_col] = talib.ADX(high, low, close, timeperiod=config.adx_period)
     output[rsi_col] = talib.RSI(close, timeperiod=config.rsi_period)
 
-    _validate_indicator_warmup(output)
+    _validate_indicator_warmup(output,allow_partial_warmup=allow_partial_warmup)
     return output
 
 
@@ -53,7 +55,8 @@ def _load_talib():
     return talib
 
 
-def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig, *, allow_missing_volume=False) -> None:
+def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig, *, allow_missing_volume=False,
+                          allow_partial_warmup=False) -> None:
     if not isinstance(df, pd.DataFrame):
         raise TrendIndicatorValidationError("input must be a pandas DataFrame")
 
@@ -61,9 +64,10 @@ def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig, *, all
     if missing:
         raise TrendIndicatorValidationError(f"missing required OHLCV columns: {', '.join(missing)}")
 
-    if len(df) < config.minimum_rows:
+    minimum_rows=1 if allow_partial_warmup else config.minimum_rows
+    if len(df) < minimum_rows:
         raise TrendIndicatorValidationError(
-            f"insufficient OHLCV rows: got {len(df)}, require at least {config.minimum_rows}"
+            f"insufficient OHLCV rows: got {len(df)}, require at least {minimum_rows}"
         )
 
     date_values = df["date"] if "date" in df.columns else df.index
@@ -75,11 +79,13 @@ def _validate_ohlcv_input(df: pd.DataFrame, config: TrendIndicatorConfig, *, all
         raise TrendIndicatorValidationError("OHLCV data contains missing values")
 
 
-def _validate_indicator_warmup(output: pd.DataFrame) -> None:
+def _validate_indicator_warmup(output: pd.DataFrame, *, allow_partial_warmup=False) -> None:
     for column in output.columns:
         series = output[column]
         first_valid = series.first_valid_index()
         if first_valid is None:
+            if allow_partial_warmup:
+                continue  # Preserve the actual all-NaN series; never impute a value.
             raise TrendIndicatorValidationError(f"{column} produced no valid values")
 
         first_valid_position = output.index.get_loc(first_valid)

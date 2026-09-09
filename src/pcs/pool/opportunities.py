@@ -83,7 +83,8 @@ class OpportunityDataReader:
         config = TrendIndicatorConfig(pivot_left_bars=3, pivot_right_bars=3)
         indicator_frame = frame.copy()
         missing_volume_rows = int(indicator_frame.volume.isna().sum())
-        indicators = calculate_base_indicators(indicator_frame, config, allow_missing_volume=True)
+        indicators = calculate_base_indicators(indicator_frame, config, allow_missing_volume=True,
+                                               allow_partial_warmup=allow_partial)
         indicators["ema200"] = frame.close.astype(float).ewm(span=200, adjust=False,
                                                                min_periods=1).mean()
         full_structure = analyze_market_structure(indicator_frame, config, as_of_date=day, allow_missing_volume=True)
@@ -195,7 +196,7 @@ class OpportunityDataReader:
             indicator_identity=indicator_identity, source=daily.source,
             price_basis=daily.price_basis,
             corporate_action_version=daily.corporate_action_version,
-            input_kind="VERIFIED_CANONICAL", source_timestamp=daily.source_timestamp,
+            input_kind=daily.input_kind, source_timestamp=daily.source_timestamp,
             received_at=daily.received_at)
         support_policy = SupportZonePolicy(analysis_sessions=policy.analysis_sessions,
             indicator_warmup_sessions=policy.indicator_warmup_sessions)
@@ -242,7 +243,7 @@ class OpportunityDataReader:
             auxiliary_sources=[benchmark.source] if benchmark else [],
             price_basis=daily.price_basis,
             corporate_action_version=daily.corporate_action_version,
-            input_kind="VERIFIED_CANONICAL", source_timestamp=daily.source_timestamp,
+            input_kind=daily.input_kind, source_timestamp=daily.source_timestamp,
             received_at=daily.received_at)
         last_legacy = legacy_by_day.get(day)
         last_pullback = last_legacy["pullback"] if last_legacy else None
